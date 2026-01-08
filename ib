@@ -1,0 +1,625 @@
+#!/bin/bash
+# ib (ittybitty) - multi-agent orchestration for Claude Code
+# Usage: ib <command> [options]
+#
+# A minimal tool for spawning and managing multiple Claude Code agents
+# using tmux sessions and git worktrees.
+
+set -e
+
+AGENTS_DIR="${AGENTS_DIR:-.agents}"
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+# Format age from ISO timestamp
+format_age() {
+    local created="$1"
+    local now=$(date +%s)
+    local then=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${created%%[-+]*}" +%s 2>/dev/null || echo "$now")
+    local diff=$((now - then))
+
+    if [[ $diff -lt 60 ]]; then
+        echo "${diff}s"
+    elif [[ $diff -lt 3600 ]]; then
+        echo "$((diff / 60))m"
+    elif [[ $diff -lt 86400 ]]; then
+        echo "$((diff / 3600))h"
+    else
+        echo "$((diff / 86400))d"
+    fi
+}
+
+# Detect agent state from tmux
+get_state() {
+    local id="$1"
+
+    if ! tmux has-session -t "$id" 2>/dev/null; then
+        echo "done"
+        return
+    fi
+
+    # Check if waiting for input (look for ? in last few lines)
+    local recent=$(tmux capture-pane -t "$id" -p 2>/dev/null | tail -5)
+    if echo "$recent" | grep -q '?\s*$'; then
+        echo "waiting"
+    else
+        echo "running"
+    fi
+}
+
+# =============================================================================
+# COMMAND: new-agent
+# =============================================================================
+
+cmd_new_agent() {
+    local NAME=""
+    local PARENT=""
+    local USE_WORKTREE=true
+    local BRANCH=""
+    local WORKDIR=""
+    local ALLOW_TOOLS=""
+    local DENY_TOOLS=""
+    local PRINT_MODE=false
+    local PROMPT=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)        NAME="$2"; shift 2 ;;
+            --parent)      PARENT="$2"; shift 2 ;;
+            --no-worktree) USE_WORKTREE=false; shift ;;
+            --branch)      BRANCH="$2"; shift 2 ;;
+            --dir)         WORKDIR="$2"; shift 2 ;;
+            --allow-tools) ALLOW_TOOLS="$2"; shift 2 ;;
+            --deny-tools)  DENY_TOOLS="$2"; shift 2 ;;
+            --print)       PRINT_MODE=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib new-agent [options] "prompt"
+
+Start a new Claude agent with the given prompt.
+
+Options:
+  --name NAME           Custom agent name (default: auto-generated)
+  --parent ID           Parent agent ID (for hierarchy tracking)
+  --no-worktree         Don't create a git worktree
+  --branch NAME         Branch name (default: same as agent id)
+  --dir PATH            Working directory (default: .agents/<id>/repo)
+  --allow-tools LIST    Only allow these tools (comma-separated)
+  --deny-tools LIST     Deny these tools (comma-separated)
+  --print               Run in one-shot mode (no interaction)
+  -h, --help            Show this help
+
+Examples:
+  ib new-agent "verify citations in vs-freeform.md"
+  ib new-agent --name checker --deny-tools Bash "audit the code"
+  ib new --print "what files are in src/"
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                PROMPT="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$PROMPT" ]]; then
+        echo "Error: prompt required" >&2
+        echo "Usage: ib new-agent [options] \"prompt\"" >&2
+        exit 1
+    fi
+
+    # Generate agent ID
+    local ID
+    if [[ -n "$NAME" ]]; then
+        ID="$NAME"
+    else
+        ID="agent-$(openssl rand -hex 4)"
+    fi
+
+    # Check if agent already exists
+    if [[ -d "$AGENTS_DIR/$ID" ]] || tmux has-session -t "$ID" 2>/dev/null; then
+        echo "Error: agent '$ID' already exists" >&2
+        exit 1
+    fi
+
+    # Set up directories
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    mkdir -p "$AGENT_DIR"
+
+    # Set working directory
+    local WORK_PATH
+    if [[ -n "$WORKDIR" ]]; then
+        WORK_PATH="$WORKDIR"
+    elif [[ "$USE_WORKTREE" == true ]]; then
+        WORK_PATH="$AGENT_DIR/repo"
+    else
+        WORK_PATH="$(pwd)"
+    fi
+
+    # Create git worktree if requested
+    if [[ "$USE_WORKTREE" == true ]]; then
+        local BRANCH_NAME="${BRANCH:-$ID}"
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+            git worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD 2>/dev/null || {
+                echo "Warning: could not create worktree, using current directory" >&2
+                WORK_PATH="$(pwd)"
+                USE_WORKTREE=false
+            }
+        else
+            echo "Warning: not in a git repo, skipping worktree" >&2
+            WORK_PATH="$(pwd)"
+            USE_WORKTREE=false
+        fi
+    fi
+
+    # Write metadata
+    cat > "$AGENT_DIR/meta.json" <<EOF
+{
+  "id": "$ID",
+  "prompt": $(echo "$PROMPT" | jq -Rs .),
+  "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
+  "created": "$(date -Iseconds)",
+  "worktree": $USE_WORKTREE,
+  "print_mode": $PRINT_MODE,
+  "allow_tools": $(if [[ -n "$ALLOW_TOOLS" ]]; then echo "\"$ALLOW_TOOLS\""; else echo "null"; fi),
+  "deny_tools": $(if [[ -n "$DENY_TOOLS" ]]; then echo "\"$DENY_TOOLS\""; else echo "null"; fi)
+}
+EOF
+
+    # Build claude command
+    local CLAUDE_CMD="claude"
+
+    if [[ "$PRINT_MODE" == true ]]; then
+        CLAUDE_CMD="$CLAUDE_CMD --print"
+    fi
+
+    if [[ -n "$ALLOW_TOOLS" ]]; then
+        CLAUDE_CMD="$CLAUDE_CMD --allowedTools $ALLOW_TOOLS"
+    fi
+
+    if [[ -n "$DENY_TOOLS" ]]; then
+        CLAUDE_CMD="$CLAUDE_CMD --disallowedTools $DENY_TOOLS"
+    fi
+
+    # Add the prompt
+    CLAUDE_CMD="$CLAUDE_CMD \"$PROMPT\""
+
+    # Start tmux session
+    tmux new-session -d -s "$ID" -c "$WORK_PATH" "$CLAUDE_CMD"
+
+    # Output the agent ID
+    echo "$ID"
+}
+
+# =============================================================================
+# COMMAND: list
+# =============================================================================
+
+cmd_list() {
+    local SHOW_ALL=false
+    local PARENT_FILTER=""
+    local JSON_OUTPUT=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)     SHOW_ALL=true; shift ;;
+            --parent)  PARENT_FILTER="$2"; shift 2 ;;
+            --json)    JSON_OUTPUT=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib list [options]
+
+Show all agents and their state.
+
+Options:
+  --all                 Include finished/dead agents
+  --parent ID           Only show children of this agent
+  --json                Output as JSON
+  -h, --help            Show this help
+
+Output columns:
+  ID        Agent identifier
+  STATE     running, waiting, or done
+  AGE       Time since spawn
+  PARENT    Parent agent ID (if any)
+  PROMPT    First 40 chars of prompt
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Check if agents directory exists
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        if [[ "$JSON_OUTPUT" == true ]]; then
+            echo "[]"
+        else
+            echo "No agents found."
+        fi
+        exit 0
+    fi
+
+    # Collect agent data
+    local agents=()
+    local found_any=false
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id=$(basename "$agent_dir")
+        local meta="$agent_dir/meta.json"
+
+        # Read metadata
+        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
+        local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
+        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+
+        # Filter by parent if requested
+        if [[ -n "$PARENT_FILTER" && "$parent" != "$PARENT_FILTER" ]]; then
+            continue
+        fi
+
+        # Get state
+        local state=$(get_state "$id")
+
+        # Skip done agents unless --all
+        if [[ "$SHOW_ALL" != true && "$state" == "done" ]]; then
+            continue
+        fi
+
+        found_any=true
+
+        # Format age
+        local age=$(format_age "$created")
+
+        # Handle null parent for display
+        [[ "$parent" == "null" ]] && parent="-"
+
+        if [[ "$JSON_OUTPUT" == true ]]; then
+            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
+        else
+            printf "%-20s %-10s %-6s %-15s %s\n" "$id" "$state" "$age" "$parent" "$prompt"
+        fi
+    done
+
+    if [[ "$JSON_OUTPUT" == true ]]; then
+        echo "[$(IFS=,; echo "${agents[*]}")]"
+    elif [[ "$found_any" != true ]]; then
+        echo "No agents found."
+    fi
+}
+
+# =============================================================================
+# COMMAND: send
+# =============================================================================
+
+cmd_send() {
+    # Parse arguments
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        cat <<EOF
+Usage: ib send <id> "message"
+       ib send <id> < file.txt
+       echo "answer" | ib send <id>
+
+Send input to an agent's stdin.
+
+Arguments:
+  id          Agent identifier
+  message     Text to send (optional if piping)
+
+Options:
+  -h, --help  Show this help
+
+Examples:
+  ib send task-a1b2 "Option 2 - just verify links"
+  ib send task-a1b2 "yes"
+  echo "no" | ib send task-a1b2
+EOF
+        exit 0
+    fi
+
+    if [[ -z "$1" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib send <id> \"message\"" >&2
+        exit 1
+    fi
+
+    local ID="$1"
+    shift
+
+    # Check if agent exists
+    if ! tmux has-session -t "$ID" 2>/dev/null; then
+        echo "Error: agent '$ID' is not running" >&2
+        exit 1
+    fi
+
+    # Get message from argument or stdin
+    local MESSAGE
+    if [[ $# -gt 0 ]]; then
+        MESSAGE="$*"
+    elif [[ ! -t 0 ]]; then
+        MESSAGE=$(cat)
+    else
+        echo "Error: message required (as argument or via stdin)" >&2
+        exit 1
+    fi
+
+    # Send to tmux session
+    tmux send-keys -t "$ID" "$MESSAGE" Enter
+
+    echo "Sent to $ID"
+}
+
+# =============================================================================
+# COMMAND: read
+# =============================================================================
+
+cmd_read() {
+    local ID=""
+    local LINES=50
+    local FOLLOW=false
+    local SHOW_ALL=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --lines)   LINES="$2"; shift 2 ;;
+            --all)     SHOW_ALL=true; shift ;;
+            --follow)  FOLLOW=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib read <id> [options]
+
+Read recent output from an agent.
+
+Arguments:
+  id              Agent identifier
+
+Options:
+  --lines N       Number of lines (default: 50)
+  --all           Full scrollback history
+  --follow        Watch live (like tail -f)
+  -h, --help      Show this help
+
+Examples:
+  ib read task-a1b2
+  ib read task-a1b2 --lines 200
+  ib read task-a1b2 --follow
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib read <id> [options]" >&2
+        exit 1
+    fi
+
+    # Check if agent session exists
+    if ! tmux has-session -t "$ID" 2>/dev/null; then
+        # Try to read from log if agent is done
+        if [[ -f "$AGENTS_DIR/$ID/output.log" ]]; then
+            echo "=== Agent finished, showing saved output ===" >&2
+            if [[ "$SHOW_ALL" == true ]]; then
+                cat "$AGENTS_DIR/$ID/output.log"
+            else
+                tail -n "$LINES" "$AGENTS_DIR/$ID/output.log"
+            fi
+            exit 0
+        fi
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    if [[ "$FOLLOW" == true ]]; then
+        echo "Attaching to $ID (Ctrl+b d to detach)..." >&2
+        tmux attach -t "$ID" -r
+    else
+        if [[ "$SHOW_ALL" == true ]]; then
+            tmux capture-pane -t "$ID" -p -S -
+        else
+            tmux capture-pane -t "$ID" -p -S -"$LINES"
+        fi
+    fi
+}
+
+# =============================================================================
+# COMMAND: kill
+# =============================================================================
+
+cmd_kill() {
+    local ID=""
+    local CLEANUP=false
+    local FORCE=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --cleanup) CLEANUP=true; shift ;;
+            --force)   FORCE=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib kill <id> [options]
+
+Stop an agent and optionally clean up its data.
+
+Arguments:
+  id              Agent identifier
+
+Options:
+  --cleanup       Remove worktree and agent directory
+  --force         Don't ask for confirmation
+  -h, --help      Show this help
+
+Examples:
+  ib kill task-a1b2
+  ib kill task-a1b2 --cleanup
+  ib kill task-a1b2 --cleanup --force
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib kill <id> [options]" >&2
+        exit 1
+    fi
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+
+    # Check if agent exists at all
+    if [[ ! -d "$AGENT_DIR" ]] && ! tmux has-session -t "$ID" 2>/dev/null; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Confirm if not forced
+    if [[ "$FORCE" != true ]]; then
+        local confirm
+        if [[ "$CLEANUP" == true ]]; then
+            read -p "Kill agent '$ID' and remove all data? [y/N] " confirm
+        else
+            read -p "Kill agent '$ID'? [y/N] " confirm
+        fi
+        if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+
+    # Kill tmux session if running
+    if tmux has-session -t "$ID" 2>/dev/null; then
+        # First, try to capture final output
+        if [[ -d "$AGENT_DIR" ]]; then
+            tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+        fi
+
+        tmux kill-session -t "$ID"
+        echo "Killed session: $ID"
+    else
+        echo "Session not running: $ID"
+    fi
+
+    # Cleanup if requested
+    if [[ "$CLEANUP" == true && -d "$AGENT_DIR" ]]; then
+        # Remove git worktree if it exists
+        if [[ -d "$AGENT_DIR/repo" ]]; then
+            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
+                echo "Warning: could not remove worktree, removing directory manually" >&2
+                rm -rf "$AGENT_DIR/repo"
+            }
+            # Also try to delete the branch
+            git branch -D "$ID" 2>/dev/null || true
+        fi
+
+        # Remove agent directory
+        rm -rf "$AGENT_DIR"
+        echo "Cleaned up: $AGENT_DIR"
+    fi
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+case "${1:-help}" in
+    new-agent|new)
+        shift
+        cmd_new_agent "$@"
+        ;;
+    list|ls)
+        shift
+        cmd_list "$@"
+        ;;
+    send)
+        shift
+        cmd_send "$@"
+        ;;
+    read)
+        shift
+        cmd_read "$@"
+        ;;
+    kill)
+        shift
+        cmd_kill "$@"
+        ;;
+    help|--help|-h)
+        cat <<EOF
+ib (ittybitty) - multi-agent orchestration for Claude Code
+
+Usage: ib <command> [options]
+
+Commands:
+  new-agent   Start a new agent with a prompt
+  list        Show all agents and their state
+  send        Send input to an agent
+  read        Read recent output from an agent
+  kill        Stop an agent
+
+Aliases:
+  new         Alias for new-agent
+  ls          Alias for list
+
+Environment:
+  AGENTS_DIR    Directory for agent data (default: .agents)
+
+Run 'ib <command> --help' for command-specific help.
+
+Examples:
+  ib new-agent "verify all citations in docs/comparison.md"
+  ib list
+  ib read agent-abc123
+  ib send agent-abc123 "yes, proceed with option 2"
+  ib kill agent-abc123 --cleanup
+EOF
+        ;;
+    *)
+        echo "Unknown command: $1" >&2
+        echo "Run 'ib help' for usage." >&2
+        exit 1
+        ;;
+esac
