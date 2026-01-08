@@ -127,6 +127,7 @@ cmd_new_agent() {
     local DENY_TOOLS=""
     local PRINT_MODE=false
     local YOLO_MODE=false
+    local LEAF_MODE=false
     local PROMPT=""
 
     # Parse arguments
@@ -139,6 +140,7 @@ cmd_new_agent() {
             --deny-tools)  DENY_TOOLS="$2"; shift 2 ;;
             --print)       PRINT_MODE=true; shift ;;
             --yolo)        YOLO_MODE=true; shift ;;
+            --leaf|--worker) LEAF_MODE=true; shift ;;
             -h|--help)
                 cat <<EOF
 Usage: ib new-agent [options] "prompt"
@@ -156,11 +158,16 @@ Options:
   --deny-tools LIST     Deny these tools (comma-separated)
   --print               Run in one-shot mode (no interaction)
   --yolo                Skip all permission prompts (full autonomy)
+  --leaf, --worker      Create a leaf agent (no sub-agent spawning)
   -h, --help            Show this help
 
 Permission modes:
   (default)   Auto-rejects non-allowed tools, auto-accepts workspace trust
   --yolo      Auto-accepts everything (full autonomy, use with caution)
+
+Agent types:
+  (default)   Can spawn and manage sub-agents via 'ib' commands
+  --leaf      Worker agent - cannot spawn sub-agents, focused on task
 
 By default, .claude/settings.local.json is copied to the worktree so agents
 inherit your approved tools, with Bash(ib:*) added for agent coordination.
@@ -169,6 +176,7 @@ Examples:
   ib new-agent "verify citations in vs-freeform.md"
   ib new-agent --name checker "research and summarize"
   ib new --yolo "research and update the pricing page"
+  ib new --leaf --parent coordinator "check link #1"
 EOF
                 exit 0
                 ;;
@@ -224,9 +232,9 @@ EOF
         WORK_PATH="$AGENT_DIR/repo"
 
         # Copy local claude settings so agent inherits approved tools
+        # Both regular and leaf agents get ib permissions (leaf can read/send, just not spawn)
         mkdir -p "$AGENT_DIR/repo/.claude"
         if [[ -f ".claude/settings.local.json" ]]; then
-            # Copy settings and add Bash(ib:*) to allowed tools for agent coordination
             if command -v jq &>/dev/null; then
                 jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
                     ".claude/settings.local.json" > "$AGENT_DIR/repo/.claude/settings.local.json"
@@ -235,11 +243,10 @@ EOF
                 cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
             fi
         else
-            # Create minimal settings with ib allowed
             echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
         fi
     else
-        # Non-worktree mode: ensure Bash(ib:*) and Bash(./ib:*) are in repo settings
+        # Non-worktree mode: ensure ib permissions are in repo settings
         if command -v jq &>/dev/null && [[ -f ".claude/settings.local.json" ]]; then
             # Check if both patterns are already allowed
             local needs_update=false
@@ -269,37 +276,143 @@ EOF
   "prompt": $(echo "$PROMPT" | jq -Rs .),
   "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
-  "worktree": $USE_WORKTREE
+  "worktree": $USE_WORKTREE,
+  "leaf": $LEAF_MODE
 }
 EOF
 
-    # Build claude command
-    local CLAUDE_CMD="claude"
+    # Build prompt with context prefix
+    local PARENT_INFO=""
+    if [[ -n "$PARENT" ]]; then
+        PARENT_INFO="Your parent agent is: $PARENT"
+    fi
 
-    if [[ "$YOLO_MODE" == true ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions --permission-mode bypassPermissions"
+    local WORKTREE_INFO=""
+    local COMPLETION_INSTRUCTIONS=""
+    if [[ "$USE_WORKTREE" == true ]]; then
+        WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID."
+        COMPLETION_INSTRUCTIONS="When your task is complete:
+1. Commit any changes you made (git add && git commit)
+2. Exit normally - the orchestrator will handle merging your branch"
     else
-        # Default: auto-reject non-allowed tools (strict mode)
-        CLAUDE_CMD="$CLAUDE_CMD --permission-mode dontAsk"
+        WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
+        COMPLETION_INSTRUCTIONS="When your task is complete:
+1. Commit any changes you made (git add && git commit)
+2. Exit normally"
     fi
 
+    local IB_INSTRUCTIONS=""
+    if [[ "$LEAF_MODE" != true ]]; then
+        IB_INSTRUCTIONS="
+You have access to the 'ib' tool for multi-agent coordination:
+  ib new-agent --parent $ID \"task\"   Spawn a sub-agent
+  ib list --parent $ID                 List your sub-agents
+  ib read <agent-id>                   Read an agent's output
+  ib send <agent-id> \"message\"        Send input to an agent
+  ib status <agent-id>                 Check agent's git commits
+  ib kill <agent-id>                   Stop an agent
+"
+    else
+        # Leaf agents: simple communication with parent only
+        IB_INSTRUCTIONS="
+You are a leaf/worker agent focused on your specific task.
+To send a message to your parent: ib send $PARENT \"your message\"
+
+Use this to report completion, ask questions, or share important findings.
+"
+    fi
+
+    local PROMPT_PREFIX="[AGENT CONTEXT]
+$WORKTREE_INFO
+$PARENT_INFO
+$IB_INSTRUCTIONS
+$COMPLETION_INSTRUCTIONS
+
+[USER TASK]
+$PROMPT"
+
+    # Save the full prompt (with prefix) for reference
+    local PROMPT_FILE="$AGENT_DIR/prompt.txt"
+    echo "$PROMPT_PREFIX" > "$PROMPT_FILE"
+
+    # Build claude command arguments
+    local CLAUDE_ARGS=""
+    if [[ "$YOLO_MODE" == true ]]; then
+        CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
+    else
+        CLAUDE_ARGS="--permission-mode dontAsk"
+    fi
     if [[ "$PRINT_MODE" == true ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --print"
+        CLAUDE_ARGS="$CLAUDE_ARGS --print"
     fi
-
     if [[ -n "$ALLOW_TOOLS" ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --allowedTools $ALLOW_TOOLS"
+        CLAUDE_ARGS="$CLAUDE_ARGS --allowedTools $ALLOW_TOOLS"
     fi
-
     if [[ -n "$DENY_TOOLS" ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --disallowedTools $DENY_TOOLS"
+        CLAUDE_ARGS="$CLAUDE_ARGS --disallowedTools $DENY_TOOLS"
     fi
 
-    # Add the prompt
-    CLAUDE_CMD="$CLAUDE_CMD \"$PROMPT\""
+    # Build exit handler script
+    local EXIT_SCRIPT="$AGENT_DIR/exit-check.sh"
+    cat > "$EXIT_SCRIPT" <<'EXITSCRIPT'
+#!/bin/bash
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  Agent session ended - checking for uncommitted work..."
+echo "═══════════════════════════════════════════════════════════"
 
-    # Start tmux session
-    tmux new-session -d -s "$ID" -c "$WORK_PATH" "$CLAUDE_CMD"
+# Check for uncommitted changes
+if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+    echo ""
+    echo "⚠️  UNCOMMITTED CHANGES DETECTED"
+    echo ""
+    git status --short
+    echo ""
+    read -p "Commit these changes? [y/N] " commit_confirm
+    if [[ "$commit_confirm" == [yY] || "$commit_confirm" == [yY][eE][sS] ]]; then
+        read -p "Commit message: " commit_msg
+        if [[ -n "$commit_msg" ]]; then
+            git add -A && git commit -m "$commit_msg"
+        else
+            echo "No message provided, skipping commit."
+        fi
+    fi
+fi
+
+# Check for unpushed commits (only if remote exists)
+if git remote | grep -q .; then
+    local_commits=$(git log @{u}..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$local_commits" -gt 0 ]]; then
+        echo ""
+        echo "⚠️  UNPUSHED COMMITS: $local_commits commit(s) not pushed to remote"
+        echo ""
+        git log @{u}..HEAD --oneline
+        echo ""
+        read -p "Push to remote? [y/N] " push_confirm
+        if [[ "$push_confirm" == [yY] || "$push_confirm" == [yY][eE][sS] ]]; then
+            git push
+        fi
+    fi
+fi
+
+echo ""
+echo "Agent session complete. Branch: $(git branch --show-current)"
+echo "To merge this work: git checkout main && git merge $(git branch --show-current)"
+echo ""
+EXITSCRIPT
+    chmod +x "$EXIT_SCRIPT"
+
+    # Write a startup script that handles the prompt properly
+    local STARTUP_SCRIPT="$AGENT_DIR/start.sh"
+    cat > "$STARTUP_SCRIPT" <<EOF
+#!/bin/bash
+claude $CLAUDE_ARGS "\$(cat '$PROMPT_FILE')"
+$EXIT_SCRIPT
+EOF
+    chmod +x "$STARTUP_SCRIPT"
+
+    # Start tmux session with startup script
+    tmux new-session -d -s "$ID" -c "$WORK_PATH" "$STARTUP_SCRIPT"
 
     # For non-yolo mode, auto-accept the workspace trust dialog
     # (yolo bypasses this entirely, but default and strict still see it)
@@ -421,42 +534,71 @@ EOF
 # =============================================================================
 
 cmd_send() {
+    local FROM_ID=""
+    local TARGET_ID=""
+    local MESSAGE=""
+
     # Parse arguments
-    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-        cat <<EOF
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --from)
+                FROM_ID="$2"
+                shift 2
+                ;;
+            -h|--help)
+                cat <<EOF
 Usage: ib send <id> "message"
        ib send <id> < file.txt
        echo "answer" | ib send <id>
+       ib send --from <sender-id> <id> "message"
 
 Send input to an agent's stdin.
 
 Arguments:
-  id          Agent identifier
+  id          Agent identifier (recipient)
   message     Text to send (optional if piping)
 
 Options:
+  --from ID   Prefix message with "[from <ID>]: " (auto-detected in agent worktrees)
   -h, --help  Show this help
+
+When run from within an agent's worktree, --from is automatically set to that
+agent's ID, so messages are prefixed with the sender's identity.
 
 Examples:
   ib send task-a1b2 "Option 2 - just verify links"
   ib send task-a1b2 "yes"
+  ib send --from worker-xyz parent-abc "I'm done with my task"
   echo "no" | ib send task-a1b2
 EOF
-        exit 0
-    fi
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$TARGET_ID" ]]; then
+                    TARGET_ID="$1"
+                else
+                    # Rest is the message
+                    MESSAGE="$*"
+                    break
+                fi
+                shift
+                ;;
+        esac
+    done
 
-    if [[ -z "$1" ]]; then
+    if [[ -z "$TARGET_ID" ]]; then
         echo "Error: agent ID required" >&2
         echo "Usage: ib send <id> \"message\"" >&2
         exit 1
     fi
 
-    local INPUT_ID="$1"
-    shift
-
     # Resolve partial ID
     local ID
-    ID=$(resolve_agent_id "$INPUT_ID") || exit 1
+    ID=$(resolve_agent_id "$TARGET_ID") || exit 1
 
     # Check if agent is running
     if ! tmux has-session -t "$ID" 2>/dev/null; then
@@ -464,15 +606,28 @@ EOF
         exit 1
     fi
 
-    # Get message from argument or stdin
-    local MESSAGE
-    if [[ $# -gt 0 ]]; then
-        MESSAGE="$*"
-    elif [[ ! -t 0 ]]; then
-        MESSAGE=$(cat)
-    else
-        echo "Error: message required (as argument or via stdin)" >&2
-        exit 1
+    # Get message from remaining args or stdin
+    if [[ -z "$MESSAGE" ]]; then
+        if [[ ! -t 0 ]]; then
+            MESSAGE=$(cat)
+        else
+            echo "Error: message required (as argument or via stdin)" >&2
+            exit 1
+        fi
+    fi
+
+    # Auto-detect if we're in an agent worktree (FROM_ID not already set)
+    if [[ -z "$FROM_ID" ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+            # Extract agent ID from path
+            FROM_ID=$(echo "$current_dir" | sed 's|.*/.agents/\([^/]*\)/repo.*|\1|')
+        fi
+    fi
+
+    # Prefix message if FROM_ID is set
+    if [[ -n "$FROM_ID" ]]; then
+        MESSAGE="[from $FROM_ID]: $MESSAGE"
     fi
 
     # Send to tmux session
@@ -569,6 +724,221 @@ EOF
         else
             tmux capture-pane -t "$ID" -p -S -"$LINES"
         fi
+    fi
+}
+
+# =============================================================================
+# COMMAND: status
+# =============================================================================
+
+cmd_status() {
+    local ID=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib status <id>
+
+Show git status of an agent's work compared to main branch.
+
+Displays:
+- Commits made by the agent (hash + message)
+- Uncommitted changes in worktree
+- Files changed summary
+
+Arguments:
+  id              Agent identifier
+
+Examples:
+  ib status task-a1b2
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib status <id>" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local BRANCH_NAME="agent/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Determine target branch for comparison
+    local TARGET_BRANCH=""
+    if git show-ref --verify --quiet refs/heads/main; then
+        TARGET_BRANCH="main"
+    elif git show-ref --verify --quiet refs/heads/master; then
+        TARGET_BRANCH="master"
+    else
+        TARGET_BRANCH="HEAD"
+    fi
+
+    # Check if worktree exists
+    local WORKTREE_PATH="$AGENT_DIR/repo"
+    if [[ ! -d "$WORKTREE_PATH" ]]; then
+        echo "Agent '$ID' has no worktree (created with --no-worktree)"
+        echo ""
+        # Show branch commits if branch exists
+        if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+            local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$commit_count" -gt 0 ]]; then
+                echo "Commits on $BRANCH_NAME (vs $TARGET_BRANCH):"
+                git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline
+            else
+                echo "No commits on $BRANCH_NAME relative to $TARGET_BRANCH"
+            fi
+        fi
+        exit 0
+    fi
+
+    echo "Agent: $ID"
+    echo "Branch: $BRANCH_NAME"
+    echo "Worktree: $WORKTREE_PATH"
+    echo ""
+
+    # Show commits
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$commit_count" -gt 0 ]]; then
+            echo "═══ Commits ($commit_count) vs $TARGET_BRANCH ═══"
+            git log "$TARGET_BRANCH..$BRANCH_NAME" --format="  %h %s"
+            echo ""
+        else
+            echo "═══ No commits vs $TARGET_BRANCH ═══"
+            echo ""
+        fi
+    fi
+
+    # Show uncommitted changes
+    local uncommitted=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null)
+    if [[ -n "$uncommitted" ]]; then
+        echo "═══ Uncommitted Changes ═══"
+        git -C "$WORKTREE_PATH" status --short
+        echo ""
+    fi
+
+    # Show file change summary
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        local files_changed=$(git diff --stat "$TARGET_BRANCH..$BRANCH_NAME" 2>/dev/null | tail -1)
+        if [[ -n "$files_changed" && "$files_changed" != *"0 files changed"* ]]; then
+            echo "═══ Files Changed ═══"
+            echo "  $files_changed"
+        fi
+    fi
+}
+
+# =============================================================================
+# COMMAND: diff
+# =============================================================================
+
+cmd_diff() {
+    local ID=""
+    local STAT_ONLY=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --stat)    STAT_ONLY=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib diff <id> [options]
+
+Show the full diff of an agent's work compared to main branch.
+
+Arguments:
+  id              Agent identifier
+
+Options:
+  --stat          Show diffstat summary only
+  -h, --help      Show this help
+
+Examples:
+  ib diff task-a1b2
+  ib diff task-a1b2 --stat
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib diff <id>" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local BRANCH_NAME="agent/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Determine target branch for comparison
+    local TARGET_BRANCH=""
+    if git show-ref --verify --quiet refs/heads/main; then
+        TARGET_BRANCH="main"
+    elif git show-ref --verify --quiet refs/heads/master; then
+        TARGET_BRANCH="master"
+    else
+        TARGET_BRANCH="HEAD"
+    fi
+
+    # Check if branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        echo "Error: branch '$BRANCH_NAME' does not exist" >&2
+        exit 1
+    fi
+
+    if [[ "$STAT_ONLY" == true ]]; then
+        git diff --stat "$TARGET_BRANCH..$BRANCH_NAME"
+    else
+        git diff "$TARGET_BRANCH..$BRANCH_NAME"
     fi
 }
 
@@ -686,6 +1056,186 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: merge
+# =============================================================================
+
+cmd_merge() {
+    local ID=""
+    local TARGET_BRANCH=""
+    local CLEANUP=false
+    local FORCE=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --into)    TARGET_BRANCH="$2"; shift 2 ;;
+            --cleanup) CLEANUP=true; shift ;;
+            --force)   FORCE=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib merge <id> [options]
+
+Merge an agent's work back into the main branch.
+
+Arguments:
+  id              Agent identifier
+
+Options:
+  --into BRANCH   Target branch to merge into (default: main or master)
+  --cleanup       Remove worktree and agent data after merge
+  --force         Don't ask for confirmation
+  -h, --help      Show this help
+
+The merge command:
+1. Checks for uncommitted changes in the agent's worktree
+2. Switches to the target branch
+3. Merges the agent's branch (agent/<id>)
+4. Optionally cleans up the worktree and data
+
+Examples:
+  ib merge task-a1b2
+  ib merge task-a1b2 --cleanup
+  ib merge task-a1b2 --into develop
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib merge <id> [options]" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local BRANCH_NAME="agent/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Check if worktree exists
+    local WORKTREE_PATH="$AGENT_DIR/repo"
+    if [[ ! -d "$WORKTREE_PATH" ]]; then
+        echo "Error: agent '$ID' has no worktree (was created with --no-worktree?)" >&2
+        exit 1
+    fi
+
+    # Check for uncommitted changes in the worktree
+    if [[ -n $(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null) ]]; then
+        echo "Error: agent '$ID' has uncommitted changes:" >&2
+        git -C "$WORKTREE_PATH" status --short >&2
+        echo "" >&2
+        echo "Please commit or discard changes first, or use 'ib send $ID' to ask the agent to commit." >&2
+        exit 1
+    fi
+
+    # Determine target branch
+    if [[ -z "$TARGET_BRANCH" ]]; then
+        # Try main, then master
+        if git show-ref --verify --quiet refs/heads/main; then
+            TARGET_BRANCH="main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            TARGET_BRANCH="master"
+        else
+            echo "Error: could not determine target branch (no main or master found)" >&2
+            echo "Use --into BRANCH to specify target branch" >&2
+            exit 1
+        fi
+    fi
+
+    # Check if agent branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        echo "Error: branch '$BRANCH_NAME' does not exist" >&2
+        exit 1
+    fi
+
+    # Show what will be merged
+    local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$commit_count" -eq 0 ]]; then
+        echo "Nothing to merge: $BRANCH_NAME has no new commits relative to $TARGET_BRANCH"
+        if [[ "$CLEANUP" == true ]]; then
+            echo "Proceeding with cleanup..."
+        else
+            exit 0
+        fi
+    else
+        echo "Will merge $commit_count commit(s) from $BRANCH_NAME into $TARGET_BRANCH:"
+        git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline
+        echo ""
+    fi
+
+    # Confirm if not forced
+    if [[ "$FORCE" != true && "$commit_count" -gt 0 ]]; then
+        local confirm
+        read -p "Proceed with merge? [y/N] " confirm
+        if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+
+    # Kill the agent session if still running
+    if tmux has-session -t "$ID" 2>/dev/null; then
+        echo "Stopping agent session..."
+        tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+        tmux kill-session -t "$ID"
+    fi
+
+    # Perform the merge
+    if [[ "$commit_count" -gt 0 ]]; then
+        echo "Merging $BRANCH_NAME into $TARGET_BRANCH..."
+        git checkout "$TARGET_BRANCH" || {
+            echo "Error: could not checkout $TARGET_BRANCH" >&2
+            exit 1
+        }
+        git merge "$BRANCH_NAME" -m "Merge agent $ID work" || {
+            echo "Error: merge failed (conflicts?). Resolve manually." >&2
+            exit 1
+        }
+        echo "Merged successfully!"
+    fi
+
+    # Cleanup if requested
+    if [[ "$CLEANUP" == true ]]; then
+        echo "Cleaning up..."
+        # Remove git worktree
+        git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
+            echo "Warning: could not remove worktree, removing directory manually" >&2
+            rm -rf "$WORKTREE_PATH"
+        }
+        # Delete the branch
+        git branch -D "$BRANCH_NAME" 2>/dev/null && echo "Deleted branch: $BRANCH_NAME"
+        # Remove agent directory
+        rm -rf "$AGENT_DIR"
+        echo "Cleaned up: $AGENT_DIR"
+    else
+        echo ""
+        echo "Worktree and branch preserved. To cleanup later:"
+        echo "  ib kill $ID --cleanup"
+    fi
+}
+
+# =============================================================================
 # MAIN DISPATCH
 # =============================================================================
 
@@ -697,6 +1247,18 @@ case "${1:-help}" in
     list|ls)
         shift
         cmd_list "$@"
+        ;;
+    status)
+        shift
+        cmd_status "$@"
+        ;;
+    diff)
+        shift
+        cmd_diff "$@"
+        ;;
+    merge)
+        shift
+        cmd_merge "$@"
         ;;
     send)
         shift
@@ -721,6 +1283,9 @@ Commands:
   list        Show all agents and their state
   send        Send input to an agent
   read        Read recent output from an agent
+  status      Show git status of agent's work (commits, changes)
+  diff        Show full diff of agent's work vs main
+  merge       Merge agent's work into main branch
   kill        Stop an agent
 
 Aliases:
@@ -736,7 +1301,10 @@ Examples:
   ib new-agent "verify all citations in docs/comparison.md"
   ib list
   ib read agent-abc123
+  ib status agent-abc123
+  ib diff agent-abc123
   ib send agent-abc123 "yes, proceed with option 2"
+  ib merge agent-abc123 --cleanup
   ib kill agent-abc123 --cleanup
 EOF
         ;;

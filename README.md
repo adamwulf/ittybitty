@@ -88,6 +88,9 @@ ib new-agent --yolo "research and update the pricing page"
 
 # Track parent relationship
 ib new-agent --parent task-abc "subtask for task-abc"
+
+# Leaf/worker agent (no sub-agent spawning capability)
+ib new-agent --leaf --parent coordinator "check link #1"
 ```
 
 ### List agents
@@ -140,7 +143,63 @@ ib send task-abc < answer.txt
 
 # Pipe from command
 echo "yes" | ib send task-abc
+
+# Explicitly specify sender (adds "[from worker-1]: " prefix)
+ib send --from worker-1 coordinator "I finished checking link #3"
 ```
+
+**Auto-prefixing**: When `ib send` is run from within an agent's worktree, messages are automatically prefixed with `[from <agent-id>]:` so recipients know who sent it.
+
+### Check agent's git work
+
+```bash
+# Show commits and changes summary
+ib status task-abc
+
+# Output:
+# Agent: agent-abc123
+# Branch: agent/agent-abc123
+# Worktree: .agents/agent-abc123/repo
+#
+# ═══ Commits (2) vs main ═══
+#   ef2f424 Add summary document
+#   abc1234 Fix typo in README
+#
+# ═══ Files Changed ═══
+#   2 files changed, 100 insertions(+), 5 deletions(-)
+```
+
+### Show full diff
+
+```bash
+# Full diff of agent's work vs main
+ib diff task-abc
+
+# Just the diffstat
+ib diff task-abc --stat
+```
+
+### Merge agent work
+
+```bash
+# Merge agent's branch into main
+ib merge task-abc
+
+# Merge and cleanup worktree/data
+ib merge task-abc --cleanup
+
+# Merge into a specific branch
+ib merge task-abc --into develop
+
+# Skip confirmation
+ib merge task-abc --cleanup --force
+```
+
+The merge command:
+1. Checks for uncommitted changes (fails if any)
+2. Shows commits that will be merged
+3. Merges the agent's branch into the target
+4. Optionally cleans up worktree and branch
 
 ### Kill an agent
 
@@ -153,6 +212,36 @@ ib kill task-abc --cleanup
 
 # Skip confirmation
 ib kill task-abc --cleanup --force
+```
+
+## Agent Context
+
+When an agent starts, it receives a context prefix with its prompt that includes:
+- Its own agent ID
+- Parent agent ID (if any)
+- Git worktree/branch information
+- Instructions for `ib` commands (unless `--leaf` mode)
+- Instructions for committing and exiting
+
+This context helps agents understand their role and how to manage sub-agents.
+
+Example prompt (stored in `.agents/<id>/prompt.txt`):
+```
+[AGENT CONTEXT]
+You are running as agent task-abc123 in a git worktree on branch agent/task-abc123.
+Your parent agent is: coordinator
+
+You have access to the 'ib' tool for multi-agent coordination:
+  ib new-agent --parent task-abc123 "task"   Spawn a sub-agent
+  ib list --parent task-abc123               List your sub-agents
+  ...
+
+When your task is complete:
+1. Commit any changes you made (git add && git commit)
+2. Exit normally - the orchestrator will handle merging your branch
+
+[USER TASK]
+Your actual task prompt here...
 ```
 
 ## How Communication Works
@@ -190,7 +279,10 @@ By default, each agent gets its own git worktree with an isolated branch:
 ```
 .agents/
   agent-a1b2c3d4/
-    meta.json       # Agent metadata
+    meta.json       # Agent metadata (id, prompt, parent, created, worktree, leaf)
+    prompt.txt      # Full prompt with context prefix
+    start.sh        # Startup script for tmux session
+    exit-check.sh   # Exit handler for uncommitted changes
     repo/           # Git worktree (branch: agent/agent-a1b2c3d4)
     output.log      # Captured output (after agent finishes)
 ```
@@ -203,16 +295,25 @@ By default, each agent gets its own git worktree with an isolated branch:
 
 **Merging agent work:**
 ```bash
-# After agent finishes
+# Recommended: use ib merge
+ib merge agent-a1b2c3d4 --cleanup
+
+# Or manually
 git checkout main
 git merge agent/agent-a1b2c3d4
-
-# Or cherry-pick specific commits
-git cherry-pick <commit>
 
 # Cleanup (removes worktree and branch)
 ib kill agent-a1b2c3d4 --cleanup
 ```
+
+### Exit Handler
+
+When an agent's Claude session ends, an exit handler automatically runs that:
+1. Checks for uncommitted changes and prompts to commit
+2. Checks for unpushed commits (if remote exists) and prompts to push
+3. Displays the branch name and merge instructions
+
+This ensures work isn't lost when agents complete their tasks.
 
 ## Example: Citation Verification
 
@@ -300,6 +401,27 @@ ib new-agent --yolo "do whatever it takes"
 
 Use `--yolo` only when you need full autonomy (with caution).
 
+### Agent Types
+
+**Regular agents** (default) can spawn and manage sub-agents:
+- `Bash(ib:*)` permissions are added to settings
+- Prompt includes instructions for `ib` commands
+- Can create hierarchical task breakdowns
+
+**Leaf/worker agents** (`--leaf` or `--worker`) are focused workers:
+- No `ib` permissions added - cannot spawn sub-agents
+- Prompt excludes sub-agent management instructions
+- Ideal for parallel tasks that don't need coordination
+
+```bash
+# Regular agent that coordinates workers
+ib new-agent --name coordinator "break this into subtasks and delegate"
+
+# Leaf agents for actual work
+ib new-agent --leaf --parent coordinator "check citation 1"
+ib new-agent --leaf --parent coordinator "check citation 2"
+```
+
 ## Limitations
 
 **No automatic coordination**: Agents don't know about each other unless you tell them.
@@ -340,4 +462,4 @@ tmux is already good at:
 - Capturing output
 - Routing input
 
-We just connect them with a single bash script (~600 lines, mostly argument parsing and help text).
+We just connect them with a single bash script (~1300 lines, mostly argument parsing and help text).
