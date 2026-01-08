@@ -13,11 +13,32 @@ AGENTS_DIR="${AGENTS_DIR:-.agents}"
 # HELPERS
 # =============================================================================
 
+# Check that we're in a git repo at its root directory
+require_git_root() {
+    # Check if in a git repo
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Error: must be run from within a git repository" >&2
+        exit 1
+    fi
+
+    # Check if at repo root
+    local git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    local cwd=$(pwd)
+    if [[ "$cwd" != "$git_root" ]]; then
+        echo "Error: must be run from git repository root" >&2
+        echo "  Current directory: $cwd" >&2
+        echo "  Repository root:   $git_root" >&2
+        exit 1
+    fi
+}
+
 # Format age from ISO timestamp
 format_age() {
     local created="$1"
     local now=$(date +%s)
-    local then=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${created%%[-+]*}" +%s 2>/dev/null || echo "$now")
+    # Strip timezone suffix (use % not %% to get shortest match from end)
+    local timestamp="${created%[-+]*}"
+    local then=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$timestamp" +%s 2>/dev/null || echo "$now")
     local diff=$((now - then))
 
     if [[ $diff -lt 60 ]]; then
@@ -57,11 +78,10 @@ cmd_new_agent() {
     local NAME=""
     local PARENT=""
     local USE_WORKTREE=true
-    local BRANCH=""
-    local WORKDIR=""
     local ALLOW_TOOLS=""
     local DENY_TOOLS=""
     local PRINT_MODE=false
+    local YOLO_MODE=false
     local PROMPT=""
 
     # Parse arguments
@@ -70,32 +90,37 @@ cmd_new_agent() {
             --name)        NAME="$2"; shift 2 ;;
             --parent)      PARENT="$2"; shift 2 ;;
             --no-worktree) USE_WORKTREE=false; shift ;;
-            --branch)      BRANCH="$2"; shift 2 ;;
-            --dir)         WORKDIR="$2"; shift 2 ;;
             --allow-tools) ALLOW_TOOLS="$2"; shift 2 ;;
             --deny-tools)  DENY_TOOLS="$2"; shift 2 ;;
             --print)       PRINT_MODE=true; shift ;;
+            --yolo)        YOLO_MODE=true; shift ;;
             -h|--help)
                 cat <<EOF
 Usage: ib new-agent [options] "prompt"
 
 Start a new Claude agent with the given prompt.
 
+Must be run from the root of a git repository. By default, each agent gets
+its own git worktree and branch for isolated work.
+
 Options:
   --name NAME           Custom agent name (default: auto-generated)
   --parent ID           Parent agent ID (for hierarchy tracking)
-  --no-worktree         Don't create a git worktree
-  --branch NAME         Branch name (default: same as agent id)
-  --dir PATH            Working directory (default: .agents/<id>/repo)
+  --no-worktree         Work in repo root instead of isolated worktree
   --allow-tools LIST    Only allow these tools (comma-separated)
   --deny-tools LIST     Deny these tools (comma-separated)
   --print               Run in one-shot mode (no interaction)
+  --yolo                Skip all permission prompts (full autonomy)
   -h, --help            Show this help
+
+By default, .claude/settings.local.json is copied to the worktree so agents
+inherit your approved tools. Use --yolo for fully autonomous agents.
 
 Examples:
   ib new-agent "verify citations in vs-freeform.md"
   ib new-agent --name checker --deny-tools Bash "audit the code"
   ib new --print "what files are in src/"
+  ib new --yolo "research and update the pricing page"
 EOF
                 exit 0
                 ;;
@@ -116,6 +141,9 @@ EOF
         exit 1
     fi
 
+    # Must be in git repo root
+    require_git_root
+
     # Generate agent ID
     local ID
     if [[ -n "$NAME" ]]; then
@@ -135,28 +163,22 @@ EOF
     mkdir -p "$AGENT_DIR"
 
     # Set working directory
-    local WORK_PATH
-    if [[ -n "$WORKDIR" ]]; then
-        WORK_PATH="$WORKDIR"
-    elif [[ "$USE_WORKTREE" == true ]]; then
-        WORK_PATH="$AGENT_DIR/repo"
-    else
-        WORK_PATH="$(pwd)"
-    fi
+    local WORK_PATH="$(pwd)"  # Git repo root (verified above)
 
     # Create git worktree if requested
     if [[ "$USE_WORKTREE" == true ]]; then
-        local BRANCH_NAME="${BRANCH:-$ID}"
-        if git rev-parse --git-dir >/dev/null 2>&1; then
-            git worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD 2>/dev/null || {
-                echo "Warning: could not create worktree, using current directory" >&2
-                WORK_PATH="$(pwd)"
-                USE_WORKTREE=false
-            }
-        else
-            echo "Warning: not in a git repo, skipping worktree" >&2
-            WORK_PATH="$(pwd)"
-            USE_WORKTREE=false
+        local BRANCH_NAME="agent/$ID"
+        git worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD || {
+            echo "Error: could not create worktree" >&2
+            rm -rf "$AGENT_DIR"
+            exit 1
+        }
+        WORK_PATH="$AGENT_DIR/repo"
+
+        # Copy local claude settings so agent inherits approved tools
+        if [[ -f ".claude/settings.local.json" ]]; then
+            mkdir -p "$AGENT_DIR/repo/.claude"
+            cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
         fi
     fi
 
@@ -167,15 +189,16 @@ EOF
   "prompt": $(echo "$PROMPT" | jq -Rs .),
   "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
-  "worktree": $USE_WORKTREE,
-  "print_mode": $PRINT_MODE,
-  "allow_tools": $(if [[ -n "$ALLOW_TOOLS" ]]; then echo "\"$ALLOW_TOOLS\""; else echo "null"; fi),
-  "deny_tools": $(if [[ -n "$DENY_TOOLS" ]]; then echo "\"$DENY_TOOLS\""; else echo "null"; fi)
+  "worktree": $USE_WORKTREE
 }
 EOF
 
     # Build claude command
     local CLAUDE_CMD="claude"
+
+    if [[ "$YOLO_MODE" == true ]]; then
+        CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+    fi
 
     if [[ "$PRINT_MODE" == true ]]; then
         CLAUDE_CMD="$CLAUDE_CMD --print"
@@ -553,7 +576,7 @@ EOF
                 rm -rf "$AGENT_DIR/repo"
             }
             # Also try to delete the branch
-            git branch -D "$ID" 2>/dev/null || true
+            git branch -D "agent/$ID" 2>/dev/null || true
         fi
 
         # Remove agent directory

@@ -63,16 +63,18 @@ ln -s ~/Developer/bash/ittybitty/ib /usr/local/bin/ib
 
 ## Usage
 
+**Important:** Must be run from the root of a git repository.
+
 ### Spawn an agent
 
 ```bash
-# Basic spawn
+# Basic spawn (creates worktree on branch agent/<id>)
 ib new-agent "verify all citations in docs/comparison.md"
 
-# With custom name
+# With custom name (branch will be agent/citation-checker)
 ib new-agent --name citation-checker "verify citations"
 
-# Without git worktree (work in current directory)
+# Without git worktree (work directly in repo root)
 ib new-agent --no-worktree "quick analysis"
 
 # Limit tools available to the agent
@@ -80,6 +82,9 @@ ib new-agent --deny-tools Bash,Write "research only, no changes"
 
 # One-shot mode (runs and exits, no interaction)
 ib new --print "list all TODO comments in src/"
+
+# Full autonomy - skip all permission prompts
+ib new-agent --yolo "research and update the pricing page"
 
 # Track parent relationship
 ib new-agent --parent task-abc "subtask for task-abc"
@@ -180,18 +185,19 @@ The `ib list` command shows agents as "waiting" if their recent output ends with
 
 ## Git Worktrees
 
-By default, each agent gets its own git worktree:
+By default, each agent gets its own git worktree with an isolated branch:
 
 ```
 .agents/
   agent-a1b2c3d4/
     meta.json       # Agent metadata
-    repo/           # Git worktree (branch: agent-a1b2c3d4)
+    repo/           # Git worktree (branch: agent/agent-a1b2c3d4)
     output.log      # Captured output (after agent finishes)
 ```
 
 **Benefits:**
 - Agents can't step on each other's changes
+- Each agent works on its own `agent/<id>` branch
 - Easy to review/merge work from each agent
 - Clean rollback if an agent makes bad changes
 
@@ -199,12 +205,12 @@ By default, each agent gets its own git worktree:
 ```bash
 # After agent finishes
 git checkout main
-git merge agent-a1b2c3d4
+git merge agent/agent-a1b2c3d4
 
 # Or cherry-pick specific commits
 git cherry-pick <commit>
 
-# Cleanup
+# Cleanup (removes worktree and branch)
 ib kill agent-a1b2c3d4 --cleanup
 ```
 
@@ -272,6 +278,19 @@ $ ib list --parent $MY_ID
 
 The `--parent` flag is just metadata for tracking—it doesn't create any special behavior.
 
+## Permissions
+
+By default, agents inherit your permission settings:
+- `.claude/settings.local.json` is copied to each worktree
+- Agents get the same approved tools as your main session
+
+For fully autonomous agents that shouldn't be blocked by permission prompts:
+```bash
+ib new-agent --yolo "do whatever it takes"
+```
+
+This adds `--dangerously-skip-permissions` to the claude command. Use with caution.
+
 ## Limitations
 
 **No automatic coordination**: Agents don't know about each other unless you tell them.
@@ -312,4 +331,4 @@ tmux is already good at:
 - Capturing output
 - Routing input
 
-We just connect them with ~150 lines of bash.
+We just connect them with a single bash script (~600 lines, mostly argument parsing and help text).
