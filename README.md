@@ -282,14 +282,23 @@ The `--parent` flag is just metadata for tracking—it doesn't create any specia
 
 By default, agents inherit your permission settings:
 - `.claude/settings.local.json` is copied to each worktree
+- `Bash(ib:*)` is automatically added so agents can coordinate sub-agents
 - Agents get the same approved tools as your main session
+- Non-allowed tools are auto-rejected (no prompts blocking automation)
 
-For fully autonomous agents that shouldn't be blocked by permission prompts:
+### Permission Modes
+
+**Default mode** - auto-rejects non-allowed tools, auto-accepts workspace trust:
+```bash
+ib new-agent "do the task"
+```
+
+**Yolo mode** - auto-accepts everything (full autonomy):
 ```bash
 ib new-agent --yolo "do whatever it takes"
 ```
 
-This adds `--dangerously-skip-permissions` to the claude command. Use with caution.
+Use `--yolo` only when you need full autonomy (with caution).
 
 ## Limitations
 

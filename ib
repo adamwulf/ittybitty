@@ -113,13 +113,16 @@ Options:
   --yolo                Skip all permission prompts (full autonomy)
   -h, --help            Show this help
 
+Permission modes:
+  (default)   Auto-rejects non-allowed tools, auto-accepts workspace trust
+  --yolo      Auto-accepts everything (full autonomy, use with caution)
+
 By default, .claude/settings.local.json is copied to the worktree so agents
-inherit your approved tools. Use --yolo for fully autonomous agents.
+inherit your approved tools, with Bash(ib:*) added for agent coordination.
 
 Examples:
   ib new-agent "verify citations in vs-freeform.md"
-  ib new-agent --name checker --deny-tools Bash "audit the code"
-  ib new --print "what files are in src/"
+  ib new-agent --name checker "research and summarize"
   ib new --yolo "research and update the pricing page"
 EOF
                 exit 0
@@ -176,9 +179,19 @@ EOF
         WORK_PATH="$AGENT_DIR/repo"
 
         # Copy local claude settings so agent inherits approved tools
+        mkdir -p "$AGENT_DIR/repo/.claude"
         if [[ -f ".claude/settings.local.json" ]]; then
-            mkdir -p "$AGENT_DIR/repo/.claude"
-            cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
+            # Copy settings and add Bash(ib:*) to allowed tools for agent coordination
+            if command -v jq &>/dev/null; then
+                jq '.permissions.allow += ["Bash(ib:*)"] | .permissions.allow |= unique' \
+                    ".claude/settings.local.json" > "$AGENT_DIR/repo/.claude/settings.local.json"
+            else
+                # Fallback: just copy if jq not available
+                cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
+            fi
+        else
+            # Create minimal settings with ib allowed
+            echo '{"permissions":{"allow":["Bash(ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
         fi
     fi
 
@@ -198,6 +211,9 @@ EOF
 
     if [[ "$YOLO_MODE" == true ]]; then
         CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions --permission-mode bypassPermissions"
+    else
+        # Default: auto-reject non-allowed tools (strict mode)
+        CLAUDE_CMD="$CLAUDE_CMD --permission-mode dontAsk"
     fi
 
     if [[ "$PRINT_MODE" == true ]]; then
@@ -219,9 +235,10 @@ EOF
     tmux new-session -d -s "$ID" -c "$WORK_PATH" "$CLAUDE_CMD"
 
     # For non-yolo mode, auto-accept the workspace trust dialog
+    # (yolo bypasses this entirely, but default and strict still see it)
     if [[ "$YOLO_MODE" != true ]]; then
-        sleep 1
-        tmux send-keys -t "$ID" "1" Enter
+        sleep 2
+        tmux send-keys -t "$ID" Enter
     fi
 
     # Output the agent ID
