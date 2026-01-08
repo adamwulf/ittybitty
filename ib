@@ -197,7 +197,7 @@ EOF
     local CLAUDE_CMD="claude"
 
     if [[ "$YOLO_MODE" == true ]]; then
-        CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions"
+        CLAUDE_CMD="$CLAUDE_CMD --dangerously-skip-permissions --permission-mode bypassPermissions"
     fi
 
     if [[ "$PRINT_MODE" == true ]]; then
@@ -217,6 +217,12 @@ EOF
 
     # Start tmux session
     tmux new-session -d -s "$ID" -c "$WORK_PATH" "$CLAUDE_CMD"
+
+    # For non-yolo mode, auto-accept the workspace trust dialog
+    if [[ "$YOLO_MODE" != true ]]; then
+        sleep 1
+        tmux send-keys -t "$ID" "1" Enter
+    fi
 
     # Output the agent ID
     echo "$ID"
