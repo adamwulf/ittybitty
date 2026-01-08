@@ -13,6 +13,51 @@ AGENTS_DIR="${AGENTS_DIR:-.agents}"
 # HELPERS
 # =============================================================================
 
+# Resolve a partial agent ID to a full ID
+# Returns the full ID if exactly one match, errors otherwise
+resolve_agent_id() {
+    local partial="$1"
+    local matches=()
+
+    # Check for exact match first (tmux session or directory)
+    if tmux has-session -t "$partial" 2>/dev/null || [[ -d "$AGENTS_DIR/$partial" ]]; then
+        echo "$partial"
+        return 0
+    fi
+
+    # Look for partial matches in agent directories
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local id=$(basename "$agent_dir")
+        if [[ "$id" == *"$partial"* ]]; then
+            matches+=("$id")
+        fi
+    done
+
+    # Also check tmux sessions that might not have directories
+    while IFS= read -r session; do
+        if [[ "$session" == *"$partial"* ]] && [[ ! " ${matches[*]} " =~ " $session " ]]; then
+            matches+=("$session")
+        fi
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^agent-')
+
+    case ${#matches[@]} in
+        0)
+            echo "Error: no agent matching '$partial'" >&2
+            return 1
+            ;;
+        1)
+            echo "${matches[0]}"
+            return 0
+            ;;
+        *)
+            echo "Error: '$partial' matches multiple agents:" >&2
+            printf "  %s\n" "${matches[@]}" >&2
+            return 1
+            ;;
+    esac
+}
+
 # Check that we're in a git repo at its root directory
 require_git_root() {
     # Check if in a git repo
@@ -384,10 +429,14 @@ EOF
         exit 1
     fi
 
-    local ID="$1"
+    local INPUT_ID="$1"
     shift
 
-    # Check if agent exists
+    # Resolve partial ID
+    local ID
+    ID=$(resolve_agent_id "$INPUT_ID") || exit 1
+
+    # Check if agent is running
     if ! tmux has-session -t "$ID" 2>/dev/null; then
         echo "Error: agent '$ID' is not running" >&2
         exit 1
@@ -469,6 +518,9 @@ EOF
         echo "Usage: ib read <id> [options]" >&2
         exit 1
     fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
 
     # Check if agent session exists
     if ! tmux has-session -t "$ID" 2>/dev/null; then
@@ -554,6 +606,9 @@ EOF
         echo "Usage: ib kill <id> [options]" >&2
         exit 1
     fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
 
     local AGENT_DIR="$AGENTS_DIR/$ID"
 
