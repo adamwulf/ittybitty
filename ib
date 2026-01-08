@@ -228,7 +228,7 @@ EOF
         if [[ -f ".claude/settings.local.json" ]]; then
             # Copy settings and add Bash(ib:*) to allowed tools for agent coordination
             if command -v jq &>/dev/null; then
-                jq '.permissions.allow += ["Bash(ib:*)"] | .permissions.allow |= unique' \
+                jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
                     ".claude/settings.local.json" > "$AGENT_DIR/repo/.claude/settings.local.json"
             else
                 # Fallback: just copy if jq not available
@@ -236,7 +236,29 @@ EOF
             fi
         else
             # Create minimal settings with ib allowed
-            echo '{"permissions":{"allow":["Bash(ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
+            echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
+        fi
+    else
+        # Non-worktree mode: ensure Bash(ib:*) and Bash(./ib:*) are in repo settings
+        if command -v jq &>/dev/null && [[ -f ".claude/settings.local.json" ]]; then
+            # Check if both patterns are already allowed
+            local needs_update=false
+            if ! jq -e '.permissions.allow | index("Bash(ib:*)")' ".claude/settings.local.json" &>/dev/null; then
+                needs_update=true
+            fi
+            if ! jq -e '.permissions.allow | index("Bash(./ib:*)")' ".claude/settings.local.json" &>/dev/null; then
+                needs_update=true
+            fi
+            if [[ "$needs_update" == true ]]; then
+                local tmp=$(mktemp)
+                jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
+                    ".claude/settings.local.json" > "$tmp" && mv "$tmp" ".claude/settings.local.json"
+                echo "Added Bash(ib:*) and Bash(./ib:*) to .claude/settings.local.json" >&2
+            fi
+        elif [[ ! -f ".claude/settings.local.json" ]]; then
+            mkdir -p ".claude"
+            echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > ".claude/settings.local.json"
+            echo "Created .claude/settings.local.json with ib allowed" >&2
         fi
     fi
 
