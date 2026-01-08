@@ -1,7 +1,0 @@
-{
-  "id": "agent-e77c83b3",
-  "prompt": "check running agents, and make sure they're all working correctly. use the ib (ittybitty) - multi-agent orchestration for Claude Code\n\nUsage: ib <command> [options]\n\nCommands:\n  new-agent   Start a new agent with a prompt\n  list        Show all agents and their state\n  send        Send input to an agent\n  read        Read recent output from an agent\n  kill        Stop an agent\n\nAliases:\n  new         Alias for new-agent\n  ls          Alias for list\n\nEnvironment:\n  AGENTS_DIR    Directory for agent data (default: .agents)\n\nRun 'ib <command> --help' for command-specific help.\n\nExamples:\n  ib new-agent \"verify all citations in docs/comparison.md\"\n  ib list\n  ib read agent-abc123\n  ib send agent-abc123 \"yes, proceed with option 2\"\n  ib kill agent-abc123 --cleanup tool\n",
-  "parent": null,
-  "created": "2026-01-08T15:51:19-06:00",
-  "worktree": true
-}
