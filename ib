@@ -397,6 +397,18 @@ EOF
         exit 1
     fi
 
+    # Auto-detect parent if not explicitly set and we're in an agent worktree
+    if [[ -z "$PARENT" ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+            # Find the agent directory and read meta.json
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                PARENT=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        fi
+    fi
+
     # Load config for PR settings
     load_config
 
@@ -572,6 +584,31 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib merge <agent-id>                         Merge agent's work and close it
   ib kill <agent-id>                          Stop an agent without merging
 
+TASK SIZING STRATEGY:
+When you receive a task, think about what is needed to accomplish it, then decide:
+
+  SMALL TASK (do yourself)
+    - One agent can finish quickly
+    - Just do the task yourself - don't spawn sub-agents unnecessarily
+
+  MEDIUM TASK (2-3 parallel agents)
+    - Can be split into 2-3 independent subtasks
+    - Spawn leaf agents to work in parallel
+    - After spawning them, enter WAITING mode - you'll be notified when they complete
+
+  LARGE TASK (multiple stages)
+    - Requires multiple stages that must run serially
+    - Use TodoWrite tool to track stages
+    - For each stage, spawn leaf agents to work in parallel
+    - After spawning agents for a stage, enter WAITING mode
+    - When notified of completion, review work and move to next stage
+
+AUTOMATIC NOTIFICATIONS:
+  - A watchdog monitors each sub-agent you spawn
+  - You will be notified when sub-agents complete OR when they need help
+  - Once you've created agents to work, enter WAITING mode - don't poll 'ib list'
+  - The watchdog ensures you're woken up when action is needed
+
 If \`ib merge\` fails due to conflicts, choose the best strategy:
 1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
 2. Spawn a sub-agent to handle the merge resolution, then monitor it to completion
@@ -729,6 +766,11 @@ EOF
     if [[ "$YOLO_MODE" != true ]]; then
         sleep 2
         tmux send-keys -t "$TMUX_SESSION" Enter
+    fi
+
+    # Auto-spawn watchdog if agent has a parent
+    if [[ -n "$PARENT" ]]; then
+        ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
 
     # Output the agent ID
