@@ -144,11 +144,11 @@ ib send task-abc < answer.txt
 # Pipe from command
 echo "yes" | ib send task-abc
 
-# Explicitly specify sender (adds "[from worker-1]: " prefix)
+# Explicitly specify sender (adds "[sent by agent worker-1]: " prefix)
 ib send --from worker-1 coordinator "I finished checking link #3"
 ```
 
-**Auto-prefixing**: When `ib send` is run from within an agent's worktree, messages are automatically prefixed with `[from <agent-id>]:` so recipients know who sent it.
+**Auto-prefixing**: When `ib send` is run from within an agent's worktree, messages are automatically prefixed with `[sent by agent <agent-id>]:` so recipients know who sent it.
 
 ### Check agent's git work
 

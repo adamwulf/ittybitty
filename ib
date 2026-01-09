@@ -677,11 +677,11 @@ Arguments:
   message     Text to send (optional if piping)
 
 Options:
-  --from ID   Prefix message with "[from <ID>]: " (auto-detected in agent worktrees)
+  --from ID   Prefix message with "[sent by agent <ID>]: " (auto-detected in agent worktrees)
   -h, --help  Show this help
 
-When run from within an agent's worktree, --from is automatically set to that
-agent's ID, so messages are prefixed with the sender's identity.
+When run from within an agent's worktree, --from is automatically detected by
+reading the agent's meta.json, so messages are prefixed with the sender's identity.
 
 Examples:
   ib send task-a1b2 "Option 2 - just verify links"
@@ -738,14 +738,17 @@ EOF
     if [[ -z "$FROM_ID" ]]; then
         local current_dir=$(pwd)
         if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
-            # Extract agent ID from path
-            FROM_ID=$(echo "$current_dir" | sed 's|.*/.agents/\([^/]*\)/repo.*|\1|')
+            # Find the agent directory and read meta.json
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                FROM_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
         fi
     fi
 
-    # Prefix message if FROM_ID is set
+    # Prefix message if FROM_ID is set (sent by an agent)
     if [[ -n "$FROM_ID" ]]; then
-        MESSAGE="[from $FROM_ID]: $MESSAGE"
+        MESSAGE="[sent by agent $FROM_ID]: $MESSAGE"
     fi
 
     # Send to tmux session
