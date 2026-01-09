@@ -241,19 +241,24 @@ get_state() {
         return
     fi
 
-    # Capture recent output to detect state
-    local recent=$(tmux capture-pane -t "$id" -p 2>/dev/null | tail -20)
+    # Capture visible pane for state detection
+    local recent=$(tmux capture-pane -t "$id" -p -S -20 2>/dev/null)
 
-    # Check for completion signal (task agents say this when done)
-    if echo "$recent" | grep -qF 'I HAVE COMPLETED THE GOAL'; then
-        echo "complete"
+    # Check for Claude Code processing indicators (running) FIRST
+    # These indicate active work even if completion phrase exists in context
+    # - "esc to interrupt" appears when Claude is actively generating
+    # - "ctrl+b ctrl+b" appears when a bash command is running
+    # - "⎿  Running…" appears when bash tool is executing
+    if echo "$recent" | grep -qE 'esc to interrupt|ctrl\+b ctrl\+b|⎿  Running'; then
+        echo "running"
         return
     fi
 
-    # Check for Claude Code processing indicators (running)
-    # "esc to interrupt" appears when Claude is actively working
-    if echo "$recent" | grep -qE 'esc to interrupt'; then
-        echo "running"
+    # Check for completion signal (task agents say this when done)
+    # Use last 15 lines to see past status bar but avoid matching instructions
+    local last_lines=$(echo "$recent" | tail -15)
+    if echo "$last_lines" | grep -qF 'I HAVE COMPLETED THE GOAL'; then
+        echo "complete"
         return
     fi
 
