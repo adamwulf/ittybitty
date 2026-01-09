@@ -1,6 +1,8 @@
 # ittybitty (`ib`)
 
-A minimal multi-agent orchestration tool for Claude Code. Spawn persistent background agents in tmux sessions with isolated git worktrees—no elaborate protocols, just text in and out.
+How simple can multi-agent orchestration be? Just four features: agents that spawn agents, inter-agent communication, status tracking, and isolated git worktrees.
+
+`ib` uses only `claude`, `tmux`, `jq`, and `git` to provide a single CLI for spawning and coordinating background agents. Use directly from command line or within a Claude Code session.
 
 ## Installation
 
@@ -17,7 +19,7 @@ ln -s /path/to/ittybitty/ib /usr/local/bin/ib
 
 ## Adding `ib` to Your Project
 
-Add this to your project's `CLAUDE.md` to make Claude aware of `ib`:
+To make Claude aware of `ib`, add this to your project's `CLAUDE.md`:
 
 ```markdown
 <ittybitty>
