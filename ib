@@ -274,6 +274,7 @@ cmd_new_agent() {
     local PRINT_MODE=false
     local YOLO_MODE=false
     local LEAF_MODE=false
+    local MODEL=""
     local PROMPT=""
 
     # Parse arguments
@@ -287,6 +288,7 @@ cmd_new_agent() {
             --print)       PRINT_MODE=true; shift ;;
             --yolo)        YOLO_MODE=true; shift ;;
             --leaf|--worker) LEAF_MODE=true; shift ;;
+            --model)       MODEL="$2"; shift 2 ;;
             -h|--help)
                 cat <<EOF
 Usage: ib new-agent [options] "prompt"
@@ -305,6 +307,7 @@ Options:
   --print               Run in one-shot mode (no interaction)
   --yolo                Skip all permission prompts (full autonomy)
   --leaf, --worker      Create a leaf agent (no sub-agent spawning)
+  --model MODEL         Claude model to use (e.g., opus, sonnet, haiku)
   -h, --help            Show this help
 
 Permission modes:
@@ -335,6 +338,7 @@ Examples:
   ib new-agent --name checker "research and summarize"
   ib new --yolo "research and update the pricing page"
   ib new --leaf --parent coordinator "check link #1"
+  ib new --model sonnet "quick task for a faster model"
 EOF
                 exit 0
                 ;;
@@ -446,7 +450,8 @@ EOF
   "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
   "worktree": $USE_WORKTREE,
-  "leaf": $LEAF_MODE
+  "leaf": $LEAF_MODE,
+  "model": $(if [[ -n "$MODEL" ]]; then echo "\"$MODEL\""; else echo "null"; fi)
 }
 EOF
 
@@ -543,6 +548,9 @@ $PROMPT"
     fi
     if [[ -n "$DENY_TOOLS" ]]; then
         CLAUDE_ARGS="$CLAUDE_ARGS --disallowedTools $DENY_TOOLS"
+    fi
+    if [[ -n "$MODEL" ]]; then
+        CLAUDE_ARGS="$CLAUDE_ARGS --model $MODEL"
     fi
 
     # Build exit handler script
@@ -1433,6 +1441,10 @@ EOF
         exit 1
     fi
 
+    # Read model from meta.json if set
+    local MODEL=$(jq -r '.model // ""' "$META_FILE" 2>/dev/null)
+    [[ "$MODEL" == "null" ]] && MODEL=""
+
     # Determine working directory
     local WORK_PATH="$AGENT_DIR/repo"
     if [[ ! -d "$WORK_PATH" ]]; then
@@ -1452,6 +1464,9 @@ EOF
         CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
     else
         CLAUDE_ARGS="--permission-mode dontAsk"
+    fi
+    if [[ -n "$MODEL" ]]; then
+        CLAUDE_ARGS="$CLAUDE_ARGS --model $MODEL"
     fi
 
     # Get git root for PATH

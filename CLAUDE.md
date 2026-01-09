@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ittybitty (`ib`) is a minimal multi-agent orchestration tool for Claude Code. It uses tmux sessions and git worktrees to spawn and manage multiple Claude agents in parallel. The entire tool is a single bash script (`ib`, ~1400 lines).
+ittybitty (`ib`) is a minimal multi-agent orchestration tool for Claude Code. It uses tmux sessions and git worktrees to spawn and manage multiple Claude agents in parallel. The entire tool is a single bash script (`ib`, ~1800 lines).
 
 ## Architecture
 
@@ -27,21 +27,21 @@ Leaf Agents (focused workers, no sub-agents)
 
 ## Script Structure
 
-The `ib` script is organized into commands, each with its own section:
+The `ib` script is organized into commands, each implemented as a function:
 
-| Line | Command | Purpose |
-|------|---------|---------|
-| 222 | `new-agent` | Spawn new agent with worktree/tmux session |
-| 607 | `list` | Show running/finished agents |
-| 717 | `send` | Send input to agent's stdin |
-| 831 | `look` | Watch agent's tmux output |
-| 922 | `status` | Show agent's git commits/changes |
-| 1049 | `diff` | Show full diff of agent's work |
-| 1137 | `kill` | Close agent without merging |
-| 1241 | `resume` | Restart a stopped agent's session |
-| 1398 | `merge` | Merge agent's branch and close |
+| Function | Command | Purpose |
+|----------|---------|---------|
+| `cmd_new_agent` | `new-agent` | Spawn new agent with worktree/tmux session |
+| `cmd_list` | `list` | Show running/finished agents |
+| `cmd_send` | `send` | Send input to agent's stdin |
+| `cmd_look` | `look` | Watch agent's tmux output |
+| `cmd_status` | `status` | Show agent's git commits/changes |
+| `cmd_diff` | `diff` | Show full diff of agent's work |
+| `cmd_kill` | `kill` | Close agent without merging |
+| `cmd_resume` | `resume` | Restart a stopped agent's session |
+| `cmd_merge` | `merge` | Merge agent's branch and close |
 
-Helper functions are at the top (lines 1-221): `load_config`, `build_agent_settings`, `resolve_agent_id`, `get_state`, etc.
+Helper functions at the top: `load_config`, `build_agent_settings`, `resolve_agent_id`, `get_state`, `archive_agent_output`, etc.
 
 ## Configuration
 

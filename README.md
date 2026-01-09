@@ -247,6 +247,10 @@ ib new-agent --parent task-abc "subtask for task-abc"
 
 # Leaf/worker agent (no sub-agent spawning capability)
 ib new-agent --leaf --parent coordinator "check link #1"
+
+# Use a specific model (e.g., opus, sonnet, haiku)
+ib new-agent --model sonnet "quick task for a faster model"
+ib new-agent --model haiku --leaf "simple formatting task"
 ```
 
 ### List agents
@@ -654,4 +658,4 @@ tmux is already good at:
 - Capturing output
 - Routing input
 
-We just connect them with a single bash script (~1300 lines, mostly argument parsing and help text).
+We just connect them with a single bash script (~1800 lines, mostly argument parsing and help text).
