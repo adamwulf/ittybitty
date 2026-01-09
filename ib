@@ -13,6 +13,71 @@ AGENTS_DIR="${AGENTS_DIR:-.agents}"
 # HELPERS
 # =============================================================================
 
+# Load config from .ittybitty.json if it exists
+# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY
+load_config() {
+    CONFIG_TASK_ALLOW=""
+    CONFIG_TASK_DENY=""
+    CONFIG_LEAF_ALLOW=""
+    CONFIG_LEAF_DENY=""
+
+    local config_file=".ittybitty.json"
+    if [[ ! -f "$config_file" ]]; then
+        return 0
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        echo "Warning: jq not available, cannot read $config_file" >&2
+        return 0
+    fi
+
+    # Read task permissions
+    CONFIG_TASK_ALLOW=$(jq -r '.permissions.task.allow // [] | @json' "$config_file" 2>/dev/null)
+    CONFIG_TASK_DENY=$(jq -r '.permissions.task.deny // [] | @json' "$config_file" 2>/dev/null)
+
+    # Read leaf permissions
+    CONFIG_LEAF_ALLOW=$(jq -r '.permissions.leaf.allow // [] | @json' "$config_file" 2>/dev/null)
+    CONFIG_LEAF_DENY=$(jq -r '.permissions.leaf.deny // [] | @json' "$config_file" 2>/dev/null)
+}
+
+# Build settings.local.json content for an agent worktree
+# Args: $1 = "task" or "leaf"
+build_agent_settings() {
+    local agent_type="$1"
+    local base_settings="{}"
+
+    # Start with existing settings if available
+    if [[ -f ".claude/settings.local.json" ]]; then
+        base_settings=$(cat ".claude/settings.local.json")
+    fi
+
+    # Load config
+    load_config
+
+    # Determine which permissions to use
+    local allow_json="[]"
+    local deny_json="[]"
+
+    if [[ "$agent_type" == "leaf" && "$CONFIG_LEAF_ALLOW" != "[]" && "$CONFIG_LEAF_ALLOW" != "" ]]; then
+        allow_json="$CONFIG_LEAF_ALLOW"
+        deny_json="${CONFIG_LEAF_DENY:-[]}"
+    elif [[ "$CONFIG_TASK_ALLOW" != "[]" && "$CONFIG_TASK_ALLOW" != "" ]]; then
+        allow_json="$CONFIG_TASK_ALLOW"
+        deny_json="${CONFIG_TASK_DENY:-[]}"
+    fi
+
+    # Always include ib permissions
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)"]'
+
+    # Merge everything together
+    echo "$base_settings" | jq --argjson ib "$ib_perms" \
+        --argjson cfg_allow "$allow_json" \
+        --argjson cfg_deny "$deny_json" '
+        .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
+        .permissions.deny = ((.permissions.deny // []) + $cfg_deny | unique)
+    '
+}
+
 # Resolve a partial agent ID to a full ID
 # Returns the full ID if exactly one match, errors otherwise
 resolve_agent_id() {
@@ -169,8 +234,20 @@ Agent types:
   (default)   Can spawn and manage sub-agents via 'ib' commands
   --leaf      Worker agent - cannot spawn sub-agents, focused on task
 
-By default, .claude/settings.local.json is copied to the worktree so agents
-inherit your approved tools, with Bash(ib:*) added for agent coordination.
+Configuration:
+  Create .ittybitty.json in your repo root to configure agent permissions:
+
+    {
+      "permissions": {
+        "task": { "allow": ["Read", "Write", "Edit"], "deny": [] },
+        "leaf": { "allow": ["Read", "Write"], "deny": [] }
+      }
+    }
+
+  - permissions.task: Applied to regular (coordinator) agents
+  - permissions.leaf: Applied to leaf/worker agents
+  - Bash(ib:*) is always added for agent coordination
+  - Base settings from .claude/settings.local.json are merged in
 
 Examples:
   ib new-agent "verify citations in vs-freeform.md"
@@ -231,19 +308,20 @@ EOF
         }
         WORK_PATH="$AGENT_DIR/repo"
 
-        # Copy local claude settings so agent inherits approved tools
-        # Both regular and leaf agents get ib permissions (leaf can read/send, just not spawn)
+        # Build agent settings with permissions from .ittybitty.json config
         mkdir -p "$AGENT_DIR/repo/.claude"
-        if [[ -f ".claude/settings.local.json" ]]; then
-            if command -v jq &>/dev/null; then
-                jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
-                    ".claude/settings.local.json" > "$AGENT_DIR/repo/.claude/settings.local.json"
-            else
-                # Fallback: just copy if jq not available
-                cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
-            fi
+        local agent_type="task"
+        [[ "$LEAF_MODE" == true ]] && agent_type="leaf"
+
+        if command -v jq &>/dev/null; then
+            build_agent_settings "$agent_type" > "$AGENT_DIR/repo/.claude/settings.local.json"
         else
-            echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
+            # Fallback: minimal settings if jq not available
+            if [[ -f ".claude/settings.local.json" ]]; then
+                cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
+            else
+                echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
+            fi
         fi
     else
         # Non-worktree mode: ensure ib permissions are in repo settings
@@ -1334,6 +1412,9 @@ Aliases:
 
 Environment:
   AGENTS_DIR    Directory for agent data (default: .agents)
+
+Configuration:
+  .ittybitty.json   Configure agent permissions (see 'ib new-agent --help')
 
 Run 'ib <command> --help' for command-specific help.
 
