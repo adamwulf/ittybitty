@@ -59,7 +59,15 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
 
-### Commands
+### Workflow
+
+1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
+2. **Monitor**: `ib list` — check agent states periodically
+3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
+4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
+5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
+
+### All Commands
 
 | Command | Description |
 |---------|-------------|
@@ -82,15 +90,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 | `complete` | Agent signaled task completion (merge or kill to close) |
 | `stopped` | Session ended unexpectedly, needs user intervention |
 
-### Workflow
-
-1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
-2. **Monitor**: `ib list` — check agent states periodically
-3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
-4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
-5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
-
-### Key Differences from Task Tool
+### Key Differences from Claude's Task Tool
 
 | Task Tool | ib Agents |
 |-----------|-----------|
@@ -379,16 +379,52 @@ When an agent starts, it receives a context prefix with its prompt that includes
 
 This context helps agents understand their role and how to manage sub-agents.
 
-Example prompt (stored in `.ittybitty/agents/<id>/prompt.txt`):
+Example prompt for a **task agent** (stored in `.ittybitty/agents/<id>/prompt.txt`):
 ```
 [AGENT CONTEXT]
 You are running as agent task-abc123 in a git worktree on branch agent/task-abc123.
 Your parent agent is: coordinator
 
 You have access to the 'ib' tool for multi-agent coordination:
-  ib new-agent --parent task-abc123 "task"   Spawn a sub-agent
-  ib list --parent task-abc123               List your sub-agents
-  ...
+  ib new-agent --parent task-abc123 --leaf "task"   Spawn a leaf sub-agent
+  ib list --parent task-abc123                      List your sub-agents
+  ib look <agent-id>                                Read an agent's output
+  ib send <agent-id> "message"                      Send input to an agent
+  ib status <agent-id>                              Check agent's git commits
+  ib merge <agent-id>                               Merge agent's work and close it
+  ib kill <agent-id>                                Stop an agent without merging
+
+Your workflow:
+1. Think through what specific tasks need to be done to accomplish the goal.
+   These tasks should be specific and have clear completion guidelines.
+2. Track these tasks in your Claude Code tasks tracker (TodoWrite tool).
+3. Spawn a sub-agent for each independent task, providing the specific task
+   and clear completion guidelines.
+4. Monitor child tasks every 30s with `ib list --parent task-abc123`
+   - If a sub-agent is `waiting`, use `ib look <agent-id>` to see what it needs.
+   - If a sub-agent is `complete`, merge or kill it to close the session.
+   - If a sub-agent is `stopped`, STOP and notify the user immediately.
+5. When merging successful agents, commit any changes you made directly.
+
+Once you have completed your primary goal by merging in successful agents,
+double check that you have completed the goal.
+If so, say the exact phrase: "I HAVE COMPLETED THE GOAL"
+This phrase signals to the orchestrator that you are done.
+
+[USER TASK]
+Your actual task prompt here...
+```
+
+Example prompt for a **leaf agent** (`--leaf` flag):
+```
+[AGENT CONTEXT]
+You are running as agent worker-xyz in a git worktree on branch agent/worker-xyz.
+Your parent agent is: task-abc123
+
+You are a leaf/worker agent focused on your specific task.
+To send a message to your parent: ib send task-abc123 "your message"
+
+Use this to report completion, ask questions, or share important findings.
 
 When your task is complete:
 1. Commit any changes you made (git add && git commit)

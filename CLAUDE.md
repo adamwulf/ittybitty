@@ -75,7 +75,6 @@ No formal test suite. Test manually by spawning agents:
 - Exit handler (`exit-check.sh`): prompts for uncommitted changes when agent session ends
 - Send timing: message and Enter key sent separately with 0.1s delay to handle busy agents
 
-
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
@@ -88,29 +87,6 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
 
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `ib new-agent "goal"` | Spawn a new agent, returns its ID |
-| `ib list` | Show all agents and their status |
-| `ib look <id>` | View an agent's recent output |
-| `ib send <id> "msg"` | Send input to an agent |
-| `ib status <id>` | Show agent's git commits and changes |
-| `ib diff <id>` | Show full diff of agent's work vs main |
-| `ib merge <id>` | Merge agent's work and permanently close it |
-| `ib kill <id>` | Permanently close agent without merging |
-| `ib resume <id>` | Restart a stopped agent's session |
-
-### Agent States
-
-| State | Meaning |
-|-------|---------|
-| `running` | Agent is actively processing |
-| `waiting` | Agent is idle, may need input |
-| `complete` | Agent signaled task completion (merge or kill to close) |
-| `stopped` | Session ended unexpectedly, needs user intervention |
-
 ### Workflow
 
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
@@ -119,13 +95,37 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
 5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
 
-### Key Differences from Task Tool
+### All Commands
 
-| Task Tool | ib Agents |
-|-----------|-----------|
-| Blocks until complete | Runs in background |
-| Shares your context | Isolated conversation |
-| No git isolation | Own branch + worktree |
-| Cannot spawn children | Can manage sub-agents |
-| Lost on crash | Resumable via session ID |
+| Command               | Description                                 |
+| --------------------- | ------------------------------------------- |
+| `ib new-agent "goal"` | Spawn a new agent, returns its ID           |
+| `ib list`             | Show all agents and their status            |
+| `ib look <id>`        | View an agent's recent output               |
+| `ib send <id> "msg"`  | Send input to an agent                      |
+| `ib status <id>`      | Show agent's git commits and changes        |
+| `ib diff <id>`        | Show full diff of agent's work vs main      |
+| `ib merge <id>`       | Merge agent's work and permanently close it |
+| `ib kill <id>`        | Permanently close agent without merging     |
+| `ib resume <id>`      | Restart a stopped agent's session           |
+
+### Agent States
+
+| State      | Meaning                                                 |
+| ---------- | ------------------------------------------------------- |
+| `running`  | Agent is actively processing                            |
+| `waiting`  | Agent is idle, may need input                           |
+| `complete` | Agent signaled task completion (merge or kill to close) |
+| `stopped`  | Session ended unexpectedly, needs user intervention     |
+
+### Key Differences from Claude's Task Tool
+
+| Task Tool             | ib Agents                |
+| --------------------- | ------------------------ |
+| Blocks until complete | Runs in background       |
+| Shares your context   | Isolated conversation    |
+| No git isolation      | Own branch + worktree    |
+| Cannot spawn children | Can manage sub-agents    |
+| Lost on crash         | Resumable via session ID |
+
 </ittybitty>
