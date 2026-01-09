@@ -1846,8 +1846,9 @@ cmd_watchdog() {
 
     echo "[watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
 
-    # Initialize counters
+    # Initialize counters and flags
     local waiting_counter=0
+    local notified_complete=false
 
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
@@ -1860,16 +1861,42 @@ cmd_watchdog() {
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
-                    # Notification will be added in Step 4
+                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID is waiting for input' to parent $parent"
                     waiting_counter=0  # Reset to avoid spam
                 fi
                 ;;
 
-            running|unknown|complete|stopped)
+            complete)
+                waiting_counter=0
+                if [[ "$notified_complete" != "true" ]]; then
+                    echo "[watchdog] Agent state: complete (first time)"
+                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID has completed' to parent $parent"
+                    notified_complete=true
+                else
+                    echo "[watchdog] Agent state: complete (already notified)"
+                fi
+                ;;
+
+            running|unknown)
                 if [[ $waiting_counter -gt 0 ]]; then
                     echo "[watchdog] Agent state: $state (reset waiting counter)"
                 else
                     echo "[watchdog] Agent state: $state"
+                fi
+                waiting_counter=0
+
+                # If agent resumed from complete, allow re-notification
+                if [[ "$notified_complete" == "true" ]]; then
+                    echo "[watchdog] Agent resumed from complete - clearing completion flag"
+                    notified_complete=false
+                fi
+                ;;
+
+            stopped)
+                if [[ $waiting_counter -gt 0 ]]; then
+                    echo "[watchdog] Agent state: stopped (reset waiting counter)"
+                else
+                    echo "[watchdog] Agent state: stopped"
                 fi
                 waiting_counter=0
                 ;;
