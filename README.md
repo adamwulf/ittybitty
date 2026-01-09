@@ -34,13 +34,31 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
 
+### Automatic Notifications
+
+When an agent spawns a child agent:
+- A watchdog is automatically spawned to monitor the child
+- The watchdog notifies the parent when:
+  - Child is waiting for >30 seconds (needs input)
+  - Child completes (ready to review/merge)
+- Parent agents should enter WAITING mode after spawning children
+- No need to poll `ib list` - watchdogs ensure timely notifications
+
 ### Workflow
 
-1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
-2. **Monitor**: `ib list` — check agent states periodically
+**For agents spawning sub-agents:**
+1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects parent, watchdog auto-spawns
+2. **Enter WAITING**: Parent enters WAITING mode after spawning sub-agents
+3. **Auto-notify**: Watchdog monitors each child and notifies parent when:
+   - Child has been waiting >30s (needs input)
+   - Child completes (ready to merge/review)
+4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id>` or `ib kill <id>`
+
+**For user-spawned agents:**
+1. **Spawn**: `ib new-agent "goal"` — returns agent ID
+2. **Monitor**: `ib list` — check agent states
 3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
-4. **Complete**: When `complete`, check work with `ib look/diff <id>`. If done, `ib merge <id>` or `ib kill <id>`. If not done, `ib send <id> "what's wrong and how to continue"`
-5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
+4. **Complete**: When `complete`, check with `ib diff <id>` and `ib merge <id>`
 
 ### All Commands
 
@@ -55,6 +73,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 | `ib merge <id>` | Merge agent's work and permanently close it |
 | `ib kill <id>` | Permanently close agent without merging |
 | `ib resume <id>` | Restart a stopped agent's session |
+| `ib watchdog <id>` | Monitor agent and notify parent (auto-spawned for child agents) |
 
 ### Agent States
 
@@ -123,6 +142,5 @@ When enabled (and `gh` CLI is installed with a git remote configured), agents wi
 
 ## Limitations
 
-- **Poll-based communication**: Agents can't interrupt you—check on them with `ib list` and `ib look`
 - **Merge conflicts**: If `ib merge` fails due to conflicts, the merging agent resolves them manually (edit files, `git add`, `git commit`)
 - **Context limits**: Long-running agents may hit existing Claude context windows; break large tasks into smaller agents
