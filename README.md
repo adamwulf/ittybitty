@@ -64,7 +64,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
 2. **Monitor**: `ib list` — check agent states periodically
 3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
-4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
+4. **Complete**: When `complete`, check work with `ib look/diff <id>`. If done, `ib merge <id>` or `ib kill <id>`. If not done, `ib send <id> "what's wrong and how to continue"`
 5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
 
 ### All Commands
