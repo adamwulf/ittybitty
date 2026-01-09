@@ -62,7 +62,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 ### Workflow
 
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
-2. **Monitor**: `ib list` — see all agents and their status (running/waiting/done)
+2. **Monitor**: `ib list` — see all agents and their status (running/waiting/stopped)
 3. **Look**: `ib look <id>` — view an agent's recent Claude history
 4. **Close**: When done, summarize the agent's work and ask the user:
    - `ib merge <id>` — merge the agent's work into main and close
@@ -231,7 +231,7 @@ ib new-agent --leaf --parent coordinator "check link #1"
 # Show running agents
 ib list
 
-# Include finished agents
+# Include stopped agents
 ib list --all
 
 # Filter by parent

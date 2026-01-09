@@ -186,21 +186,27 @@ format_age() {
 }
 
 # Detect agent state from tmux
+# States: running, waiting, stopped
 get_state() {
     local id="$1"
 
     if ! tmux has-session -t "$id" 2>/dev/null; then
-        echo "done"
+        echo "stopped"
         return
     fi
 
-    # Check if waiting for input (look for ? in last few lines)
-    local recent=$(tmux capture-pane -t "$id" -p 2>/dev/null | tail -5)
-    if echo "$recent" | grep -q '?\s*$'; then
-        echo "waiting"
-    else
+    # Capture recent output to detect state
+    local recent=$(tmux capture-pane -t "$id" -p 2>/dev/null | tail -20)
+
+    # Check for Claude Code processing indicators (running)
+    # "esc to interrupt" appears when Claude is actively working
+    if echo "$recent" | grep -qE 'esc to interrupt'; then
         echo "running"
+        return
     fi
+
+    # Has tmux session but not actively processing = waiting
+    echo "waiting"
 }
 
 # =============================================================================
@@ -588,14 +594,14 @@ Usage: ib list [options]
 Show all agents and their state.
 
 Options:
-  --all                 Include finished/dead agents
+  --all                 Include stopped agents
   --parent ID           Only show children of this agent
   --json                Output as JSON
   -h, --help            Show this help
 
 Output columns:
   ID        Agent identifier
-  STATE     running, waiting, or done
+  STATE     running, waiting, or stopped
   AGE       Time since spawn
   PARENT    Parent agent ID (if any)
   PROMPT    First 40 chars of prompt
@@ -643,8 +649,8 @@ EOF
         # Get state
         local state=$(get_state "$id")
 
-        # Skip done agents unless --all
-        if [[ "$SHOW_ALL" != true && "$state" == "done" ]]; then
+        # Skip stopped agents unless --all
+        if [[ "$SHOW_ALL" != true && "$state" == "stopped" ]]; then
             continue
         fi
 
