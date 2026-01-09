@@ -24,6 +24,47 @@ We don't need elaborate protocols or message queues. We just need:
 
 That's it. Four primitives. Everything else is composition.
 
+## Installation
+
+```bash
+# Clone the repo
+git clone <repo-url> /path/to/ittybitty
+
+# Add to PATH (add to ~/.zshrc or ~/.bashrc)
+export PATH="/path/to/ittybitty:$PATH"
+
+# Or symlink to a directory already in PATH
+ln -s /path/to/ittybitty/ib /usr/local/bin/ib
+```
+
+**Requirements:**
+- tmux
+- jq (for JSON handling)
+- git (for worktree support)
+
+### Adding ib to Your Project
+
+To make Claude aware of `ib` in your project, add this to your project's `CLAUDE.md`:
+
+```markdown
+<ittybitty>
+## Multi-Agent Orchestration
+
+This project uses `ib` for multi-agent coordination. Use it to spawn background agents for parallel tasks, long-running research, or isolated experimental work.
+
+Key commands:
+- `ib new-agent "task"` - spawn a background agent in its own git worktree
+- `ib new-agent --leaf --parent <id> "task"` - spawn a focused worker agent
+- `ib list` - see running agents
+- `ib read <id>` - check agent output
+- `ib send <id> "message"` - send input to an agent
+- `ib status <id>` - check agent's git commits/changes
+- `ib merge <id> --cleanup` - merge agent's work and cleanup
+
+Agents run in tmux sessions with isolated git branches. Use `ib read` to monitor progress and `ib send` to answer questions or provide direction.
+</ittybitty>
+```
+
 ## Architecture
 
 ```
@@ -43,23 +84,101 @@ Worker Agents (do specific tasks)
 - Parent sends answer: `ib send <child-id> "the answer"`
 - Child receives it as normal stdin, continues working
 
-## Installation
+## How ib Agents Differ from Claude Subagents
+
+Claude Code's built-in Task tool spawns **ephemeral subagents**—they run, return a result, and disappear. They share context with the parent and block until complete.
+
+ib agents are different:
+
+| | Task Tool Subagents | ib Agents |
+|---|---|---|
+| **Lifetime** | Ephemeral (single task) | Long-running (persistent tmux session) |
+| **Context** | Shared with parent | Isolated (own conversation, own git branch) |
+| **Blocking** | Parent waits for result | Parent continues working |
+| **Communication** | Automatic return value | Manual via `ib read`/`ib send` |
+| **Git isolation** | None | Own worktree and branch |
+| **Can spawn children** | No | Yes (hierarchical teams) |
+
+ib agents are **stable Claude Code instances** that can spawn, coordinate, and manage their own agent teams to accomplish complex tasks.
+
+## Communication Model
+
+**Important**: Communication is poll-based, not push-based.
+
+When you spawn an agent from your primary Claude session, that agent **cannot interrupt you**. Your primary session is actively being used, so the agent's messages don't automatically appear. Instead:
+
+1. **You must check on agents**: Use `ib list` to see all agents and `ib read <id>` to see their output
+2. **You must answer questions**: Use `ib send <id> "answer"` to respond when they're waiting
+3. **Agents wait for input**: If an agent asks a question, it blocks until answered
 
 ```bash
-# Clone the repo
-git clone <repo-url> ~/Developer/bash/ittybitty
+# Spawn agents
+ib new-agent --name task1 "research competitor pricing"
+ib new-agent --name task2 "audit documentation links"
 
-# Add to PATH (add to ~/.zshrc or ~/.bashrc)
-export PATH="$HOME/Developer/bash/ittybitty:$PATH"
-
-# Or symlink to a directory already in PATH
-ln -s ~/Developer/bash/ittybitty/ib /usr/local/bin/ib
+# Check on them periodically
+ib list                    # Shows all agents with STATE and PARENT columns
+ib read task1 --lines 20   # See recent output
+ib read task2 --lines 20
 ```
 
-**Requirements:**
-- tmux
-- jq (for JSON handling)
-- git (for worktree support)
+The `ib list` output shows a PARENT column—agents spawned by the top-level Claude show `-`, while sub-agents spawned by other ib agents show their parent's ID.
+
+## Agent Lifecycle
+
+Here's the typical flow for managing a task with ib:
+
+### 1. Spawn the agent
+
+```bash
+ib new-agent --name research "Research competitor pricing and summarize findings"
+```
+
+The agent starts in a tmux session with its own git worktree on branch `agent/research`.
+
+### 2. Monitor progress
+
+```bash
+# Check if it's running or waiting
+ib list
+
+# Read recent output
+ib read research
+
+# Watch live (Ctrl+b d to detach)
+ib read research --follow
+```
+
+### 3. Answer questions
+
+If the agent is waiting for input:
+
+```bash
+ib send research "Focus on the top 3 competitors only"
+```
+
+### 4. Review work
+
+```bash
+# See what commits the agent made
+ib status research
+
+# View the full diff
+ib diff research
+```
+
+### 5. Merge and cleanup
+
+```bash
+# Merge agent's branch into main and remove worktree
+ib merge research --cleanup
+```
+
+Or if you want to discard the work:
+
+```bash
+ib kill research --cleanup --force
+```
 
 ## Usage
 
