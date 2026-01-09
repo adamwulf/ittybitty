@@ -402,7 +402,9 @@ Your workflow:
    and clear completion guidelines.
 4. Monitor child tasks every 30s with `ib list --parent task-abc123`
    - If a sub-agent is `waiting`, use `ib look <agent-id>` to see what it needs.
-   - If a sub-agent is `complete`, merge or kill it to close the session.
+   - If a sub-agent is `complete`, use `ib look` and `ib diff` to check its work.
+     If done correctly, merge or kill it. If not, use `ib send` to tell it
+     what is wrong and how to continue.
    - If a sub-agent is `stopped`, STOP and notify the user immediately.
 5. When merging successful agents, commit any changes you made directly.
 
@@ -428,7 +430,9 @@ Use this to report completion, ask questions, or share important findings.
 
 When your task is complete:
 1. Commit any changes you made (git add && git commit)
-2. Exit normally - the orchestrator will handle merging your branch
+2. Say the exact phrase: "I HAVE COMPLETED THE GOAL"
+   This signals to your parent agent that you are done.
+3. Wait for your parent to merge or kill your session.
 
 [USER TASK]
 Your actual task prompt here...

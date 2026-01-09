@@ -411,7 +411,9 @@ EOF
         if [[ "$LEAF_MODE" == true ]]; then
             COMPLETION_INSTRUCTIONS="When your task is complete:
 1. Commit any changes you made (git add && git commit)
-2. Exit normally - the orchestrator will handle merging your branch"
+2. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
+   This signals to your parent agent that you are done.
+3. Wait for your parent to merge or kill your session."
         else
             COMPLETION_INSTRUCTIONS="Your workflow:
 1. Think through what specific tasks need to be done to accomplish the goal. These tasks should be specific and have clear completion guidelines.
@@ -419,7 +421,7 @@ EOF
 3. Spawn a sub-agent for each independent task, providing the specific task and clear completion guidelines.
 4. Monitor child tasks every 30s with \`ib list --parent $ID\`
    - If a sub-agent is \`waiting\`, use \`ib look <agent-id>\` to see what it may need. Either send it a message so it can continue working, or if that sub-agent is done, decide if you should merge/kill its session.
-   - If a sub-agent is \`complete\`, merge or kill it to close the session.
+   - If a sub-agent is \`complete\`, use \`ib look <agent-id>\` and \`ib diff <agent-id>\` to check its work. If it completed the task correctly, merge or kill it. If it is not actually done, use \`ib send <agent-id> \"message\"\` to tell it what is wrong and how to continue.
    - If a sub-agent is \`stopped\`, its session ended unexpectedly. STOP and notify the user immediately. Tell them which agent stopped and suggest they use \`ib status <agent-id>\` and \`ib diff <agent-id>\` to check its work, then \`ib resume <agent-id>\` to restart it.
    - Sometimes, an agent might get lost or broken and be unable to accomplish the task. It's ok to \`ib kill\` and restart the task with a new agent and clearer task and completion guidelines.
 5. When merging successful agents, commit any changes you made directly (git add && git commit).
