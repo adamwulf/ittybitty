@@ -141,6 +141,24 @@ ib merge research           # Merge branch into main and cleanup
 
 Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--leaf` for worker agents that shouldn't spawn children.
 
+## Eek! Too Many Agents!
+
+If agents spawn out of control and you need to stop everything immediately:
+
+```bash
+ib nuke
+```
+
+This emergency command will:
+- Kill **ALL** active agents without merging their work
+- Show a warning with agent count and ask for confirmation
+- Archive each agent's output for review
+- Clean up all sessions, worktrees, branches, and directories
+
+Use `ib nuke --force` to skip the confirmation prompt.
+
+**Note:** This command is intentionally undocumented in `ib help` to prevent agents from casually using it, but it's available as a safety switch for humans.
+
 ## Configuration
 
 **Spawn options:**
