@@ -7,11 +7,34 @@
 
 set -e
 
-AGENTS_DIR="${AGENTS_DIR:-.agents}"
+ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
+AGENTS_DIR="$ITTYBITTY_DIR/agents"
+ARCHIVE_DIR="$ITTYBITTY_DIR/archive"
 
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+# Archive an agent's output before cleanup
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>.txt
+archive_agent_output() {
+    local ID="$1"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+
+    # Capture final output if session is still running
+    if tmux has-session -t "$ID" 2>/dev/null; then
+        tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
+
+    # Archive output.log if it exists
+    if [[ -f "$AGENT_DIR/output.log" ]]; then
+        mkdir -p "$ARCHIVE_DIR"
+        local timestamp=$(date +%Y%m%d-%H%M%S)
+        local archive_file="$ARCHIVE_DIR/${timestamp}-${ID}.txt"
+        mv "$AGENT_DIR/output.log" "$archive_file"
+        echo "Archived output to: $archive_file"
+    fi
+}
 
 # Load config from .ittybitty.json if it exists
 # Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY
@@ -385,7 +408,7 @@ EOF
 You have access to the 'ib' tool for multi-agent coordination:
   ib new-agent --parent $ID \"task\"   Spawn a sub-agent
   ib list --parent $ID                 List your sub-agents
-  ib read <agent-id>                   Read an agent's output
+  ib watch <agent-id>                   Read an agent's output
   ib send <agent-id> \"message\"        Send input to an agent
   ib status <agent-id>                 Check agent's git commits
   ib kill <agent-id>                   Stop an agent
@@ -762,10 +785,10 @@ EOF
 }
 
 # =============================================================================
-# COMMAND: read
+# COMMAND: watch
 # =============================================================================
 
-cmd_read() {
+cmd_watch() {
     local ID=""
     local LINES=50
     local FOLLOW=false
@@ -779,9 +802,9 @@ cmd_read() {
             --follow)  FOLLOW=true; shift ;;
             -h|--help)
                 cat <<EOF
-Usage: ib read <id> [options]
+Usage: ib watch <id> [options]
 
-Read recent output from an agent.
+Watch an agent's recent output.
 
 Arguments:
   id              Agent identifier
@@ -793,9 +816,9 @@ Options:
   -h, --help      Show this help
 
 Examples:
-  ib read task-a1b2
-  ib read task-a1b2 --lines 200
-  ib read task-a1b2 --follow
+  ib watch task-a1b2
+  ib watch task-a1b2 --lines 200
+  ib watch task-a1b2 --follow
 EOF
                 exit 0
                 ;;
@@ -817,7 +840,7 @@ EOF
 
     if [[ -z "$ID" ]]; then
         echo "Error: agent ID required" >&2
-        echo "Usage: ib read <id> [options]" >&2
+        echo "Usage: ib watch <id> [options]" >&2
         exit 1
     fi
 
@@ -1073,32 +1096,29 @@ EOF
 
 cmd_kill() {
     local ID=""
-    local CLEANUP=false
     local FORCE=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --cleanup) CLEANUP=true; shift ;;
             --force)   FORCE=true; shift ;;
             -h|--help)
                 cat <<EOF
 Usage: ib kill <id> [options]
 
-Stop an agent and optionally clean up its data.
+Close an agent without merging its work. Removes the agent's session,
+worktree, branch, and data directory.
 
 Arguments:
   id              Agent identifier
 
 Options:
-  --cleanup       Remove worktree and agent directory
   --force         Don't ask for confirmation
   -h, --help      Show this help
 
 Examples:
   ib kill task-a1b2
-  ib kill task-a1b2 --cleanup
-  ib kill task-a1b2 --cleanup --force
+  ib kill task-a1b2 --force
 EOF
                 exit 0
                 ;;
@@ -1138,32 +1158,26 @@ EOF
     # Confirm if not forced
     if [[ "$FORCE" != true ]]; then
         local confirm
-        if [[ "$CLEANUP" == true ]]; then
-            read -p "Kill agent '$ID' and remove all data? [y/N] " confirm
-        else
-            read -p "Kill agent '$ID'? [y/N] " confirm
-        fi
+        read -p "Kill agent '$ID' and remove all data? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
             echo "Cancelled."
             exit 0
         fi
     fi
 
+    # Archive output before cleanup
+    archive_agent_output "$ID"
+
     # Kill tmux session if running
     if tmux has-session -t "$ID" 2>/dev/null; then
-        # First, try to capture final output
-        if [[ -d "$AGENT_DIR" ]]; then
-            tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
-        fi
-
         tmux kill-session -t "$ID"
         echo "Killed session: $ID"
     else
         echo "Session not running: $ID"
     fi
 
-    # Cleanup if requested
-    if [[ "$CLEANUP" == true && -d "$AGENT_DIR" ]]; then
+    # Always cleanup
+    if [[ -d "$AGENT_DIR" ]]; then
         # Remove git worktree if it exists
         if [[ -d "$AGENT_DIR/repo" ]]; then
             git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
@@ -1176,7 +1190,7 @@ EOF
 
         # Remove agent directory
         rm -rf "$AGENT_DIR"
-        echo "Cleaned up: $AGENT_DIR"
+        echo "Closed agent: $ID"
     fi
 }
 
@@ -1187,27 +1201,25 @@ EOF
 cmd_merge() {
     local ID=""
     local TARGET_BRANCH=""
-    local CLEANUP=false
     local FORCE=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --into)    TARGET_BRANCH="$2"; shift 2 ;;
-            --cleanup) CLEANUP=true; shift ;;
             --force)   FORCE=true; shift ;;
             -h|--help)
                 cat <<EOF
 Usage: ib merge <id> [options]
 
-Merge an agent's work back into the main branch.
+Merge an agent's work into the main branch and close the agent.
+Removes the agent's session, worktree, branch, and data directory.
 
 Arguments:
   id              Agent identifier
 
 Options:
   --into BRANCH   Target branch to merge into (default: main or master)
-  --cleanup       Remove worktree and agent data after merge
   --force         Don't ask for confirmation
   -h, --help      Show this help
 
@@ -1215,12 +1227,12 @@ The merge command:
 1. Checks for uncommitted changes in the agent's worktree
 2. Switches to the target branch
 3. Merges the agent's branch (agent/<id>)
-4. Optionally cleans up the worktree and data
+4. Cleans up the worktree, branch, and agent data
 
 Examples:
   ib merge task-a1b2
-  ib merge task-a1b2 --cleanup
   ib merge task-a1b2 --into develop
+  ib merge task-a1b2 --force
 EOF
                 exit 0
                 ;;
@@ -1298,11 +1310,7 @@ EOF
     local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$commit_count" -eq 0 ]]; then
         echo "Nothing to merge: $BRANCH_NAME has no new commits relative to $TARGET_BRANCH"
-        if [[ "$CLEANUP" == true ]]; then
-            echo "Proceeding with cleanup..."
-        else
-            exit 0
-        fi
+        echo "Proceeding with cleanup..."
     else
         echo "Will merge $commit_count commit(s) from $BRANCH_NAME into $TARGET_BRANCH:"
         git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline
@@ -1319,10 +1327,12 @@ EOF
         fi
     fi
 
+    # Archive output before cleanup
+    archive_agent_output "$ID"
+
     # Kill the agent session if still running
     if tmux has-session -t "$ID" 2>/dev/null; then
         echo "Stopping agent session..."
-        tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
         tmux kill-session -t "$ID"
     fi
 
@@ -1340,24 +1350,18 @@ EOF
         echo "Merged successfully!"
     fi
 
-    # Cleanup if requested
-    if [[ "$CLEANUP" == true ]]; then
-        echo "Cleaning up..."
-        # Remove git worktree
-        git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
-            echo "Warning: could not remove worktree, removing directory manually" >&2
-            rm -rf "$WORKTREE_PATH"
-        }
-        # Delete the branch
-        git branch -D "$BRANCH_NAME" 2>/dev/null && echo "Deleted branch: $BRANCH_NAME"
-        # Remove agent directory
-        rm -rf "$AGENT_DIR"
-        echo "Cleaned up: $AGENT_DIR"
-    else
-        echo ""
-        echo "Worktree and branch preserved. To cleanup later:"
-        echo "  ib kill $ID --cleanup"
-    fi
+    # Always cleanup
+    echo "Cleaning up..."
+    # Remove git worktree
+    git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
+        echo "Warning: could not remove worktree, removing directory manually" >&2
+        rm -rf "$WORKTREE_PATH"
+    }
+    # Delete the branch
+    git branch -D "$BRANCH_NAME" 2>/dev/null && echo "Deleted branch: $BRANCH_NAME"
+    # Remove agent directory
+    rm -rf "$AGENT_DIR"
+    echo "Closed agent: $ID"
 }
 
 # =============================================================================
@@ -1389,9 +1393,9 @@ case "${1:-help}" in
         shift
         cmd_send "$@"
         ;;
-    read)
+    watch)
         shift
-        cmd_read "$@"
+        cmd_watch "$@"
         ;;
     kill)
         shift
@@ -1407,18 +1411,19 @@ Commands:
   new-agent   Start a new agent with a prompt
   list        Show all agents and their state
   send        Send input to an agent
-  read        Read recent output from an agent
+  watch       Watch an agent's recent output
   status      Show git status of agent's work (commits, changes)
   diff        Show full diff of agent's work vs main
-  merge       Merge agent's work into main branch
-  kill        Stop an agent
+  merge       Merge agent's work into main branch and close the agent
+  kill        Close an agent without merging
 
 Aliases:
   new         Alias for new-agent
   ls          Alias for list
 
 Environment:
-  AGENTS_DIR    Directory for agent data (default: .agents)
+  ITTYBITTY_DIR    Base directory for all data (default: .ittybitty)
+                   Contains: agents/, archive/
 
 Configuration:
   .ittybitty.json   Configure agent permissions (see 'ib new-agent --help')
@@ -1428,12 +1433,12 @@ Run 'ib <command> --help' for command-specific help.
 Examples:
   ib new-agent "verify all citations in docs/comparison.md"
   ib list
-  ib read agent-abc123
+  ib watch agent-abc123
   ib status agent-abc123
   ib diff agent-abc123
   ib send agent-abc123 "yes, proceed with option 2"
-  ib merge agent-abc123 --cleanup
-  ib kill agent-abc123 --cleanup
+  ib merge agent-abc123
+  ib kill agent-abc123
 EOF
         ;;
     *)

@@ -48,20 +48,34 @@ To make Claude aware of `ib` in your project, add this to your project's `CLAUDE
 
 ```markdown
 <ittybitty>
-## Multi-Agent Orchestration
+## Multi-Agent Orchestration (ittybitty)
 
-This project uses `ib` for multi-agent coordination. Use it to spawn background agents for parallel tasks, long-running research, or isolated experimental work.
+You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), ib agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
 
-Key commands:
-- `ib new-agent "task"` - spawn a background agent in its own git worktree
-- `ib new-agent --leaf --parent <id> "task"` - spawn a focused worker agent
-- `ib list` - see running agents
-- `ib read <id>` - check agent output
-- `ib send <id> "message"` - send input to an agent
-- `ib status <id>` - check agent's git commits/changes
-- `ib merge <id> --cleanup` - merge agent's work and cleanup
+### When to Use
 
-Agents run in tmux sessions with isolated git branches. Use `ib read` to monitor progress and `ib send` to answer questions or provide direction.
+- Large or complex tasks that benefit from isolation
+- Long-running research or analysis
+- When the user explicitly requests background agents
+- Tasks that can run while you continue other work
+
+### Workflow
+
+1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
+2. **Monitor**: `ib list` — see all agents and their status (running/waiting/done)
+3. **Watch**: `ib watch <id>` — view an agent's recent Claude history
+4. **Close**: When done, summarize the agent's work and ask the user:
+   - `ib merge <id>` — merge the agent's work into main and close
+   - `ib kill <id>` — close without merging
+
+### Key Differences from Task Tool
+
+| Task Tool | ib Agents |
+|-----------|-----------|
+| Blocks until complete | Runs in background |
+| Shares your context | Isolated conversation |
+| No git isolation | Own branch + worktree |
+| Cannot spawn children | Can manage sub-agents |
 </ittybitty>
 ```
 
@@ -80,7 +94,7 @@ Worker Agents (do specific tasks)
 
 **Key insight**: Agents communicate via tmux's stdin/stdout. No files, no protocols—just text.
 
-- Parent reads child's output: `ib read <child-id>`
+- Parent reads child's output: `ib watch <child-id>`
 - Parent sends answer: `ib send <child-id> "the answer"`
 - Child receives it as normal stdin, continues working
 
@@ -95,7 +109,7 @@ ib agents are different:
 | **Lifetime** | Ephemeral (single task) | Long-running (persistent tmux session) |
 | **Context** | Shared with parent | Isolated (own conversation, own git branch) |
 | **Blocking** | Parent waits for result | Parent continues working |
-| **Communication** | Automatic return value | Manual via `ib read`/`ib send` |
+| **Communication** | Automatic return value | Manual via `ib watch`/`ib send` |
 | **Git isolation** | None | Own worktree and branch |
 | **Can spawn children** | No | Yes (hierarchical teams) |
 
@@ -107,7 +121,7 @@ ib agents are **stable Claude Code instances** that can spawn, coordinate, and m
 
 When you spawn an agent from your primary Claude session, that agent **cannot interrupt you**. Your primary session is actively being used, so the agent's messages don't automatically appear. Instead:
 
-1. **You must check on agents**: Use `ib list` to see all agents and `ib read <id>` to see their output
+1. **You must check on agents**: Use `ib list` to see all agents and `ib watch <id>` to see their output
 2. **You must answer questions**: Use `ib send <id> "answer"` to respond when they're waiting
 3. **Agents wait for input**: If an agent asks a question, it blocks until answered
 
@@ -118,8 +132,8 @@ ib new-agent --name task2 "audit documentation links"
 
 # Check on them periodically
 ib list                    # Shows all agents with STATE and PARENT columns
-ib read task1 --lines 20   # See recent output
-ib read task2 --lines 20
+ib watch task1 --lines 20   # See recent output
+ib watch task2 --lines 20
 ```
 
 The `ib list` output shows a PARENT column—agents spawned by the top-level Claude show `-`, while sub-agents spawned by other ib agents show their parent's ID.
@@ -143,10 +157,10 @@ The agent starts in a tmux session with its own git worktree on branch `agent/re
 ib list
 
 # Read recent output
-ib read research
+ib watch research
 
 # Watch live (Ctrl+b d to detach)
-ib read research --follow
+ib watch research --follow
 ```
 
 ### 3. Answer questions
@@ -171,8 +185,7 @@ ib diff research
 
 ```bash
 # Merge agent's branch into main and remove worktree
-ib merge research --cleanup
-```
+ib merge research```
 
 Or if you want to discard the work:
 
@@ -235,20 +248,20 @@ task-a1b2c3d4        running    12m    -               verify all citations in d
 worker-x1y2z3a4      waiting    3m     task-a1b2c3d4   check citation #3: https://exampl
 ```
 
-### Read agent output
+### Watch agent output
 
 ```bash
 # Recent output (last 50 lines)
-ib read task-abc
+ib watch task-abc
 
 # More history
-ib read task-abc --lines 200
+ib watch task-abc --lines 200
 
 # Full scrollback
-ib read task-abc --all
+ib watch task-abc --all
 
 # Watch live (attaches to tmux session, Ctrl+b d to detach)
-ib read task-abc --follow
+ib watch task-abc --follow
 ```
 
 ### Send input to an agent
@@ -278,7 +291,7 @@ ib status task-abc
 # Output:
 # Agent: agent-abc123
 # Branch: agent/agent-abc123
-# Worktree: .agents/agent-abc123/repo
+# Worktree: .ittybitty/agents/agent-abc123/repo
 #
 # ═══ Commits (2) vs main ═══
 #   ef2f424 Add summary document
@@ -305,8 +318,7 @@ ib diff task-abc --stat
 ib merge task-abc
 
 # Merge and cleanup worktree/data
-ib merge task-abc --cleanup
-
+ib merge task-abc
 # Merge into a specific branch
 ib merge task-abc --into develop
 
@@ -327,8 +339,7 @@ The merge command:
 ib kill task-abc
 
 # Stop and cleanup worktree/data
-ib kill task-abc --cleanup
-
+ib kill task-abc
 # Skip confirmation
 ib kill task-abc --cleanup --force
 ```
@@ -344,7 +355,7 @@ When an agent starts, it receives a context prefix with its prompt that includes
 
 This context helps agents understand their role and how to manage sub-agents.
 
-Example prompt (stored in `.agents/<id>/prompt.txt`):
+Example prompt (stored in `.ittybitty/agents/<id>/prompt.txt`):
 ```
 [AGENT CONTEXT]
 You are running as agent task-abc123 in a git worktree on branch agent/task-abc123.
@@ -380,7 +391,7 @@ _
 
 **Primary Agent checks on it:**
 ```bash
-$ ib read task-abc | tail -10
+$ ib watch task-abc | tail -10
 # Sees the question
 
 $ ib send task-abc "Option 2"
@@ -389,14 +400,14 @@ $ ib send task-abc "Option 2"
 
 ### Detecting "waiting for input"
 
-The `ib list` command shows agents as "waiting" if their recent output ends with a question mark. This is a heuristic—you can also just check periodically with `ib read`.
+The `ib list` command shows agents as "waiting" if their recent output ends with a question mark. This is a heuristic—you can also just check periodically with `ib watch`.
 
 ## Git Worktrees
 
 By default, each agent gets its own git worktree with an isolated branch:
 
 ```
-.agents/
+.ittybitty/agents/
   agent-a1b2c3d4/
     meta.json       # Agent metadata (id, prompt, parent, created, worktree, leaf)
     prompt.txt      # Full prompt with context prefix
@@ -415,15 +426,13 @@ By default, each agent gets its own git worktree with an isolated branch:
 **Merging agent work:**
 ```bash
 # Recommended: use ib merge
-ib merge agent-a1b2c3d4 --cleanup
-
+ib merge agent-a1b2c3d4
 # Or manually
 git checkout main
 git merge agent/agent-a1b2c3d4
 
 # Cleanup (removes worktree and branch)
-ib kill agent-a1b2c3d4 --cleanup
-```
+ib kill agent-a1b2c3d4```
 
 ### Exit Handler
 
@@ -453,7 +462,7 @@ periodically. What else would you like to discuss?"
 $ ib list
 task-a1b2c3d4  running  5m  -  Verify all citations...
 
-$ ib read task-a1b2c3d4 | tail -20
+$ ib watch task-a1b2c3d4 | tail -20
 # Sees progress or questions
 
 # If agent has a question
@@ -472,9 +481,9 @@ ib new-agent --name research-figma "Research FigJam: features, pricing, recent u
 ib list
 
 # Collect results when done
-ib read research-apple --all > apple-research.md
-ib read research-miro --all > miro-research.md
-ib read research-figma --all > figma-research.md
+ib watch research-apple --all > apple-research.md
+ib watch research-miro --all > miro-research.md
+ib watch research-figma --all > figma-research.md
 
 # Cleanup
 ib kill research-apple --cleanup --force
@@ -557,7 +566,7 @@ ib new-agent --leaf --parent coordinator "check citation 2"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENTS_DIR` | `.agents` | Where agent data is stored |
+| `ITTYBITTY_DIR` | `.ittybitty` | Base directory (contains `agents/` and `archive/`) |
 
 ## Tips
 
@@ -565,7 +574,7 @@ ib new-agent --leaf --parent coordinator "check citation 2"
 2. **Use --print for one-shots** - Simple queries don't need interactive sessions
 3. **Check often early** - New agents might have questions in the first few minutes
 4. **Limit tools for safety** - Use `--deny-tools` for agents that shouldn't make changes
-5. **Clean up finished agents** - Use `ib kill --cleanup` to remove worktrees
+5. **Review archived output** - Agent output is saved to `.ittybitty/archive/` when closed
 
 ## Philosophy
 
