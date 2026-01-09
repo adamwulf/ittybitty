@@ -47,12 +47,13 @@ archive_agent_output() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY
+# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS
 load_config() {
     CONFIG_TASK_ALLOW=""
     CONFIG_TASK_DENY=""
     CONFIG_LEAF_ALLOW=""
     CONFIG_LEAF_DENY=""
+    CONFIG_CREATE_PRS="false"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -71,6 +72,9 @@ load_config() {
     # Read leaf permissions
     CONFIG_LEAF_ALLOW=$(jq -r '.permissions.leaf.allow // [] | @json' "$config_file" 2>/dev/null)
     CONFIG_LEAF_DENY=$(jq -r '.permissions.leaf.deny // [] | @json' "$config_file" 2>/dev/null)
+
+    # Read PR creation setting
+    CONFIG_CREATE_PRS=$(jq -r '.createPullRequests // false' "$config_file" 2>/dev/null)
 }
 
 # Build settings.local.json content for an agent worktree
@@ -378,6 +382,9 @@ EOF
         exit 1
     fi
 
+    # Load config for PR settings
+    load_config
+
     # Generate agent ID
     local ID
     if [[ -n "$NAME" ]]; then
@@ -486,6 +493,24 @@ EOF
    This signals to your parent agent that you are done.
 3. Wait for your parent to merge or kill your session."
         else
+            # Determine PR instructions based on config and gh availability
+            local PR_INSTRUCTIONS=""
+            local HAS_GH=$(command -v gh &>/dev/null && echo "true" || echo "false")
+            local HAS_REMOTE=$(git remote 2>/dev/null | head -1)
+
+            if [[ "$CONFIG_CREATE_PRS" == "true" && "$HAS_GH" == "true" && -n "$HAS_REMOTE" ]]; then
+                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
+If so:
+1. Create a pull request with \`gh pr create --title \"<title>\" --body \"<description>\"\`
+2. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
+This phrase signals to the orchestrator that you are done."
+            else
+                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
+If so, say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
+This phrase signals to the orchestrator that you are done.
+Your work is on branch \`agent/$ID\` for review."
+            fi
+
             COMPLETION_INSTRUCTIONS="Your workflow:
 1. Think through what specific tasks need to be done to accomplish the goal. These tasks should be specific and have clear completion guidelines.
 2. Track these tasks in your Claude Code tasks tracker (TodoWrite tool).
@@ -497,9 +522,7 @@ EOF
    - Sometimes, an agent might get lost or broken and be unable to accomplish the task. It's ok to \`ib kill\` and restart the task with a new agent and clearer task and completion guidelines.
 5. When merging successful agents, commit any changes you made directly (git add && git commit).
 
-Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
-If so, say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-This phrase signals to the orchestrator that you are done."
+$PR_INSTRUCTIONS"
         fi
     else
         WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
@@ -522,9 +545,10 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib merge <agent-id>                         Merge agent's work and close it
   ib kill <agent-id>                          Stop an agent without merging
 
-If \`ib merge\` fails due to conflicts, you are left in a merge state on the target branch.
-Resolve conflicts by editing files, then \`git add <files> && git commit\` to complete.
-Finally, manually clean up: \`git worktree remove <worktree-path> --force && git branch -D agent/<id>\`
+If \`ib merge\` fails due to conflicts, choose the best strategy:
+1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
+2. Spawn a sub-agent to handle the merge resolution, then monitor it to completion
+3. If the merge is no longer needed, skip it and note this in your final report
 "
     else
         # Leaf agents: simple communication with parent only
@@ -1601,6 +1625,17 @@ EOF
     if [[ ! -d "$AGENT_DIR" ]]; then
         echo "Error: agent '$ID' not found" >&2
         exit 1
+    fi
+
+    # Load config and warn about PR settings
+    load_config
+    if [[ "$CONFIG_CREATE_PRS" == "true" ]]; then
+        if ! command -v gh &>/dev/null; then
+            echo "Warning: createPullRequests is enabled but 'gh' CLI is not installed" >&2
+        fi
+        if [[ -z $(git remote 2>/dev/null | head -1) ]]; then
+            echo "Warning: createPullRequests is enabled but no git remote is configured" >&2
+        fi
     fi
 
     # Check if worktree exists

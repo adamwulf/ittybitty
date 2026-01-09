@@ -111,6 +111,14 @@ Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--le
 
 **Permissions:** Agents inherit your `.claude/settings.local.json`. The `Bash(ib:*)` permission is automatically added so agents can coordinate sub-agents.
 
+**Project config (`.ittybitty.json`):**
+```json
+{
+  "createPullRequests": true
+}
+```
+When enabled (and `gh` CLI is installed with a git remote configured), agents will create a pull request when their work is complete instead of leaving changes on their branch.
+
 **Environment:** Set `ITTYBITTY_DIR` to change the base directory (default: `.ittybitty`).
 
 ## Limitations
