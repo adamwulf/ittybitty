@@ -1,5 +1,2 @@
 # Agent workspaces (worktrees and temporary data)
-.agents/
-
-# Archived agent outputs (local only)
-.ittybitty/archive/
+.ittybitty/
