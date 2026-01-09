@@ -14,7 +14,8 @@ You (human)
 Primary Agent (responsive, strategic)
   ↓ uses ib to spawn
 Task Agent (runs in tmux, has worktree)
-  ↕ can ask questions (waits for stdin)
+  ↑ can ask questions (send to another agent's stdin)
+  ↓ can receive answers (as stdin from another agent)
   ↓ uses ib to spawn
 Leaf Agents (focused workers, no sub-agents)
 ```

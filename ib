@@ -685,14 +685,12 @@ EOF
 # =============================================================================
 
 cmd_list() {
-    local SHOW_ALL=false
     local PARENT_FILTER=""
     local JSON_OUTPUT=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --all)     SHOW_ALL=true; shift ;;
             --parent)  PARENT_FILTER="$2"; shift 2 ;;
             --json)    JSON_OUTPUT=true; shift ;;
             -h|--help)
@@ -702,7 +700,6 @@ Usage: ib list [options]
 Show all agents and their state.
 
 Options:
-  --all                 Include stopped agents
   --parent ID           Only show children of this agent
   --json                Output as JSON
   -h, --help            Show this help
@@ -766,11 +763,6 @@ EOF
 
         # Get state
         local state=$(get_state "$id")
-
-        # Skip stopped agents unless --all
-        if [[ "$SHOW_ALL" != true && "$state" == "stopped" ]]; then
-            continue
-        fi
 
         found_any=true
 
