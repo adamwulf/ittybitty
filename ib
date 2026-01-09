@@ -622,14 +622,23 @@ Your work is on branch \`agent/$ID\` for review."
   - 'I HAVE COMPLETED THE GOAL' - if you have completed your primary goal
 
 Your workflow:
-1. Think through what specific tasks need to be done to accomplish the goal. These tasks should be specific and have clear completion guidelines.
-2. Track these tasks in your Claude Code tasks tracker (TodoWrite tool).
-3. Spawn a sub-agent for each independent task, providing the specific task and clear completion guidelines.
-4. Monitor child tasks every 30s with \`ib list --parent $ID\`
-   - If a sub-agent is \`waiting\`, use \`ib look <agent-id>\` to see what it may need. Either send it a message so it can continue working, or if that sub-agent is done, decide if you should merge/kill its session.
-   - If a sub-agent is \`complete\`, use \`ib look <agent-id>\` and \`ib diff <agent-id>\` to check its work. If it completed the task correctly, merge or kill it. If it is not actually done, use \`ib send <agent-id> \"message\"\` to tell it what is wrong and how to continue.
-   - If a sub-agent is \`stopped\`, its session ended unexpectedly. STOP and notify the user immediately. Tell them which agent stopped and suggest they use \`ib status <agent-id>\` and \`ib diff <agent-id>\` to check its work, then \`ib resume <agent-id>\` to restart it.
-   - Sometimes, an agent might get lost or broken and be unable to accomplish the task. It's ok to \`ib kill\` and restart the task with a new agent and clearer task and completion guidelines.
+CRITICAL: Before spawning ANY sub-agents, you MUST define clear, objective completion criteria for each task.
+You need these criteria to judge whether a sub-agent has truly completed its work when it signals completion.
+
+1. Break down the goal into specific tasks with measurable completion criteria
+   - What files should be changed? What should the output look like?
+   - What specific conditions define \"done\"? (tests pass, specific files exist, specific content present, etc.)
+   - Track these tasks and criteria in your Claude Code tasks tracker (TodoWrite tool)
+2. Spawn LEAF sub-agents (--leaf) for each independent task
+   - Provide the specific task AND the clear completion criteria in the prompt
+   - Default to --leaf unless the sub-agent itself needs to coordinate multiple parallel sub-agents
+3. Enter WAITING mode - watchdogs will notify you when sub-agents need attention
+4. When notified, review sub-agent work against your predefined completion criteria:
+   - Use \`ib look <agent-id>\` to see what the agent reports
+   - Use \`ib diff <agent-id>\` to verify the actual changes match your criteria
+   - If criteria met: \`ib merge <agent-id>\` or \`ib kill <agent-id>\` (if no changes needed)
+   - If criteria NOT met: \`ib send <agent-id> \"message\"\` explaining what's missing and how to fix it
+   - If a sub-agent is \`stopped\`, STOP and notify the user immediately
 5. When merging successful agents, commit any changes you made directly (git add && git commit).
 
 $PR_INSTRUCTIONS"
@@ -662,15 +671,15 @@ When you receive a task, think about what is needed to accomplish it, then decid
     - One agent can finish quickly
     - Just do the task yourself - don't spawn sub-agents unnecessarily
 
-  MEDIUM TASK (2-3 parallel agents)
+  MEDIUM TASK (2-3 parallel leaf agents)
     - Can be split into 2-3 independent subtasks
-    - Spawn leaf agents to work in parallel
+    - Spawn LEAF agents to work in parallel (always use --leaf unless sub-agent needs to manage its own sub-agents)
     - After spawning them, enter WAITING mode - you'll be notified when they complete
 
   LARGE TASK (multiple stages)
     - Requires multiple stages that must run serially
     - Use TodoWrite tool to track stages
-    - For each stage, spawn leaf agents to work in parallel
+    - For each stage, spawn LEAF agents to work in parallel (always use --leaf)
     - After spawning agents for a stage, enter WAITING mode
     - When notified of completion, review work and move to next stage
 
@@ -682,7 +691,7 @@ AUTOMATIC NOTIFICATIONS:
 
 If \`ib merge\` fails due to conflicts, choose the best strategy:
 1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
-2. Spawn a sub-agent to handle the merge resolution, then monitor it to completion
+2. Spawn a LEAF sub-agent to handle the merge resolution, then monitor it to completion
 3. If the merge is no longer needed, skip it and note this in your final report
 "
     else
