@@ -293,6 +293,46 @@ get_state() {
     echo "unknown"
 }
 
+# Wait for and auto-accept workspace trust dialog
+# Args: $1 = tmux session name
+# Returns: 0 if successful, 1 if timed out
+auto_accept_workspace_trust() {
+    local TMUX_SESSION="$1"
+    local max_attempts=5
+    local attempt=0
+
+    # Initial grace period for Claude Code to start
+    sleep 4
+
+    # Send first Enter
+    tmux send-keys -t "$TMUX_SESSION" Enter
+
+    # Poll until permissions screen is gone or max attempts reached
+    while [[ $attempt -lt $max_attempts ]]; do
+        sleep 4
+
+        # Capture recent output from tmux
+        local recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50 2>/dev/null)
+
+        # Check if still showing workspace trust dialog
+        # Common text: "Enter to confirm", "trust" (as in "Do you trust...")
+        if echo "$recent_output" | grep -qiE "Enter to confirm|trust"; then
+            echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
+            tmux send-keys -t "$TMUX_SESSION" Enter
+            attempt=$((attempt + 1))
+        else
+            # No longer showing permissions - success
+            echo "  [ib] Past permissions screen" >&2
+            return 0
+        fi
+    done
+
+    # Max attempts exceeded
+    echo "  [ib] Warning: Permissions screen may still be active after $max_attempts attempts" >&2
+    echo "  [ib] Use 'ib look <agent-id>' to check status" >&2
+    return 1
+}
+
 # =============================================================================
 # COMMAND: new-agent
 # =============================================================================
@@ -764,8 +804,7 @@ EOF
     # For non-yolo mode, auto-accept the workspace trust dialog
     # (yolo bypasses this entirely, but default and strict still see it)
     if [[ "$YOLO_MODE" != true ]]; then
-        sleep 2
-        tmux send-keys -t "$TMUX_SESSION" Enter
+        auto_accept_workspace_trust "$TMUX_SESSION"
     fi
 
     # Auto-spawn watchdog if agent has a parent
@@ -1634,8 +1673,7 @@ EOF
 
     # For non-yolo mode, auto-accept the workspace trust dialog
     if [[ "$YOLO_MODE" != true ]]; then
-        sleep 2
-        tmux send-keys -t "$TMUX_SESSION" Enter
+        auto_accept_workspace_trust "$TMUX_SESSION"
     fi
 
     echo "Resumed agent: $ID"
