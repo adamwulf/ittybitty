@@ -8,8 +8,11 @@
 set -e
 
 ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
-AGENTS_DIR="$ITTYBITTY_DIR/agents"
-ARCHIVE_DIR="$ITTYBITTY_DIR/archive"
+
+# Initialize paths - will be set to root repo after get_root_repo is defined
+AGENTS_DIR=""
+ARCHIVE_DIR=""
+ROOT_REPO_PATH=""
 
 # =============================================================================
 # HELPERS
@@ -165,6 +168,49 @@ require_git_root() {
     fi
 }
 
+# Find the root repository path (the original repo, not a worktree)
+# If running from within a worktree, returns the main repo root.
+# If running from main repo, returns the current location.
+get_root_repo() {
+    # First check we're in a git repo
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Error: not in a git repository" >&2
+        return 1
+    fi
+
+    # Get the common git directory (shared across all worktrees)
+    local common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+
+    if [[ -z "$common_dir" ]]; then
+        # Fallback for older git versions
+        git rev-parse --show-toplevel
+        return 0
+    fi
+
+    # If common_dir is relative (like ".git"), we're in the main repo
+    if [[ "$common_dir" == ".git" || "$common_dir" == "$(git rev-parse --git-dir)" ]]; then
+        git rev-parse --show-toplevel
+    else
+        # common_dir is absolute path like /path/to/repo/.git
+        # Go up one level to get the repo root
+        dirname "$common_dir"
+    fi
+}
+
+# Initialize global paths to use root repo
+# Called once when script runs (if in a git repo)
+init_paths() {
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        ROOT_REPO_PATH=$(get_root_repo)
+        AGENTS_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/agents"
+        ARCHIVE_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/archive"
+    else
+        # Not in a git repo - use relative paths as fallback
+        AGENTS_DIR="$ITTYBITTY_DIR/agents"
+        ARCHIVE_DIR="$ITTYBITTY_DIR/archive"
+    fi
+}
+
 # Format age from ISO timestamp
 format_age() {
     local created="$1"
@@ -309,8 +355,11 @@ EOF
         exit 1
     fi
 
-    # Must be in git repo root
-    require_git_root
+    # Verify we're in a git repo
+    if [[ -z "$ROOT_REPO_PATH" ]]; then
+        echo "Error: must be run from within a git repository" >&2
+        exit 1
+    fi
 
     # Generate agent ID
     local ID
@@ -326,17 +375,18 @@ EOF
         exit 1
     fi
 
-    # Set up directories
+    # Set up directories in root repo
     local AGENT_DIR="$AGENTS_DIR/$ID"
     mkdir -p "$AGENT_DIR"
 
-    # Set working directory
-    local WORK_PATH="$(pwd)"  # Git repo root (verified above)
+    # Set working directory (default to root repo)
+    local WORK_PATH="$ROOT_REPO_PATH"
 
     # Create git worktree if requested
     if [[ "$USE_WORKTREE" == true ]]; then
         local BRANCH_NAME="agent/$ID"
-        git worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD || {
+        # Create worktree from root repo, branching from current HEAD
+        git -C "$ROOT_REPO_PATH" worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD || {
             echo "Error: could not create worktree" >&2
             rm -rf "$AGENT_DIR"
             exit 1
@@ -349,35 +399,37 @@ EOF
         [[ "$LEAF_MODE" == true ]] && agent_type="leaf"
 
         if command -v jq &>/dev/null; then
-            build_agent_settings "$agent_type" > "$AGENT_DIR/repo/.claude/settings.local.json"
+            # Run build_agent_settings from root repo context
+            (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type") > "$AGENT_DIR/repo/.claude/settings.local.json"
         else
             # Fallback: minimal settings if jq not available
-            if [[ -f ".claude/settings.local.json" ]]; then
-                cp ".claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
+            if [[ -f "$ROOT_REPO_PATH/.claude/settings.local.json" ]]; then
+                cp "$ROOT_REPO_PATH/.claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
             else
                 echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
             fi
         fi
     else
-        # Non-worktree mode: ensure ib permissions are in repo settings
-        if command -v jq &>/dev/null && [[ -f ".claude/settings.local.json" ]]; then
+        # Non-worktree mode: ensure ib permissions are in root repo settings
+        local ROOT_SETTINGS="$ROOT_REPO_PATH/.claude/settings.local.json"
+        if command -v jq &>/dev/null && [[ -f "$ROOT_SETTINGS" ]]; then
             # Check if both patterns are already allowed
             local needs_update=false
-            if ! jq -e '.permissions.allow | index("Bash(ib:*)")' ".claude/settings.local.json" &>/dev/null; then
+            if ! jq -e '.permissions.allow | index("Bash(ib:*)")' "$ROOT_SETTINGS" &>/dev/null; then
                 needs_update=true
             fi
-            if ! jq -e '.permissions.allow | index("Bash(./ib:*)")' ".claude/settings.local.json" &>/dev/null; then
+            if ! jq -e '.permissions.allow | index("Bash(./ib:*)")' "$ROOT_SETTINGS" &>/dev/null; then
                 needs_update=true
             fi
             if [[ "$needs_update" == true ]]; then
                 local tmp=$(mktemp)
                 jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
-                    ".claude/settings.local.json" > "$tmp" && mv "$tmp" ".claude/settings.local.json"
+                    "$ROOT_SETTINGS" > "$tmp" && mv "$tmp" "$ROOT_SETTINGS"
                 echo "Added Bash(ib:*) and Bash(./ib:*) to .claude/settings.local.json" >&2
             fi
-        elif [[ ! -f ".claude/settings.local.json" ]]; then
-            mkdir -p ".claude"
-            echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > ".claude/settings.local.json"
+        elif [[ ! -f "$ROOT_SETTINGS" ]]; then
+            mkdir -p "$ROOT_REPO_PATH/.claude"
+            echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$ROOT_SETTINGS"
             echo "Created .claude/settings.local.json with ib allowed" >&2
         fi
     fi
@@ -440,7 +492,9 @@ This phrase signals to the orchestrator that you are done."
     local IB_INSTRUCTIONS=""
     if [[ "$LEAF_MODE" != true ]]; then
         IB_INSTRUCTIONS="
-You have access to the 'ib' tool for multi-agent coordination:
+You have access to the 'ib' tool for multi-agent coordination.
+IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
+
   ib new-agent --parent $ID --leaf \"task\"   Spawn a leaf sub-agent (focused worker, no sub-agents)
   ib list --parent $ID                        List your sub-agents
   ib look <agent-id>                          Read an agent's output
@@ -453,6 +507,8 @@ You have access to the 'ib' tool for multi-agent coordination:
         # Leaf agents: simple communication with parent only
         IB_INSTRUCTIONS="
 You are a leaf/worker agent focused on your specific task.
+IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
+
 To send a message to your parent: ib send $PARENT \"your message\"
 
 Use this to report completion, ask questions, or share important findings.
@@ -544,7 +600,7 @@ EXITSCRIPT
     local ABS_AGENT_DIR="$(cd "$AGENT_DIR" && pwd)"
     local ABS_PROMPT_FILE="$ABS_AGENT_DIR/prompt.txt"
     local ABS_EXIT_SCRIPT="$ABS_AGENT_DIR/exit-check.sh"
-    local GIT_ROOT="$(pwd)"  # We're at git root (verified by require_git_root)
+    local GIT_ROOT="$ROOT_REPO_PATH"  # Root repo path (for PATH so 'ib' is available)
     local STARTUP_SCRIPT="$AGENT_DIR/start.sh"
     cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
@@ -561,8 +617,8 @@ EOF
         echo "Make sure tmux is installed: brew install tmux" >&2
         rm -rf "$AGENT_DIR"
         if [[ "$USE_WORKTREE" == true ]]; then
-            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
-            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" branch -D "$BRANCH_NAME" 2>/dev/null || true
         fi
         exit 1
     fi
@@ -574,8 +630,8 @@ EOF
         echo "Try running: tmux kill-server && tmux start-server" >&2
         rm -rf "$AGENT_DIR"
         if [[ "$USE_WORKTREE" == true ]]; then
-            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
-            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" branch -D "$BRANCH_NAME" 2>/dev/null || true
         fi
         exit 1
     fi
@@ -585,8 +641,8 @@ EOF
         echo "Error: tmux session '$ID' failed to start" >&2
         rm -rf "$AGENT_DIR"
         if [[ "$USE_WORKTREE" == true ]]; then
-            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
-            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git -C "$ROOT_REPO_PATH" branch -D "$BRANCH_NAME" 2>/dev/null || true
         fi
         exit 1
     fi
@@ -641,6 +697,10 @@ States:
   waiting   Agent is idle, may need input
   complete  Agent has signaled task completion (merge or kill to close)
   stopped   Session ended unexpectedly, needs user intervention
+
+Orphan Detection:
+  This command also checks for orphaned tmux sessions - sessions that exist
+  but have no matching agent data. Orphans are shown as warnings.
 EOF
                 exit 0
                 ;;
@@ -704,6 +764,45 @@ EOF
             printf "%-20s %-10s %-6s %-15s %s\n" "$id" "$state" "$age" "$parent" "$prompt"
         fi
     done
+
+    # Check for orphaned tmux sessions (sessions without matching agent directories)
+    local orphans=()
+    local known_ids=()
+
+    # Build list of known agent IDs
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        known_ids+=("$(basename "$agent_dir")")
+    done
+
+    # Check all tmux sessions for orphans
+    while IFS= read -r session; do
+        [[ -z "$session" ]] && continue
+        # Check if this session has a matching agent directory
+        local is_known=false
+        for known_id in "${known_ids[@]}"; do
+            if [[ "$session" == "$known_id" ]]; then
+                is_known=true
+                break
+            fi
+        done
+        if [[ "$is_known" == false ]]; then
+            orphans+=("$session")
+        fi
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+
+    # Show orphans if any
+    if [[ ${#orphans[@]} -gt 0 ]]; then
+        if [[ "$JSON_OUTPUT" != true ]]; then
+            echo ""
+            echo "WARNING: Found ${#orphans[@]} orphaned tmux session(s) without agent data:"
+            for orphan in "${orphans[@]}"; do
+                printf "  %-20s (use 'tmux kill-session -t %s' to remove)\n" "$orphan" "$orphan"
+            done
+            echo ""
+        fi
+        found_any=true
+    fi
 
     if [[ "$JSON_OUTPUT" == true ]]; then
         echo "[$(IFS=,; echo "${agents[*]}")]"
@@ -1566,6 +1665,9 @@ EOF
 # =============================================================================
 # MAIN DISPATCH
 # =============================================================================
+
+# Initialize paths to use root repo (handles running from worktrees)
+init_paths
 
 case "${1:-help}" in
     new-agent|new)

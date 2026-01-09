@@ -56,15 +56,17 @@ No formal test suite. Test manually by spawning agents:
 
 ```bash
 # Test basic spawn
-./ib new-agent --name test "echo hello and exit"
+ib new-agent --name test "echo hello and exit"
 
 # Test communication
-./ib send test "hello"
-./ib look test
+ib send test "hello"
+ib look test
 
 # Cleanup
-./ib kill test --force
+ib kill test --force
 ```
+
+**Note**: Always use `ib` (not `./ib`) to ensure you run the current version from PATH. This is especially important in worktrees where `./ib` would run a stale checkout.
 
 ## Key Implementation Details
 
@@ -92,7 +94,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
 2. **Monitor**: `ib list` — check agent states periodically
 3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
-4. **Close**: When `complete`, check work with `ib look/diff <id>`. If done, `ib merge <id>` or `ib kill <id>`. If not done, `ib send <id> "what's wrong and how to continue"`
+4. **Complete**: When `complete`, check work with `ib look/diff <id>`. If done, `ib merge <id>` or `ib kill <id>`. If not done, `ib send <id> "what's wrong and how to continue"`
 5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
 
 ### All Commands
