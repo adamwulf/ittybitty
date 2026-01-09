@@ -59,14 +59,36 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `ib new-agent "goal"` | Spawn a new agent, returns its ID |
+| `ib list` | Show all agents and their status |
+| `ib look <id>` | View an agent's recent output |
+| `ib send <id> "msg"` | Send input to an agent |
+| `ib status <id>` | Show agent's git commits and changes |
+| `ib diff <id>` | Show full diff of agent's work vs main |
+| `ib merge <id>` | Merge agent's work and permanently close it |
+| `ib kill <id>` | Permanently close agent without merging |
+| `ib resume <id>` | Restart a stopped agent's session |
+
+### Agent States
+
+| State | Meaning |
+|-------|---------|
+| `running` | Agent is actively processing |
+| `waiting` | Agent is idle, may need input |
+| `complete` | Agent signaled task completion (merge or kill to close) |
+| `stopped` | Session ended unexpectedly, needs user intervention |
+
 ### Workflow
 
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
-2. **Monitor**: `ib list` — see all agents and their status (running/waiting/stopped)
-3. **Look**: `ib look <id>` — view an agent's recent Claude history
-4. **Close**: When done, summarize the agent's work and ask the user:
-   - `ib merge <id>` — merge the agent's work into main and close
-   - `ib kill <id>` — close without merging
+2. **Monitor**: `ib list` — check agent states periodically
+3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
+4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
+5. **Recover**: If `stopped`, use `ib status/diff <id>` to check work, then `ib resume <id>`
 
 ### Key Differences from Task Tool
 
@@ -76,6 +98,8 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 | Shares your context | Isolated conversation |
 | No git isolation | Own branch + worktree |
 | Cannot spawn children | Can manage sub-agents |
+| Lost on crash | Resumable via session ID |
+
 </ittybitty>
 ```
 
