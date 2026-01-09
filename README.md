@@ -63,7 +63,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
 2. **Monitor**: `ib list` — see all agents and their status (running/waiting/done)
-3. **Watch**: `ib watch <id>` — view an agent's recent Claude history
+3. **Look**: `ib look <id>` — view an agent's recent Claude history
 4. **Close**: When done, summarize the agent's work and ask the user:
    - `ib merge <id>` — merge the agent's work into main and close
    - `ib kill <id>` — close without merging
@@ -94,7 +94,7 @@ Worker Agents (do specific tasks)
 
 **Key insight**: Agents communicate via tmux's stdin/stdout. No files, no protocols—just text.
 
-- Parent reads child's output: `ib watch <child-id>`
+- Parent reads child's output: `ib look <child-id>`
 - Parent sends answer: `ib send <child-id> "the answer"`
 - Child receives it as normal stdin, continues working
 
@@ -109,7 +109,7 @@ ib agents are different:
 | **Lifetime** | Ephemeral (single task) | Long-running (persistent tmux session) |
 | **Context** | Shared with parent | Isolated (own conversation, own git branch) |
 | **Blocking** | Parent waits for result | Parent continues working |
-| **Communication** | Automatic return value | Manual via `ib watch`/`ib send` |
+| **Communication** | Automatic return value | Manual via `ib look`/`ib send` |
 | **Git isolation** | None | Own worktree and branch |
 | **Can spawn children** | No | Yes (hierarchical teams) |
 
@@ -121,7 +121,7 @@ ib agents are **stable Claude Code instances** that can spawn, coordinate, and m
 
 When you spawn an agent from your primary Claude session, that agent **cannot interrupt you**. Your primary session is actively being used, so the agent's messages don't automatically appear. Instead:
 
-1. **You must check on agents**: Use `ib list` to see all agents and `ib watch <id>` to see their output
+1. **You must check on agents**: Use `ib list` to see all agents and `ib look <id>` to see their output
 2. **You must answer questions**: Use `ib send <id> "answer"` to respond when they're waiting
 3. **Agents wait for input**: If an agent asks a question, it blocks until answered
 
@@ -132,8 +132,8 @@ ib new-agent --name task2 "audit documentation links"
 
 # Check on them periodically
 ib list                    # Shows all agents with STATE and PARENT columns
-ib watch task1 --lines 20   # See recent output
-ib watch task2 --lines 20
+ib look task1 --lines 20   # See recent output
+ib look task2 --lines 20
 ```
 
 The `ib list` output shows a PARENT column—agents spawned by the top-level Claude show `-`, while sub-agents spawned by other ib agents show their parent's ID.
@@ -157,10 +157,10 @@ The agent starts in a tmux session with its own git worktree on branch `agent/re
 ib list
 
 # Read recent output
-ib watch research
+ib look research
 
 # Watch live (Ctrl+b d to detach)
-ib watch research --follow
+ib look research --follow
 ```
 
 ### 3. Answer questions
@@ -248,20 +248,20 @@ task-a1b2c3d4        running    12m    -               verify all citations in d
 worker-x1y2z3a4      waiting    3m     task-a1b2c3d4   check citation #3: https://exampl
 ```
 
-### Watch agent output
+### Look at agent output
 
 ```bash
 # Recent output (last 50 lines)
-ib watch task-abc
+ib look task-abc
 
 # More history
-ib watch task-abc --lines 200
+ib look task-abc --lines 200
 
 # Full scrollback
-ib watch task-abc --all
+ib look task-abc --all
 
 # Watch live (attaches to tmux session, Ctrl+b d to detach)
-ib watch task-abc --follow
+ib look task-abc --follow
 ```
 
 ### Send input to an agent
@@ -391,7 +391,7 @@ _
 
 **Primary Agent checks on it:**
 ```bash
-$ ib watch task-abc | tail -10
+$ ib look task-abc | tail -10
 # Sees the question
 
 $ ib send task-abc "Option 2"
@@ -400,7 +400,7 @@ $ ib send task-abc "Option 2"
 
 ### Detecting "waiting for input"
 
-The `ib list` command shows agents as "waiting" if their recent output ends with a question mark. This is a heuristic—you can also just check periodically with `ib watch`.
+The `ib list` command shows agents as "waiting" if their recent output ends with a question mark. This is a heuristic—you can also just check periodically with `ib look`.
 
 ## Git Worktrees
 
@@ -462,7 +462,7 @@ periodically. What else would you like to discuss?"
 $ ib list
 task-a1b2c3d4  running  5m  -  Verify all citations...
 
-$ ib watch task-a1b2c3d4 | tail -20
+$ ib look task-a1b2c3d4 | tail -20
 # Sees progress or questions
 
 # If agent has a question
@@ -481,9 +481,9 @@ ib new-agent --name research-figma "Research FigJam: features, pricing, recent u
 ib list
 
 # Collect results when done
-ib watch research-apple --all > apple-research.md
-ib watch research-miro --all > miro-research.md
-ib watch research-figma --all > figma-research.md
+ib look research-apple --all > apple-research.md
+ib look research-miro --all > miro-research.md
+ib look research-figma --all > figma-research.md
 
 # Cleanup
 ib kill research-apple --cleanup --force

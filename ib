@@ -408,7 +408,7 @@ EOF
 You have access to the 'ib' tool for multi-agent coordination:
   ib new-agent --parent $ID \"task\"   Spawn a sub-agent
   ib list --parent $ID                 List your sub-agents
-  ib watch <agent-id>                   Read an agent's output
+  ib look <agent-id>                   Read an agent's output
   ib send <agent-id> \"message\"        Send input to an agent
   ib status <agent-id>                 Check agent's git commits
   ib kill <agent-id>                   Stop an agent
@@ -785,10 +785,10 @@ EOF
 }
 
 # =============================================================================
-# COMMAND: watch
+# COMMAND: look
 # =============================================================================
 
-cmd_watch() {
+cmd_look() {
     local ID=""
     local LINES=50
     local FOLLOW=false
@@ -802,9 +802,9 @@ cmd_watch() {
             --follow)  FOLLOW=true; shift ;;
             -h|--help)
                 cat <<EOF
-Usage: ib watch <id> [options]
+Usage: ib look <id> [options]
 
-Watch an agent's recent output.
+Look at an agent's recent output.
 
 Arguments:
   id              Agent identifier
@@ -816,9 +816,9 @@ Options:
   -h, --help      Show this help
 
 Examples:
-  ib watch task-a1b2
-  ib watch task-a1b2 --lines 200
-  ib watch task-a1b2 --follow
+  ib look task-a1b2
+  ib look task-a1b2 --lines 200
+  ib look task-a1b2 --follow
 EOF
                 exit 0
                 ;;
@@ -840,7 +840,7 @@ EOF
 
     if [[ -z "$ID" ]]; then
         echo "Error: agent ID required" >&2
-        echo "Usage: ib watch <id> [options]" >&2
+        echo "Usage: ib look <id> [options]" >&2
         exit 1
     fi
 
@@ -1393,9 +1393,9 @@ case "${1:-help}" in
         shift
         cmd_send "$@"
         ;;
-    watch)
+    look)
         shift
-        cmd_watch "$@"
+        cmd_look "$@"
         ;;
     kill)
         shift
@@ -1411,7 +1411,7 @@ Commands:
   new-agent   Start a new agent with a prompt
   list        Show all agents and their state
   send        Send input to an agent
-  watch       Watch an agent's recent output
+  look        Look at an agent's recent output
   status      Show git status of agent's work (commits, changes)
   diff        Show full diff of agent's work vs main
   merge       Merge agent's work into main branch and close the agent
@@ -1433,7 +1433,7 @@ Run 'ib <command> --help' for command-specific help.
 Examples:
   ib new-agent "verify all citations in docs/comparison.md"
   ib list
-  ib watch agent-abc123
+  ib look agent-abc123
   ib status agent-abc123
   ib diff agent-abc123
   ib send agent-abc123 "yes, proceed with option 2"

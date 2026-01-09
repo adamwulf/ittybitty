@@ -34,7 +34,7 @@ The `ib` script is organized into commands, each with its own section:
 | 184 | `new-agent` | Spawn new agent with worktree/tmux session |
 | 547 | `list` | Show running/finished agents |
 | 651 | `send` | Send input to agent's stdin |
-| 765 | `watch` | Watch agent's tmux output |
+| 765 | `look` | Watch agent's tmux output |
 | 856 | `status` | Show agent's git commits/changes |
 | 983 | `diff` | Show full diff of agent's work |
 | 1071 | `kill` | Close agent without merging |
@@ -59,7 +59,7 @@ No formal test suite. Test manually by spawning agents:
 
 # Test communication
 ./ib send test "hello"
-./ib watch test
+./ib look test
 
 # Cleanup
 ./ib kill test --force
