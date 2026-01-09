@@ -798,10 +798,16 @@ EOF
     # Collect agent data
     local agents=()
     local found_any=false
+    local orphaned_dirs=()
 
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
-        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        # Track orphaned directories (no meta.json)
+        if [[ ! -f "$agent_dir/meta.json" ]]; then
+            orphaned_dirs+=("$(basename "$agent_dir")")
+            continue
+        fi
 
         local id=$(basename "$agent_dir")
         local meta="$agent_dir/meta.json"
@@ -876,6 +882,19 @@ EOF
             echo "WARNING: Found ${#orphans[@]} orphaned ib session(s) without agent data:"
             for orphan in "${orphans[@]}"; do
                 printf "  %-20s (use 'tmux kill-session -t %s' to remove)\n" "$orphan" "$orphan"
+            done
+            echo ""
+        fi
+        found_any=true
+    fi
+
+    # Show orphaned directories if any
+    if [[ ${#orphaned_dirs[@]} -gt 0 ]]; then
+        if [[ "$JSON_OUTPUT" != true ]]; then
+            echo ""
+            echo "WARNING: Found ${#orphaned_dirs[@]} orphaned agent director(ies) without meta.json:"
+            for orphan_dir in "${orphaned_dirs[@]}"; do
+                printf "  %-20s (use 'rm -rf %s/%s' to remove)\n" "$orphan_dir" "$AGENTS_DIR" "$orphan_dir"
             done
             echo ""
         fi
