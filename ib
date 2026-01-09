@@ -700,9 +700,18 @@ If \`ib merge\` fails due to conflicts, choose the best strategy:
 You are a leaf/worker agent focused on your specific task.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
 
-To send a message to your parent: ib send $PARENT \"your message\"
+To communicate with your parent: ib send $PARENT \"your message\"
 
-Use this to report completion, ask questions, or share important findings.
+Use this to:
+- Report completion or progress
+- Ask questions if requirements are unclear
+- Share important findings
+
+If you get stuck or encounter a blocker:
+1. Describe the specific problem you're facing
+2. Send a message to your parent: ib send $PARENT \"[STUCK] <description of problem>\"
+3. Enter WAITING state
+4. Your watchdog will notify your parent that you need help
 "
     fi
 
@@ -1562,6 +1571,7 @@ EOF
 
 cmd_nuke() {
     local FORCE=false
+    local TARGET_ID=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -1569,16 +1579,24 @@ cmd_nuke() {
             --force)   FORCE=true; shift ;;
             -h|--help)
                 cat <<EOF
-Usage: ib nuke [options]
+Usage: ib nuke [<id>] [options]
 
-EMERGENCY STOP: Kill all active agents immediately.
+EMERGENCY STOP: Kill agents without merging.
 
-This is an undocumented safety command for when agent spawning
-gets out of control. It will terminate ALL agents without merging.
+Without ID: Kills ALL active agents immediately.
+With ID:    Kills the specified agent and ALL its descendants recursively.
+
+Arguments:
+  id              Agent ID to nuke (along with all its children)
 
 Options:
   --force         Don't ask for confirmation
   -h, --help      Show this help
+
+Examples:
+  ib nuke                    # Kill ALL agents
+  ib nuke parent-agent       # Kill parent-agent and all its children/grandchildren
+  ib nuke parent-agent --force
 EOF
                 exit 0
                 ;;
@@ -1587,9 +1605,13 @@ EOF
                 exit 1
                 ;;
             *)
-                echo "Unknown argument: $1" >&2
-                echo "Usage: ib nuke [--force]" >&2
-                exit 1
+                if [[ -z "$TARGET_ID" ]]; then
+                    TARGET_ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
                 ;;
         esac
     done
@@ -1600,23 +1622,69 @@ EOF
         exit 0
     fi
 
-    # Count agents
-    local agent_count=0
-    for agent_dir in "$AGENTS_DIR"/*/; do
-        [[ -d "$agent_dir" ]] || continue
-        [[ -f "$agent_dir/meta.json" ]] || continue
-        ((agent_count++))
-    done
+    # If TARGET_ID specified, resolve it and find all descendants
+    local agents_to_kill=()
+    if [[ -n "$TARGET_ID" ]]; then
+        # Resolve partial ID
+        TARGET_ID=$(resolve_agent_id "$TARGET_ID") || exit 1
 
-    if [[ $agent_count -eq 0 ]]; then
-        echo "No agents found."
-        exit 0
+        # Build list of all descendants recursively
+        get_descendants() {
+            local parent_id="$1"
+            echo "$parent_id"  # Include the parent itself
+
+            # Find all direct children
+            for agent_dir in "$AGENTS_DIR"/*/; do
+                [[ -d "$agent_dir" ]] || continue
+                [[ -f "$agent_dir/meta.json" ]] || continue
+
+                local id=$(basename "$agent_dir")
+                local parent=$(jq -r '.parent // ""' "$agent_dir/meta.json" 2>/dev/null)
+                [[ "$parent" == "null" ]] && parent=""
+
+                if [[ "$parent" == "$parent_id" ]]; then
+                    # Recursively get this child's descendants
+                    get_descendants "$id"
+                fi
+            done
+        }
+
+        # Get all descendants
+        agents_to_kill=($(get_descendants "$TARGET_ID"))
+        local agent_count=${#agents_to_kill[@]}
+
+        if [[ $agent_count -eq 0 ]]; then
+            echo "No agents found to kill."
+            exit 0
+        fi
+    else
+        # No TARGET_ID - kill all agents
+        local agent_count=0
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            [[ -f "$agent_dir/meta.json" ]] || continue
+            agents_to_kill+=($(basename "$agent_dir"))
+            ((agent_count++))
+        done
+
+        if [[ $agent_count -eq 0 ]]; then
+            echo "No agents found."
+            exit 0
+        fi
     fi
 
     # Confirm if not forced
     if [[ "$FORCE" != true ]]; then
         local confirm
-        echo "WARNING: This will kill ALL $agent_count agent(s) without merging!"
+        if [[ -n "$TARGET_ID" ]]; then
+            echo "WARNING: This will kill agent '$TARGET_ID' and ${#agents_to_kill[@]} total agent(s) (including descendants) without merging!"
+            echo "Agents to be killed:"
+            for id in "${agents_to_kill[@]}"; do
+                echo "  - $id"
+            done
+        else
+            echo "WARNING: This will kill ALL ${#agents_to_kill[@]} agent(s) without merging!"
+        fi
         read -p "Are you sure? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
             echo "Cancelled."
@@ -1624,16 +1692,14 @@ EOF
         fi
     fi
 
-    echo "Killing $agent_count agent(s)..."
+    echo "Killing ${#agents_to_kill[@]} agent(s)..."
     local killed=0
     local failed=0
 
-    # Kill each agent
-    for agent_dir in "$AGENTS_DIR"/*/; do
+    # Kill each agent in the list
+    for id in "${agents_to_kill[@]}"; do
+        local agent_dir="$AGENTS_DIR/$id"
         [[ -d "$agent_dir" ]] || continue
-        [[ -f "$agent_dir/meta.json" ]] || continue
-
-        local id=$(basename "$agent_dir")
         local TMUX_SESSION=$(session_name "$id")
 
         echo -n "  Killing $id... "
@@ -2330,8 +2396,9 @@ EOF
             tree_part="$prefix$connector $id"
         fi
 
-        # Print with columns: tree_part (30 chars) | state (10 chars) | age (6 chars) | orphan note | prompt (40 chars)
-        printf "%-30s %-10s %-6s %-25s %s\n" "$tree_part" "$state" "$age" "$orphan_note" "$prompt"
+        # Print with columns: tree_part (max 35 chars, left-aligned) | state (10 chars) | age (6 chars) | orphan note (if any) | prompt
+        # Use tab-like spacing for better alignment regardless of tree depth
+        printf "%-35s  %-10s  %-6s  %-25s  %s\n" "$tree_part" "$state" "$age" "$orphan_note" "$prompt"
 
         # Print children
         local children=$(get_children "$id")
