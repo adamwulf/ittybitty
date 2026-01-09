@@ -2200,6 +2200,195 @@ cmd_watchdog() {
 }
 
 # =============================================================================
+# COMMAND: tree
+# =============================================================================
+
+cmd_tree() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib tree
+
+Show all agents in a tree structure displaying parent-child relationships.
+
+This makes it easy to see the hierarchy of agents and which agents spawned
+which sub-agents.
+
+Examples:
+  ib tree
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Check if agents directory exists
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "No agents found."
+        exit 0
+    fi
+
+    # Build a temporary data file with agent info
+    local tmpfile=$(mktemp)
+    trap "rm -f '$tmpfile'" EXIT
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id=$(basename "$agent_dir")
+        local meta="$agent_dir/meta.json"
+
+        # Read metadata
+        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
+        local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
+        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+
+        # Get state and age
+        local state=$(get_state "$id")
+        local age=$(format_age "$created")
+
+        # Display "unknown" as "waiting" for users
+        [[ "$state" == "unknown" ]] && state="waiting"
+
+        # Handle null parent
+        [[ "$parent" == "null" || -z "$parent" ]] && parent=""
+
+        # Store as: id|parent|state|age|prompt
+        echo "$id|$parent|$state|$age|$prompt" >> "$tmpfile"
+    done
+
+    if [[ ! -s "$tmpfile" ]]; then
+        echo "No agents found."
+        exit 0
+    fi
+
+
+    # Helper to get agent info
+    get_agent_info() {
+        local lookup_id="$1"
+        grep "^${lookup_id}|" "$tmpfile" | head -1
+    }
+
+    # Helper to get children of a parent
+    get_children() {
+        local parent_id="$1"
+        grep "|${parent_id}|" "$tmpfile" | cut -d'|' -f1
+    }
+
+    # Recursive function to print tree
+    print_tree() {
+        local id="$1"
+        local prefix="$2"
+        local is_last="$3"
+        local is_orphan="$4"  # Optional: parent ID if orphaned
+
+        # Get agent info
+        local info=$(get_agent_info "$id")
+        local parent=$(echo "$info" | cut -d'|' -f2)
+        local state=$(echo "$info" | cut -d'|' -f3)
+        local age=$(echo "$info" | cut -d'|' -f4)
+        local prompt=$(echo "$info" | cut -d'|' -f5-)
+
+        # Check if this is an orphaned root (has parent but parent doesn't exist)
+        local orphan_note=""
+        if [[ -z "$prefix" && -n "$parent" ]]; then
+            # This is a root but has a parent field, so it's orphaned
+            orphan_note=" [orphaned, parent: $parent]"
+        fi
+
+        # Print this node with aligned columns
+        local connector child_prefix tree_part
+        if [[ -z "$prefix" ]]; then
+            # Root node - no prefix/connector
+            tree_part="$id"
+            # Mark children as "first level" so they use connectors
+            child_prefix="."
+        elif [[ "$prefix" == "." ]]; then
+            # First level child (child of root) - just connector, no prefix before it
+            connector="├──"
+            child_prefix="│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="    "
+            fi
+            tree_part="$connector $id"
+        else
+            # Deeper level - prefix + connector
+            connector="├──"
+            child_prefix="${prefix}│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="${prefix}    "
+            fi
+            tree_part="$prefix$connector $id"
+        fi
+
+        # Print with columns: tree_part (30 chars) | state (10 chars) | age (6 chars) | orphan note | prompt (40 chars)
+        printf "%-30s %-10s %-6s %-25s %s\n" "$tree_part" "$state" "$age" "$orphan_note" "$prompt"
+
+        # Print children
+        local children=$(get_children "$id")
+        if [[ -n "$children" ]]; then
+            local child_array=($children)
+            local child_count=${#child_array[@]}
+            local i=0
+            for child in "${child_array[@]}"; do
+                i=$((i + 1))
+                local child_is_last="false"
+                [[ $i -eq $child_count ]] && child_is_last="true"
+                print_tree "$child" "$child_prefix" "$child_is_last"
+            done
+        fi
+    }
+
+    # Build list of all agent IDs
+    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+
+    # Find root agents (those with no parent OR whose parent doesn't exist)
+    local roots=""
+    while IFS='|' read -r id parent _rest; do
+        if [[ -z "$parent" ]]; then
+            # No parent - definitely a root
+            roots="$roots $id"
+        else
+            # Has parent - check if parent exists
+            if ! echo "$all_ids" | grep -q "^${parent}$"; then
+                # Parent doesn't exist - orphaned agent, treat as root
+                roots="$roots $id"
+            fi
+        fi
+    done < "$tmpfile"
+
+    # Trim leading space
+    roots="${roots# }"
+
+    if [[ -z "$roots" ]]; then
+        echo "No root agents found."
+        exit 0
+    fi
+
+    # Print each root and its tree
+    local root_array=($roots)
+    local root_count=${#root_array[@]}
+    local i=0
+    for root in "${root_array[@]}"; do
+        i=$((i + 1))
+        local is_last="false"
+        [[ $i -eq $root_count && $root_count -gt 1 ]] && is_last="true"
+        print_tree "$root" "" "$is_last"
+        # Add blank line between trees if multiple roots
+        [[ $i -lt $root_count ]] && echo ""
+    done
+}
+
+# =============================================================================
 # MAIN DISPATCH
 # =============================================================================
 
@@ -2214,6 +2403,10 @@ case "${1:-help}" in
     list|ls)
         shift
         cmd_list "$@"
+        ;;
+    tree)
+        shift
+        cmd_tree "$@"
         ;;
     status)
         shift
@@ -2264,6 +2457,7 @@ Usage: ib <command> [options]
 Commands:
   new-agent   Start a new agent with a prompt
   list        Show all agents and their state
+  tree        Show agents in a tree structure (parent-child hierarchy)
   send        Send input to an agent
   look        Look at an agent's recent output
   status      Show git status of agent's work (commits, changes)
@@ -2289,6 +2483,7 @@ Run 'ib <command> --help' for command-specific help.
 Examples:
   ib new-agent "verify all citations in docs/comparison.md"
   ib list
+  ib tree
   ib look agent-abc123
   ib status agent-abc123
   ib diff agent-abc123
