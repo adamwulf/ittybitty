@@ -1881,6 +1881,7 @@ cmd_watchdog() {
     # Initialize counters and flags
     local waiting_counter=0
     local notified_complete=false
+    local prev_state=""
 
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
@@ -1889,7 +1890,11 @@ cmd_watchdog() {
         case "$state" in
             waiting)
                 waiting_counter=$((waiting_counter + 1))
-                echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+
+                # Only log state change or when counter increments (to show progress)
+                if [[ "$prev_state" != "waiting" ]]; then
+                    echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+                fi
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
@@ -1906,7 +1911,7 @@ cmd_watchdog() {
             complete)
                 waiting_counter=0
                 if [[ "$notified_complete" != "true" ]]; then
-                    echo "[watchdog] Agent state: complete (first time)"
+                    echo "[watchdog] Agent state: complete"
                     if [[ "$QUIET" == "true" ]]; then
                         echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent has completed"
                     else
@@ -1914,16 +1919,18 @@ cmd_watchdog() {
                         ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
                     fi
                     notified_complete=true
-                else
-                    echo "[watchdog] Agent state: complete (already notified)"
                 fi
+                # No logging if already notified - silence
                 ;;
 
             running|unknown)
-                if [[ $waiting_counter -gt 0 ]]; then
-                    echo "[watchdog] Agent state: $state (reset waiting counter)"
-                else
-                    echo "[watchdog] Agent state: $state"
+                # Only log on state change or if clearing flags
+                if [[ "$prev_state" != "$state" ]]; then
+                    if [[ $waiting_counter -gt 0 ]]; then
+                        echo "[watchdog] Agent state: $state (reset waiting counter)"
+                    else
+                        echo "[watchdog] Agent state: $state"
+                    fi
                 fi
                 waiting_counter=0
 
@@ -1935,15 +1942,19 @@ cmd_watchdog() {
                 ;;
 
             stopped)
-                if [[ $waiting_counter -gt 0 ]]; then
-                    echo "[watchdog] Agent state: stopped (reset waiting counter)"
-                else
-                    echo "[watchdog] Agent state: stopped"
+                # Only log on state change
+                if [[ "$prev_state" != "stopped" ]]; then
+                    if [[ $waiting_counter -gt 0 ]]; then
+                        echo "[watchdog] Agent state: stopped (reset waiting counter)"
+                    else
+                        echo "[watchdog] Agent state: stopped"
+                    fi
                 fi
                 waiting_counter=0
                 ;;
         esac
 
+        prev_state="$state"
         sleep 5
     done
 
