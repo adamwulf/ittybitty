@@ -1,4 +1,5 @@
 {
+  "model": "sonnet",
   "permissions": {
     "task": {
       "allow": ["Read", "Write", "Edit", "Glob", "Grep"],

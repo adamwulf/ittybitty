@@ -47,7 +47,7 @@ archive_agent_output() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS
+# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL
 load_config() {
     CONFIG_TASK_ALLOW=""
     CONFIG_TASK_DENY=""
@@ -55,6 +55,7 @@ load_config() {
     CONFIG_LEAF_DENY=""
     CONFIG_CREATE_PRS="false"
     CONFIG_MAX_AGENTS="10"
+    CONFIG_MODEL=""
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -79,6 +80,12 @@ load_config() {
 
     # Read max agents setting
     CONFIG_MAX_AGENTS=$(jq -r '.maxAgents // 10' "$config_file" 2>/dev/null)
+
+    # Read model setting
+    CONFIG_MODEL=$(jq -r '.model // ""' "$config_file" 2>/dev/null)
+    if [[ "$CONFIG_MODEL" == "null" ]]; then
+        CONFIG_MODEL=""
+    fi
 }
 
 # Count active agents (agents with meta.json)
@@ -411,6 +418,7 @@ Configuration:
 
     {
       "maxAgents": 10,
+      "model": "sonnet",
       "permissions": {
         "task": { "allow": ["Read", "Write", "Edit"], "deny": [] },
         "leaf": { "allow": ["Read", "Write"], "deny": [] }
@@ -418,6 +426,8 @@ Configuration:
     }
 
   - maxAgents: Maximum number of concurrent agents (default: 10)
+  - model: Default Claude model for spawned agents (e.g., opus, sonnet, haiku)
+           Overridden by --model parameter if provided
   - permissions.task: Applied to regular (coordinator) agents
   - permissions.leaf: Applied to leaf/worker agents
   - Bash(ib:*) is always added for agent coordination
@@ -470,6 +480,11 @@ EOF
     # Load config for PR settings
     load_config
 
+    # Apply model from config if not specified via --model parameter
+    if [[ -z "$MODEL" && -n "$CONFIG_MODEL" ]]; then
+        MODEL="$CONFIG_MODEL"
+    fi
+
     # Check max agents limit
     local current_agent_count=$(count_agents)
     if [[ "$current_agent_count" -ge "$CONFIG_MAX_AGENTS" ]]; then
@@ -519,7 +534,9 @@ EOF
         # Build agent settings with permissions from .ittybitty.json config
         mkdir -p "$AGENT_DIR/repo/.claude"
         local agent_type="task"
-        [[ "$LEAF_MODE" == true ]] && agent_type="leaf"
+        if [[ "$LEAF_MODE" == true ]]; then
+            agent_type="leaf"
+        fi
 
         if command -v jq &>/dev/null; then
             # Run build_agent_settings from root repo context
@@ -893,6 +910,7 @@ Output columns:
   ID        Agent identifier
   STATE     running, waiting, complete, or stopped
   AGE       Time since spawn
+  MODEL     Claude model being used
   PARENT    Parent agent ID (if any)
   PROMPT    First 40 chars of prompt
 
@@ -947,6 +965,10 @@ EOF
         local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
         local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
         local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+        if [[ "$model" == "null" || -z "$model" ]]; then
+            model="-"
+        fi
 
         # Filter by parent if requested
         if [[ -n "$PARENT_FILTER" && "$parent" != "$PARENT_FILTER" ]]; then
@@ -962,17 +984,21 @@ EOF
         local age=$(format_age "$created")
 
         # Handle null parent for display
-        [[ "$parent" == "null" ]] && parent="-"
+        if [[ "$parent" == "null" || -z "$parent" ]]; then
+            parent="-"
+        fi
 
         # Display "unknown" as "waiting" for users
         local display_state="$state"
-        [[ "$state" == "unknown" ]] && display_state="waiting"
+        if [[ "$state" == "unknown" ]]; then
+            display_state="waiting"
+        fi
 
         if [[ "$JSON_OUTPUT" == true ]]; then
-            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
+            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"model\":\"$model\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
         else
             # Store pipe-delimited for column alignment
-            agent_lines+=("${id}|${display_state}|${age}|${parent}|${prompt}")
+            agent_lines+=("${id}|${display_state}|${age}|${model}|${parent}|${prompt}")
         fi
     done
 
@@ -1647,7 +1673,9 @@ EOF
 
                 local id=$(basename "$agent_dir")
                 local parent=$(jq -r '.parent // ""' "$agent_dir/meta.json" 2>/dev/null)
-                [[ "$parent" == "null" ]] && parent=""
+                if [[ "$parent" == "null" ]]; then
+                    parent=""
+                fi
 
                 if [[ "$parent" == "$parent_id" ]]; then
                     # Recursively get this child's descendants
@@ -1846,7 +1874,9 @@ EOF
 
     # Read model from meta.json if set
     local MODEL=$(jq -r '.model // ""' "$META_FILE" 2>/dev/null)
-    [[ "$MODEL" == "null" ]] && MODEL=""
+    if [[ "$MODEL" == "null" ]]; then
+        MODEL=""
+    fi
 
     # Determine working directory
     local WORK_PATH="$AGENT_DIR/repo"
@@ -2322,19 +2352,29 @@ EOF
         local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
         local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
         local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
 
         # Get state and age
         local state=$(get_state "$id")
         local age=$(format_age "$created")
 
         # Display "unknown" as "waiting" for users
-        [[ "$state" == "unknown" ]] && state="waiting"
+        if [[ "$state" == "unknown" ]]; then
+            state="waiting"
+        fi
 
         # Handle null parent
-        [[ "$parent" == "null" || -z "$parent" ]] && parent=""
+        if [[ "$parent" == "null" || -z "$parent" ]]; then
+            parent=""
+        fi
 
-        # Store as: id|parent|state|age|prompt
-        echo "$id|$parent|$state|$age|$prompt" >> "$tmpfile"
+        # Handle null model
+        if [[ "$model" == "null" || -z "$model" ]]; then
+            model="-"
+        fi
+
+        # Store as: id|parent|state|age|model|prompt
+        echo "$id|$parent|$state|$age|$model|$prompt" >> "$tmpfile"
     done
 
     if [[ ! -s "$tmpfile" ]]; then
@@ -2367,7 +2407,8 @@ EOF
         local parent=$(echo "$info" | cut -d'|' -f2)
         local state=$(echo "$info" | cut -d'|' -f3)
         local age=$(echo "$info" | cut -d'|' -f4)
-        local prompt=$(echo "$info" | cut -d'|' -f5-)
+        local model=$(echo "$info" | cut -d'|' -f5)
+        local prompt=$(echo "$info" | cut -d'|' -f6-)
 
         # Check if this is an orphaned root (has parent but parent doesn't exist)
         local orphan_note=""
@@ -2404,8 +2445,8 @@ EOF
         fi
 
         # Print with separator for column command to align
-        # Format: tree_part | state | age | orphan_note | prompt
-        echo "${tree_part}|${state}|${age}|${orphan_note}|${prompt}"
+        # Format: tree_part | state | age | model | orphan_note | prompt
+        echo "${tree_part}|${state}|${age}|${model}|${orphan_note}|${prompt}"
 
         # Print children
         local children=$(get_children "$id")
@@ -2416,7 +2457,9 @@ EOF
             for child in "${child_array[@]}"; do
                 i=$((i + 1))
                 local child_is_last="false"
-                [[ $i -eq $child_count ]] && child_is_last="true"
+                if [[ $i -eq $child_count ]]; then
+                    child_is_last="true"
+                fi
                 print_tree "$child" "$child_prefix" "$child_is_last"
             done
         fi
@@ -2456,10 +2499,14 @@ EOF
         for root in "${root_array[@]}"; do
             i=$((i + 1))
             local is_last="false"
-            [[ $i -eq $root_count && $root_count -gt 1 ]] && is_last="true"
+            if [[ $i -eq $root_count && $root_count -gt 1 ]]; then
+                is_last="true"
+            fi
             print_tree "$root" "" "$is_last"
             # Add blank line between trees if multiple roots
-            [[ $i -lt $root_count ]] && echo ""
+            if [[ $i -lt $root_count ]]; then
+                echo ""
+            fi
         done
     } | column -t -s '|'
 }
