@@ -1813,12 +1813,36 @@ cmd_hook_status() {
 }
 
 cmd_watchdog() {
-    local AGENT_ID="$1"
+    local AGENT_ID=""
+    local QUIET=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quiet)
+                QUIET=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$AGENT_ID" ]]; then
+                    AGENT_ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
 
     # Validate argument
     if [[ -z "$AGENT_ID" ]]; then
         echo "Error: agent ID required" >&2
-        echo "Usage: ib watchdog <agent-id>" >&2
+        echo "Usage: ib watchdog <agent-id> [--quiet]" >&2
         exit 1
     fi
 
@@ -1835,10 +1859,18 @@ cmd_watchdog() {
     # Load parent from meta.json
     local parent=$(jq -r '.parent // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
 
-    # Check if agent has a parent
-    if [[ -z "$parent" || "$parent" == "null" ]]; then
-        echo "Agent $AGENT_ID has no parent, exiting"
-        exit 0
+    # Check if agent has a parent (skip check in quiet mode)
+    if [[ "$QUIET" != "true" ]]; then
+        if [[ -z "$parent" || "$parent" == "null" ]]; then
+            echo "Agent $AGENT_ID has no parent, exiting" >&2
+            echo "Hint: Use --quiet to monitor agents without parents" >&2
+            exit 1
+        fi
+    else
+        # In quiet mode, set parent to "none" if it doesn't exist
+        if [[ -z "$parent" || "$parent" == "null" ]]; then
+            parent="(none)"
+        fi
     fi
 
     # Set up Ctrl+C trap for clean exit
@@ -1861,8 +1893,12 @@ cmd_watchdog() {
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
-                    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent is waiting for input"
-                    ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
+                    if [[ "$QUIET" == "true" ]]; then
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent is waiting for input"
+                    else
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent is waiting for input"
+                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
+                    fi
                     waiting_counter=0  # Reset to avoid spam
                 fi
                 ;;
@@ -1871,8 +1907,12 @@ cmd_watchdog() {
                 waiting_counter=0
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete (first time)"
-                    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent has completed"
-                    ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
+                    if [[ "$QUIET" == "true" ]]; then
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent has completed"
+                    else
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent has completed"
+                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
+                    fi
                     notified_complete=true
                 else
                     echo "[watchdog] Agent state: complete (already notified)"
