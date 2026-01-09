@@ -397,6 +397,18 @@ EOF
         exit 1
     fi
 
+    # Auto-detect parent if not explicitly set and we're in an agent worktree
+    if [[ -z "$PARENT" ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+            # Find the agent directory and read meta.json
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                PARENT=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        fi
+    fi
+
     # Load config for PR settings
     load_config
 
@@ -572,6 +584,31 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib merge <agent-id>                         Merge agent's work and close it
   ib kill <agent-id>                          Stop an agent without merging
 
+TASK SIZING STRATEGY:
+When you receive a task, think about what is needed to accomplish it, then decide:
+
+  SMALL TASK (do yourself)
+    - One agent can finish quickly
+    - Just do the task yourself - don't spawn sub-agents unnecessarily
+
+  MEDIUM TASK (2-3 parallel agents)
+    - Can be split into 2-3 independent subtasks
+    - Spawn leaf agents to work in parallel
+    - After spawning them, enter WAITING mode - you'll be notified when they complete
+
+  LARGE TASK (multiple stages)
+    - Requires multiple stages that must run serially
+    - Use TodoWrite tool to track stages
+    - For each stage, spawn leaf agents to work in parallel
+    - After spawning agents for a stage, enter WAITING mode
+    - When notified of completion, review work and move to next stage
+
+AUTOMATIC NOTIFICATIONS:
+  - A watchdog monitors each sub-agent you spawn
+  - You will be notified when sub-agents complete OR when they need help
+  - Once you've created agents to work, enter WAITING mode - don't poll 'ib list'
+  - The watchdog ensures you're woken up when action is needed
+
 If \`ib merge\` fails due to conflicts, choose the best strategy:
 1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
 2. Spawn a sub-agent to handle the merge resolution, then monitor it to completion
@@ -729,6 +766,11 @@ EOF
     if [[ "$YOLO_MODE" != true ]]; then
         sleep 2
         tmux send-keys -t "$TMUX_SESSION" Enter
+    fi
+
+    # Auto-spawn watchdog if agent has a parent
+    if [[ -n "$PARENT" ]]; then
+        ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
 
     # Output the agent ID
@@ -1813,12 +1855,36 @@ cmd_hook_status() {
 }
 
 cmd_watchdog() {
-    local AGENT_ID="$1"
+    local AGENT_ID=""
+    local QUIET=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quiet)
+                QUIET=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$AGENT_ID" ]]; then
+                    AGENT_ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
 
     # Validate argument
     if [[ -z "$AGENT_ID" ]]; then
         echo "Error: agent ID required" >&2
-        echo "Usage: ib watchdog <agent-id>" >&2
+        echo "Usage: ib watchdog <agent-id> [--quiet]" >&2
         exit 1
     fi
 
@@ -1835,20 +1901,29 @@ cmd_watchdog() {
     # Load parent from meta.json
     local parent=$(jq -r '.parent // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
 
-    # Check if agent has a parent
-    if [[ -z "$parent" || "$parent" == "null" ]]; then
-        echo "Agent $AGENT_ID has no parent, exiting"
-        exit 0
+    # Check if agent has a parent (skip check in quiet mode)
+    if [[ "$QUIET" != "true" ]]; then
+        if [[ -z "$parent" || "$parent" == "null" ]]; then
+            echo "Agent $AGENT_ID has no parent, exiting" >&2
+            echo "Hint: Use --quiet to monitor agents without parents" >&2
+            exit 1
+        fi
+    else
+        # In quiet mode, set parent to "none" if it doesn't exist
+        if [[ -z "$parent" || "$parent" == "null" ]]; then
+            parent="(none)"
+        fi
     fi
 
     # Set up Ctrl+C trap for clean exit
-    trap 'echo ""; echo "[watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
+    trap 'echo ""; echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
 
-    echo "[watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
 
     # Initialize counters and flags
     local waiting_counter=0
     local notified_complete=false
+    local prev_state=""
 
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
@@ -1857,11 +1932,20 @@ cmd_watchdog() {
         case "$state" in
             waiting)
                 waiting_counter=$((waiting_counter + 1))
-                echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+
+                # Only log state change or when counter increments (to show progress)
+                if [[ "$prev_state" != "waiting" ]]; then
+                    echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+                fi
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
-                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID is waiting for input' to parent $parent"
+                    if [[ "$QUIET" == "true" ]]; then
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent is waiting for input"
+                    else
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent is waiting for input"
+                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
+                    fi
                     waiting_counter=0  # Reset to avoid spam
                 fi
                 ;;
@@ -1869,19 +1953,26 @@ cmd_watchdog() {
             complete)
                 waiting_counter=0
                 if [[ "$notified_complete" != "true" ]]; then
-                    echo "[watchdog] Agent state: complete (first time)"
-                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID has completed' to parent $parent"
+                    echo "[watchdog] Agent state: complete"
+                    if [[ "$QUIET" == "true" ]]; then
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent has completed"
+                    else
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent has completed"
+                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
+                    fi
                     notified_complete=true
-                else
-                    echo "[watchdog] Agent state: complete (already notified)"
                 fi
+                # No logging if already notified - silence
                 ;;
 
             running|unknown)
-                if [[ $waiting_counter -gt 0 ]]; then
-                    echo "[watchdog] Agent state: $state (reset waiting counter)"
-                else
-                    echo "[watchdog] Agent state: $state"
+                # Only log on state change or if clearing flags
+                if [[ "$prev_state" != "$state" ]]; then
+                    if [[ $waiting_counter -gt 0 ]]; then
+                        echo "[watchdog] Agent state: $state (reset waiting counter)"
+                    else
+                        echo "[watchdog] Agent state: $state"
+                    fi
                 fi
                 waiting_counter=0
 
@@ -1893,20 +1984,24 @@ cmd_watchdog() {
                 ;;
 
             stopped)
-                if [[ $waiting_counter -gt 0 ]]; then
-                    echo "[watchdog] Agent state: stopped (reset waiting counter)"
-                else
-                    echo "[watchdog] Agent state: stopped"
+                # Only log on state change
+                if [[ "$prev_state" != "stopped" ]]; then
+                    if [[ $waiting_counter -gt 0 ]]; then
+                        echo "[watchdog] Agent state: stopped (reset waiting counter)"
+                    else
+                        echo "[watchdog] Agent state: stopped"
+                    fi
                 fi
                 waiting_counter=0
                 ;;
         esac
 
+        prev_state="$state"
         sleep 5
     done
 
     # Agent killed/merged - worktree gone
-    echo "[watchdog] Agent $AGENT_ID worktree removed, exiting"
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Agent $AGENT_ID worktree removed, exiting"
 }
 
 # =============================================================================
