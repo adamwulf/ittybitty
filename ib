@@ -1793,6 +1793,40 @@ cmd_hook_status() {
     echo "$state"
 }
 
+cmd_watchdog() {
+    local AGENT_ID="$1"
+
+    # Validate argument
+    if [[ -z "$AGENT_ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib watchdog <agent-id>" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    AGENT_ID=$(resolve_agent_id "$AGENT_ID") || exit 1
+
+    # Get agent directory
+    local AGENT_DIR="$AGENTS_DIR/$AGENT_ID"
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: Agent $AGENT_ID not found" >&2
+        exit 1
+    fi
+
+    # Load parent from meta.json
+    local parent=$(jq -r '.parent // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+
+    # Check if agent has a parent
+    if [[ -z "$parent" || "$parent" == "null" ]]; then
+        echo "Agent $AGENT_ID has no parent, exiting"
+        exit 0
+    fi
+
+    # For now, just echo the parent and exit (monitoring loop will be added later)
+    echo "Watchdog monitoring agent $AGENT_ID (parent: $parent)"
+    echo "Parent: $parent"
+}
+
 # =============================================================================
 # MAIN DISPATCH
 # =============================================================================
@@ -1841,6 +1875,10 @@ case "${1:-help}" in
         shift
         cmd_hook_status "$@"
         ;;
+    watchdog)
+        shift
+        cmd_watchdog "$@"
+        ;;
     help|--help|-h)
         cat <<EOF
 ib (ittybitty) - multi-agent orchestration for Claude Code
@@ -1857,6 +1895,7 @@ Commands:
   merge       Merge agent's work into main branch and close the agent
   kill        Close an agent without merging
   resume      Restart a stopped agent's session
+  watchdog    Monitor an agent and notify parent when it needs attention
 
 Aliases:
   new         Alias for new-agent
@@ -1878,6 +1917,7 @@ Examples:
   ib status agent-abc123
   ib diff agent-abc123
   ib send agent-abc123 "yes, proceed with option 2"
+  ib watchdog agent-abc123
   ib merge agent-abc123
   ib kill agent-abc123
   ib resume agent-abc123
