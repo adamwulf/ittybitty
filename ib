@@ -322,22 +322,17 @@ auto_accept_workspace_trust() {
     local max_attempts=5
     local attempt=0
 
-    # Initial grace period for Claude Code to start
-    sleep 4
-
-    # Send first Enter
-    tmux send-keys -t "$TMUX_SESSION" Enter
-
     # Poll until permissions screen is gone or max attempts reached
     while [[ $attempt -lt $max_attempts ]]; do
+        # Initial grace period for Claude Code to start, then poll every 4s
         sleep 4
 
         # Capture recent output from tmux
         local recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50 2>/dev/null)
 
         # Check if still showing workspace trust dialog
-        # Common text: "Enter to confirm", "trust" (as in "Do you trust...")
-        if echo "$recent_output" | grep -qiE "Enter to confirm|trust"; then
+        # Require BOTH "Enter to confirm" AND "trust" to avoid false positives
+        if echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"; then
             echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
             tmux send-keys -t "$TMUX_SESSION" Enter
             attempt=$((attempt + 1))
