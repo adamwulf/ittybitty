@@ -116,6 +116,5 @@ Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--le
 ## Limitations
 
 - **Poll-based communication**: Agents can't interrupt you—check on them with `ib list` and `ib look`
-- **Manual merge resolution**: If multiple agents modify the same files, you handle conflicts
-- **Context limits**: Long-running agents will hit context windows; break large tasks into smaller agents
-- **No automatic retry**: If an agent crashes, kill it and start over
+- **Merge conflicts**: If `ib merge` fails due to conflicts, the merging agent resolves them manually (edit files, `git add`, `git commit`)
+- **Context limits**: Long-running agents may hit existing Claude context windows; break large tasks into smaller agents

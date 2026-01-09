@@ -521,6 +521,10 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib status <agent-id>                        Check agent's git commits
   ib merge <agent-id>                         Merge agent's work and close it
   ib kill <agent-id>                          Stop an agent without merging
+
+If \`ib merge\` fails due to conflicts, you are left in a merge state on the target branch.
+Resolve conflicts by editing files, then \`git add <files> && git commit\` to complete.
+Finally, manually clean up: \`git worktree remove <worktree-path> --force && git branch -D agent/<id>\`
 "
     else
         # Leaf agents: simple communication with parent only
