@@ -403,16 +403,56 @@ EXITSCRIPT
     chmod +x "$EXIT_SCRIPT"
 
     # Write a startup script that handles the prompt properly
+    # Use absolute paths since tmux runs from the worktree directory
+    local ABS_AGENT_DIR="$(cd "$AGENT_DIR" && pwd)"
+    local ABS_PROMPT_FILE="$ABS_AGENT_DIR/prompt.txt"
+    local ABS_EXIT_SCRIPT="$ABS_AGENT_DIR/exit-check.sh"
+    local GIT_ROOT="$(pwd)"  # We're at git root (verified by require_git_root)
     local STARTUP_SCRIPT="$AGENT_DIR/start.sh"
     cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
-claude $CLAUDE_ARGS "\$(cat '$PROMPT_FILE')"
-$EXIT_SCRIPT
+# Add git repo root to PATH so 'ib' is available
+export PATH="$GIT_ROOT:\$PATH"
+claude $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')"
+$ABS_EXIT_SCRIPT
 EOF
     chmod +x "$STARTUP_SCRIPT"
 
-    # Start tmux session with startup script
-    tmux new-session -d -s "$ID" -c "$WORK_PATH" "$STARTUP_SCRIPT"
+    # Ensure tmux server is running (start-server is idempotent)
+    if ! tmux start-server 2>/dev/null; then
+        echo "Error: could not start tmux server" >&2
+        echo "Make sure tmux is installed: brew install tmux" >&2
+        rm -rf "$AGENT_DIR"
+        if [[ "$USE_WORKTREE" == true ]]; then
+            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+        fi
+        exit 1
+    fi
+
+    # Start tmux session with startup script (use absolute path)
+    local ABS_STARTUP_SCRIPT="$ABS_AGENT_DIR/start.sh"
+    if ! tmux new-session -d -s "$ID" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
+        echo "Error: could not create tmux session '$ID'" >&2
+        echo "Try running: tmux kill-server && tmux start-server" >&2
+        rm -rf "$AGENT_DIR"
+        if [[ "$USE_WORKTREE" == true ]]; then
+            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+        fi
+        exit 1
+    fi
+
+    # Verify session was created
+    if ! tmux has-session -t "$ID" 2>/dev/null; then
+        echo "Error: tmux session '$ID' failed to start" >&2
+        rm -rf "$AGENT_DIR"
+        if [[ "$USE_WORKTREE" == true ]]; then
+            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
+            git branch -D "$BRANCH_NAME" 2>/dev/null || true
+        fi
+        exit 1
+    fi
 
     # For non-yolo mode, auto-accept the workspace trust dialog
     # (yolo bypasses this entirely, but default and strict still see it)
