@@ -58,31 +58,36 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
 
-### Automatic Notifications
+### Automatic Notifications (Agent-to-Agent Only)
 
-When an agent spawns a child agent:
+**IMPORTANT**: Watchdog notifications only work between agents, not with user-facing Claude instances.
+  - "If you are a primary agent in a user conversation" → no notifications, must poll
+  - "If you are a background agent spawning sub-agents" → automatic notifications
+
+When agent spawns child agent (agent-to-agent):
 - A watchdog is automatically spawned to monitor the child
-- The watchdog notifies the parent when:
+- The watchdog notifies the parent agent when:
   - Child is waiting for >30 seconds (needs input)
   - Child completes (ready to review/merge)
 - Parent agents should enter WAITING mode after spawning children
-- No need to poll `ib list` - watchdogs ensure timely notifications
+- No need for agents to poll `ib list` - watchdogs ensure timely notifications
 
 ### Workflow
 
-**For agents spawning sub-agents:**
+**If you are a primary agent in a user conversation (no watchdog notifications):**
+1. **Spawn**: `ib new-agent "clearly defined goal"` — returns agent ID
+2. **Poll actively**: Use `ib list` check agent states every few minutes (you won't get notifications! be mindful to use as little context as possible, no need to spam)
+3. **Check status**: When agent shows `waiting` or `complete`, use `ib look <id>` to review
+4. **Interact**: If `waiting` and needs input, use `ib send <id> "answer"`
+5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+
+**If you are a background agent spawning sub-agents (automatic watchdog notifications):**
 1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects parent, watchdog auto-spawns
-2. **Enter WAITING**: Parent enters WAITING mode after spawning sub-agents
-3. **Auto-notify**: Watchdog monitors each child and notifies parent when:
+2. **Enter WAITING**: Enter WAITING mode after spawning sub-agents (use `read` or similar)
+3. **Auto-notify**: Watchdog monitors each child and notifies you when:
    - Child has been waiting >30s (needs input)
    - Child completes (ready to merge/review)
-4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id>` or `ib kill <id>`
-
-**For user-spawned agents:**
-1. **Spawn**: `ib new-agent "goal"` — returns agent ID
-2. **Monitor**: `ib list` — check agent states
-3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
-4. **Complete**: When `complete`, check with `ib diff <id>` and `ib merge <id>`
+4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id>` or `ib kill <id>` or `ib send <id>` if changes are needed
 
 ### All Commands
 
@@ -175,10 +180,12 @@ Use `ib nuke --force` to skip the confirmation prompt.
 **Project config (`.ittybitty.json`):**
 ```json
 {
+  "maxAgents": 10,
   "createPullRequests": true
 }
 ```
-When enabled (and `gh` CLI is installed with a git remote configured), agents will create a pull request when their work is complete instead of leaving changes on their branch.
+- **`maxAgents`**: Maximum number of concurrent agents allowed (default: 10). This is a safety limit for the entire repository to prevent runaway agent spawning.
+- **`createPullRequests`**: When enabled (and `gh` CLI is installed with a git remote configured), agents will create a pull request when their work is complete instead of leaving changes on their branch.
 
 **Environment:** Set `ITTYBITTY_DIR` to change the base directory (default: `.ittybitty`).
 

@@ -47,13 +47,14 @@ archive_agent_output() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS
+# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS
 load_config() {
     CONFIG_TASK_ALLOW=""
     CONFIG_TASK_DENY=""
     CONFIG_LEAF_ALLOW=""
     CONFIG_LEAF_DENY=""
     CONFIG_CREATE_PRS="false"
+    CONFIG_MAX_AGENTS="10"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -75,6 +76,26 @@ load_config() {
 
     # Read PR creation setting
     CONFIG_CREATE_PRS=$(jq -r '.createPullRequests // false' "$config_file" 2>/dev/null)
+
+    # Read max agents setting
+    CONFIG_MAX_AGENTS=$(jq -r '.maxAgents // 10' "$config_file" 2>/dev/null)
+}
+
+# Count active agents (agents with meta.json)
+count_agents() {
+    local count=0
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+        ((count++))
+    done
+
+    echo "$count"
 }
 
 # Build settings.local.json content for an agent worktree
@@ -394,12 +415,14 @@ Configuration:
   Create .ittybitty.json in your repo root to configure agent permissions:
 
     {
+      "maxAgents": 10,
       "permissions": {
         "task": { "allow": ["Read", "Write", "Edit"], "deny": [] },
         "leaf": { "allow": ["Read", "Write"], "deny": [] }
       }
     }
 
+  - maxAgents: Maximum number of concurrent agents (default: 10)
   - permissions.task: Applied to regular (coordinator) agents
   - permissions.leaf: Applied to leaf/worker agents
   - Bash(ib:*) is always added for agent coordination
@@ -451,6 +474,19 @@ EOF
 
     # Load config for PR settings
     load_config
+
+    # Check max agents limit
+    local current_agent_count=$(count_agents)
+    if [[ "$current_agent_count" -ge "$CONFIG_MAX_AGENTS" ]]; then
+        echo "Error: Maximum agent limit reached ($current_agent_count/$CONFIG_MAX_AGENTS agents)" >&2
+        echo "" >&2
+        echo "This is a safety limit for the entire repository to prevent runaway agent spawning." >&2
+        echo "You can:" >&2
+        echo "  1. Check 'ib list' - if you have completed subagents, merge or kill them" >&2
+        echo "  2. Wait until agents have completed before trying to create new ones" >&2
+        echo "  3. Ask the user to increase the limit in .ittybitty.json (default: $CONFIG_MAX_AGENTS)" >&2
+        exit 1
+    fi
 
     # Generate agent ID
     local ID
