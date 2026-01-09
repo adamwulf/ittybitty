@@ -1744,6 +1744,36 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: hook-status
+# =============================================================================
+
+cmd_hook_status() {
+    local ID="$1"
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local state=$(get_state "$ID")
+
+    if [[ "$state" == "unknown" ]]; then
+        local TMUX_SESSION=$(session_name "$ID")
+        local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
+
+        tmux send-keys -t "$TMUX_SESSION" "$prompt"
+        sleep 0.1
+        tmux send-keys -t "$TMUX_SESSION" Enter
+    fi
+
+    # Always print the state for debugging
+    echo "$state"
+}
+
+# =============================================================================
 # MAIN DISPATCH
 # =============================================================================
 
@@ -1786,6 +1816,10 @@ case "${1:-help}" in
     resume)
         shift
         cmd_resume "$@"
+        ;;
+    hook-status)
+        shift
+        cmd_hook_status "$@"
         ;;
     help|--help|-h)
         cat <<EOF
