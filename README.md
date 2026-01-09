@@ -51,43 +51,140 @@ To make Claude aware of `ib`, add this to your project's `CLAUDE.md`:
 
 You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), `ib` agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
 
+### Identify Your Role First
+
+**Check the very beginning of this conversation:**
+- If you see `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` → MANAGER AGENT (can spawn children, see below)
+- If you see `<ittybitty>You are an IttyBitty leaf agent.</ittybitty>` → LEAF AGENT (cannot spawn children, must complete task yourself)
+- If you DON'T see either marker → PRIMARY AGENT (see below)
+
+---
+
+## For IttyBitty Manager Agents
+
+You will have specific instructions provided to you for your manager or leaf tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
+
+### ✅ CORRECT: Spawn multiple helpers
+These helpers will probably be --leaf agents unless you think they will also need to subdivide work
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+
+### ❌ WRONG: Spawn ONE leaf with complete task
+ib new-agent "do the full task that I was supposed to either do or delegate in parts"
+
+
+## For IttyBitty Leaf Agents
+
+You will have specific instructions provided to you for your manager or leaf tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
+
+### ✅ CORRECT: Do the full task yourself
+Work on task and `ib send parent-id` a message if you get stuck
+
+
+## For Primary Agents (NOT IttyBitty agents)
+
+You're having a conversation with a human user. When using `ib`:
+- **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
+- You do NOT get automatic watchdog notifications (must poll manually)
+- Each spawned agent is a full Claude Code instance with all your capabilities
+- Agents can be manager agents (can spawn children) or leaf agents (workers only)
+- Don't try to micromanage. Let agents spawn their own children.
+
+### ❌ WRONG: Don't spawn all agents yourself
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+
+### ✅ CORRECT: Spawn ONE root with complete task
+ib new-agent "full task description and goal"
+
+
+</ittybitty>
+
+```
+
+**More examples:**
+```bash
+# Multi-file refactoring
+ib new-agent "Refactor the authentication system. Spawn one agent per file that needs changes (api/auth.ts, components/Login.tsx, hooks/useAuth.ts). Each agent should complete its refactoring, then you review all changes and ensure consistency." --model haiku
+
+# Parallel research
+ib new-agent "Research best practices for React performance. Spawn 3 agents: one for React docs, one for community articles, one for benchmarking tools. Collect and synthesize their findings into a single report."
+```
+
+### Primary Agent Workflow
+
+1. **Spawn root**: `ib new-agent "complete task description including structure"`
+2. **Poll regularly**: Use `ib list` to check the root's state (no automatic notifications!)
+3. **Check when ready**: When root shows `waiting` or `complete`, use `ib look <id>` to review
+4. **Interact if needed**: If `waiting` and needs input, use `ib send <id> "answer"`
+5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+
 ### When to Use
 
 - Large or complex tasks that benefit from isolation
 - Long-running research or analysis
 - When the user explicitly requests background agents
 - Tasks that can run while you continue other work
+- Hierarchical tasks that benefit from recursive delegation
 
-### Automatic Notifications (Agent-to-Agent Only)
+---
 
-**IMPORTANT**: Watchdog notifications only work between agents, not with user-facing Claude instances.
-  - "If you are a primary agent in a user conversation" → no notifications, must poll
-  - "If you are a background agent spawning sub-agents" → automatic notifications
+## For Manager Agents
 
-When agent spawns child agent (agent-to-agent):
-- A watchdog is automatically spawned to monitor the child
-- The watchdog notifies the parent agent when:
-  - Child is waiting for >30 seconds (needs input)
+You were spawned via `ib new-agent` without the `--leaf` flag. You run in a tmux session with your own git worktree.
+
+**Key capabilities:**
+- You CAN spawn child agents (manager or leaf)
+- You DO get automatic watchdog notifications for your children
+- You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
+
+### Manager Agent Workflow
+
+1. **Understand your goal**: Your prompt contains your specific task
+2. **Decide your approach**:
+   - **Simple task?** Do it yourself without spawning children
+   - **Complex task?** Spawn child agents for sub-tasks
+3. **If spawning children**:
+   - Spawn each child with a clear, focused goal
+   - Use `--leaf` for workers that should just execute (no sub-agents)
+   - Don't use `--leaf` for managers that may need to delegate further
+   - Enter WAITING mode after spawning (`read` or similar)
+4. **When notified about children**:
+   - Use `ib look <id>` to review their work
+   - Use `ib send <id> "message"` if they need input
+   - Use `ib diff <id>` to see their changes
+   - Use `ib merge <id>` to accept their work
+   - Use `ib kill <id>` to reject and close them
+5. **Signal completion**: When all children are merged and your work is done, output "I HAVE COMPLETED THE GOAL"
+
+### Watchdog Notifications
+
+When you spawn a child agent:
+- A watchdog automatically monitors the child
+- You'll be notified when:
+  - Child has been waiting >30 seconds (may need input)
   - Child completes (ready to review/merge)
-- Parent agents should enter WAITING mode after spawning children
-- No need for agents to poll `ib list` - watchdogs ensure timely notifications
+- No need to poll `ib list` - watchdogs handle it
 
-### Workflow
+---
 
-**If you are a primary agent in a user conversation (no watchdog notifications):**
-1. **Spawn**: `ib new-agent "clearly defined goal"` — returns agent ID
-2. **Poll actively**: Use `ib list` check agent states every few minutes (you won't get notifications! be mindful to use as little context as possible, no need to spam)
-3. **Check status**: When agent shows `waiting` or `complete`, use `ib look <id>` to review
-4. **Interact**: If `waiting` and needs input, use `ib send <id> "answer"`
-5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+## For Leaf Agents
 
-**If you are a background agent spawning sub-agents (automatic watchdog notifications):**
-1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects parent, watchdog auto-spawns
-2. **Enter WAITING**: Enter WAITING mode after spawning sub-agents (use `read` or similar)
-3. **Auto-notify**: Watchdog monitors each child and notifies you when:
-   - Child has been waiting >30s (needs input)
-   - Child completes (ready to merge/review)
-4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id>` or `ib kill <id>` or `ib send <id>` if changes are needed
+You were spawned via `ib new-agent --leaf`. You run in a tmux session with your own git worktree.
+
+**Key restrictions:**
+- You CANNOT spawn child agents - you must complete the work yourself
+- You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
+
+### Leaf Agent Workflow
+
+1. **Understand your goal**: Your prompt contains your specific task
+2. **Do the work**: Use all available tools (Read, Edit, Write, Bash, etc.) to complete your task
+3. **Signal completion**: When your work is done, output "I HAVE COMPLETED THE GOAL"
+
+---
 
 ### All Commands
 

@@ -732,7 +732,19 @@ If you get stuck or encounter a blocker:
 "
     fi
 
-    local PROMPT_PREFIX="[AGENT CONTEXT]
+    # Add role identifier for spawned agents
+    local ROLE_MARKER=""
+    if [[ "$LEAF_MODE" == true ]]; then
+        ROLE_MARKER="<ittybitty>You are an IttyBitty leaf agent.</ittybitty>
+
+"
+    else
+        ROLE_MARKER="<ittybitty>You are an IttyBitty manager agent.</ittybitty>
+
+"
+    fi
+
+    local PROMPT_PREFIX="${ROLE_MARKER}[AGENT CONTEXT]
 $WORKTREE_INFO
 $PARENT_INFO
 $IB_INSTRUCTIONS
