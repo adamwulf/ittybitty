@@ -88,7 +88,7 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 2. **Monitor**: `ib list` — check agent states periodically
 3. **Interact**: If `waiting`, use `ib look <id>` then `ib send <id> "answer"`
 4. **Close**: When `complete`, use `ib merge <id>` or `ib kill <id>`
-5. **Recover**: If `stopped`, use `ib status/diff <id>` to check work, then `ib resume <id>`
+5. **Recover**: If `stopped`, STOP and notify the user. Offer to check work with `ib status/diff <id>`, then let user choose: `ib resume <id>`, `ib merge <id>`, or `ib kill <id>`
 
 ### Key Differences from Task Tool
 
