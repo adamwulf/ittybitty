@@ -1846,12 +1846,34 @@ cmd_watchdog() {
 
     echo "[watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
 
+    # Initialize counters
+    local waiting_counter=0
+
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
         state=$(get_state "$AGENT_ID")
 
-        # For now, just echo the state (state handling logic will be added later)
-        echo "[watchdog] Agent state: $state"
+        case "$state" in
+            waiting)
+                waiting_counter=$((waiting_counter + 1))
+                echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+
+                if [[ $waiting_counter -ge 6 ]]; then
+                    echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
+                    # Notification will be added in Step 4
+                    waiting_counter=0  # Reset to avoid spam
+                fi
+                ;;
+
+            running|unknown|complete|stopped)
+                if [[ $waiting_counter -gt 0 ]]; then
+                    echo "[watchdog] Agent state: $state (reset waiting counter)"
+                else
+                    echo "[watchdog] Agent state: $state"
+                fi
+                waiting_counter=0
+                ;;
+        esac
 
         sleep 5
     done
