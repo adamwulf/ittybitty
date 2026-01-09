@@ -103,8 +103,9 @@ build_agent_settings() {
         deny_json="${CONFIG_TASK_DENY:-[]}"
     fi
 
-    # Always include ib permissions
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)"]'
+    # Always include ib and git permissions
+    # Git commands are safe in worktrees: agents can't switch branches or push
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)"]'
 
     # Merge everything together
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
