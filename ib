@@ -282,8 +282,9 @@ get_state() {
         return
     fi
 
-    # Check for explicit waiting message
-    if echo "$last_lines" | grep -qF 'WAITING'; then
+    # Check for explicit waiting message (but not in instructions)
+    # Look for WAITING as a standalone word, not as part of instruction text
+    if echo "$last_lines" | grep -qE '^\s*WAITING\s*$|⏺.*WAITING'; then
         echo "waiting"
         return
     fi
