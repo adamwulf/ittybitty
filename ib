@@ -1842,9 +1842,9 @@ cmd_watchdog() {
     fi
 
     # Set up Ctrl+C trap for clean exit
-    trap 'echo ""; echo "[watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
+    trap 'echo ""; echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
 
-    echo "[watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
 
     # Initialize counters and flags
     local waiting_counter=0
@@ -1861,7 +1861,7 @@ cmd_watchdog() {
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
-                    echo "[watchdog] Notifying parent $parent"
+                    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent is waiting for input"
                     ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
                     waiting_counter=0  # Reset to avoid spam
                 fi
@@ -1871,7 +1871,7 @@ cmd_watchdog() {
                 waiting_counter=0
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete (first time)"
-                    echo "[watchdog] Notifying parent $parent"
+                    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent has completed"
                     ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
                     notified_complete=true
                 else
@@ -1908,7 +1908,7 @@ cmd_watchdog() {
     done
 
     # Agent killed/merged - worktree gone
-    echo "[watchdog] Agent $AGENT_ID worktree removed, exiting"
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Agent $AGENT_ID worktree removed, exiting"
 }
 
 # =============================================================================
