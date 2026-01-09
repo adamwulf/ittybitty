@@ -1,11 +1,11 @@
 {
   "model": "sonnet",
   "permissions": {
-    "task": {
+    "manager": {
       "allow": ["Read", "Write", "Edit", "Glob", "Grep"],
       "deny": []
     },
-    "leaf": {
+    "worker": {
       "allow": ["Read", "Write", "Edit"],
       "deny": ["Bash"]
     }

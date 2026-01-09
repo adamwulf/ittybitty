@@ -47,12 +47,12 @@ archive_agent_output() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_TASK_ALLOW, CONFIG_TASK_DENY, CONFIG_LEAF_ALLOW, CONFIG_LEAF_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL
 load_config() {
-    CONFIG_TASK_ALLOW=""
-    CONFIG_TASK_DENY=""
-    CONFIG_LEAF_ALLOW=""
-    CONFIG_LEAF_DENY=""
+    CONFIG_MANAGER_ALLOW=""
+    CONFIG_MANAGER_DENY=""
+    CONFIG_WORKER_ALLOW=""
+    CONFIG_WORKER_DENY=""
     CONFIG_CREATE_PRS="false"
     CONFIG_MAX_AGENTS="10"
     CONFIG_MODEL=""
@@ -67,13 +67,13 @@ load_config() {
         return 0
     fi
 
-    # Read task permissions
-    CONFIG_TASK_ALLOW=$(jq -r '.permissions.task.allow // [] | @json' "$config_file" 2>/dev/null)
-    CONFIG_TASK_DENY=$(jq -r '.permissions.task.deny // [] | @json' "$config_file" 2>/dev/null)
+    # Read manager permissions
+    CONFIG_MANAGER_ALLOW=$(jq -r '.permissions.manager.allow // [] | @json' "$config_file" 2>/dev/null)
+    CONFIG_MANAGER_DENY=$(jq -r '.permissions.manager.deny // [] | @json' "$config_file" 2>/dev/null)
 
-    # Read leaf permissions
-    CONFIG_LEAF_ALLOW=$(jq -r '.permissions.leaf.allow // [] | @json' "$config_file" 2>/dev/null)
-    CONFIG_LEAF_DENY=$(jq -r '.permissions.leaf.deny // [] | @json' "$config_file" 2>/dev/null)
+    # Read worker permissions
+    CONFIG_WORKER_ALLOW=$(jq -r '.permissions.worker.allow // [] | @json' "$config_file" 2>/dev/null)
+    CONFIG_WORKER_DENY=$(jq -r '.permissions.worker.deny // [] | @json' "$config_file" 2>/dev/null)
 
     # Read PR creation setting
     CONFIG_CREATE_PRS=$(jq -r '.createPullRequests // false' "$config_file" 2>/dev/null)
@@ -106,7 +106,7 @@ count_agents() {
 }
 
 # Build settings.local.json content for an agent worktree
-# Args: $1 = "task" or "leaf"
+# Args: $1 = "manager" or "worker"
 build_agent_settings() {
     local agent_type="$1"
     local base_settings="{}"
@@ -123,12 +123,12 @@ build_agent_settings() {
     local allow_json="[]"
     local deny_json="[]"
 
-    if [[ "$agent_type" == "leaf" && "$CONFIG_LEAF_ALLOW" != "[]" && "$CONFIG_LEAF_ALLOW" != "" ]]; then
-        allow_json="$CONFIG_LEAF_ALLOW"
-        deny_json="${CONFIG_LEAF_DENY:-[]}"
-    elif [[ "$CONFIG_TASK_ALLOW" != "[]" && "$CONFIG_TASK_ALLOW" != "" ]]; then
-        allow_json="$CONFIG_TASK_ALLOW"
-        deny_json="${CONFIG_TASK_DENY:-[]}"
+    if [[ "$agent_type" == "worker" && "$CONFIG_WORKER_ALLOW" != "[]" && "$CONFIG_WORKER_ALLOW" != "" ]]; then
+        allow_json="$CONFIG_WORKER_ALLOW"
+        deny_json="${CONFIG_WORKER_DENY:-[]}"
+    elif [[ "$CONFIG_MANAGER_ALLOW" != "[]" && "$CONFIG_MANAGER_ALLOW" != "" ]]; then
+        allow_json="$CONFIG_MANAGER_ALLOW"
+        deny_json="${CONFIG_MANAGER_DENY:-[]}"
     fi
 
     # Always include ib and git permissions
@@ -362,13 +362,13 @@ auto_accept_workspace_trust() {
 
 cmd_new_agent() {
     local NAME=""
-    local PARENT=""
+    local MANAGER=""
     local USE_WORKTREE=true
     local ALLOW_TOOLS=""
     local DENY_TOOLS=""
     local PRINT_MODE=false
     local YOLO_MODE=false
-    local LEAF_MODE=false
+    local WORKER_MODE=false
     local MODEL=""
     local PROMPT=""
 
@@ -376,13 +376,13 @@ cmd_new_agent() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --name)        NAME="$2"; shift 2 ;;
-            --parent)      PARENT="$2"; shift 2 ;;
+            --manager|--parent)      MANAGER="$2"; shift 2 ;;
             --no-worktree) USE_WORKTREE=false; shift ;;
             --allow-tools) ALLOW_TOOLS="$2"; shift 2 ;;
             --deny-tools)  DENY_TOOLS="$2"; shift 2 ;;
             --print)       PRINT_MODE=true; shift ;;
             --yolo)        YOLO_MODE=true; shift ;;
-            --leaf|--worker) LEAF_MODE=true; shift ;;
+            --worker|--leaf) WORKER_MODE=true; shift ;;
             --model)       MODEL="$2"; shift 2 ;;
             -h|--help)
                 cat <<EOF
@@ -395,13 +395,13 @@ its own git worktree and branch for isolated work.
 
 Options:
   --name NAME           Custom agent name (default: auto-generated)
-  --parent ID           Parent agent ID (for hierarchy tracking)
+  --manager ID          Manager agent ID (for hierarchy tracking)
   --no-worktree         Work in repo root instead of isolated worktree
   --allow-tools LIST    Only allow these tools (comma-separated)
   --deny-tools LIST     Deny these tools (comma-separated)
   --print               Run in one-shot mode (no interaction)
   --yolo                Skip all permission prompts (full autonomy)
-  --leaf, --worker      Create a leaf agent (no sub-agent spawning)
+  --worker              Create a worker agent (no sub-agent spawning)
   --model MODEL         Claude model to use (e.g., opus, sonnet, haiku)
   -h, --help            Show this help
 
@@ -410,8 +410,8 @@ Permission modes:
   --yolo      Auto-accepts everything (full autonomy, use with caution)
 
 Agent types:
-  (default)   Can spawn and manage sub-agents via 'ib' commands
-  --leaf      Worker agent - cannot spawn sub-agents, focused on task
+  (default)   Manager agent - can spawn and manage sub-agents via 'ib' commands
+  --worker    Worker agent - cannot spawn sub-agents, focused on task execution
 
 Configuration:
   Create .ittybitty.json in your repo root to configure agent permissions:
@@ -420,16 +420,16 @@ Configuration:
       "maxAgents": 10,
       "model": "sonnet",
       "permissions": {
-        "task": { "allow": ["Read", "Write", "Edit"], "deny": [] },
-        "leaf": { "allow": ["Read", "Write"], "deny": [] }
+        "manager": { "allow": ["Read", "Write", "Edit"], "deny": [] },
+        "worker": { "allow": ["Read", "Write"], "deny": [] }
       }
     }
 
   - maxAgents: Maximum number of concurrent agents (default: 10)
   - model: Default Claude model for spawned agents (e.g., opus, sonnet, haiku)
            Overridden by --model parameter if provided
-  - permissions.task: Applied to regular (coordinator) agents
-  - permissions.leaf: Applied to leaf/worker agents
+  - permissions.manager: Applied to manager (coordinator) agents
+  - permissions.worker: Applied to worker agents
   - Bash(ib:*) is always added for agent coordination
   - Base settings from .claude/settings.local.json are merged in
 
@@ -437,7 +437,7 @@ Examples:
   ib new-agent "verify citations in vs-freeform.md"
   ib new-agent --name checker "research and summarize"
   ib new --yolo "research and update the pricing page"
-  ib new --leaf --parent coordinator "check link #1"
+  ib new --worker --manager coordinator "check link #1"
   ib new --model sonnet "quick task for a faster model"
 EOF
                 exit 0
@@ -465,15 +465,39 @@ EOF
         exit 1
     fi
 
-    # Auto-detect parent if not explicitly set and we're in an agent worktree
-    if [[ -z "$PARENT" ]]; then
+    # Auto-detect manager if not explicitly set and we're in an agent worktree
+    if [[ -z "$MANAGER" ]]; then
         local current_dir=$(pwd)
         if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
             # Find the agent directory and read meta.json
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                PARENT=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                MANAGER=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
             fi
+        fi
+    fi
+
+    # Validate manager ID if provided
+    if [[ -n "$MANAGER" ]]; then
+        # Try to resolve the manager ID (supports partial IDs)
+        local RESOLVED_MANAGER=$(resolve_agent_id "$MANAGER" 2>/dev/null)
+        if [[ -z "$RESOLVED_MANAGER" ]]; then
+            echo "Error: Manager agent '$MANAGER' not found" >&2
+            echo "" >&2
+            echo "Run 'ib list' to see available agents." >&2
+            exit 1
+        fi
+        MANAGER="$RESOLVED_MANAGER"
+
+        # Check if the manager is a worker agent
+        local MANAGER_DIR="$AGENTS_DIR/$MANAGER"
+        local is_worker=$(jq -r '.worker // false' "$MANAGER_DIR/meta.json" 2>/dev/null)
+        if [[ "$is_worker" == "true" ]]; then
+            echo "Error: '$MANAGER' is a worker agent and cannot manage sub-agents" >&2
+            echo "" >&2
+            echo "Worker agents are created with --worker and cannot spawn sub-agents." >&2
+            echo "Only manager agents can have children." >&2
+            exit 1
         fi
     fi
 
@@ -533,9 +557,9 @@ EOF
 
         # Build agent settings with permissions from .ittybitty.json config
         mkdir -p "$AGENT_DIR/repo/.claude"
-        local agent_type="task"
-        if [[ "$LEAF_MODE" == true ]]; then
-            agent_type="leaf"
+        local agent_type="manager"
+        if [[ "$WORKER_MODE" == true ]]; then
+            agent_type="worker"
         fi
 
         if command -v jq &>/dev/null; then
@@ -585,25 +609,25 @@ EOF
   "id": "$ID",
   "session_id": "$SESSION_UUID",
   "prompt": $(echo "$PROMPT" | jq -Rs .),
-  "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
+  "manager": $(if [[ -n "$MANAGER" ]]; then echo "\"$MANAGER\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
   "worktree": $USE_WORKTREE,
-  "leaf": $LEAF_MODE,
+  "worker": $WORKER_MODE,
   "model": $(if [[ -n "$MODEL" ]]; then echo "\"$MODEL\""; else echo "null"; fi)
 }
 EOF
 
     # Build prompt with context prefix
-    local PARENT_INFO=""
-    if [[ -n "$PARENT" ]]; then
-        PARENT_INFO="Your parent agent is: $PARENT"
+    local MANAGER_INFO=""
+    if [[ -n "$MANAGER" ]]; then
+        MANAGER_INFO="Your manager agent is: $MANAGER"
     fi
 
     local WORKTREE_INFO=""
     local COMPLETION_INSTRUCTIONS=""
     if [[ "$USE_WORKTREE" == true ]]; then
         WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID."
-        if [[ "$LEAF_MODE" == true ]]; then
+        if [[ "$WORKER_MODE" == true ]]; then
             COMPLETION_INSTRUCTIONS="State Management:
 - Whenever you stop working and are idle, you must end your message with either:
   - 'WAITING' - if waiting for input or have nothing more to do without further instruction
@@ -612,8 +636,8 @@ EOF
 When your task is complete:
 1. Commit any changes you made (git add && git commit)
 2. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This signals to your parent agent that you are done.
-3. Wait for your parent to merge or kill your session."
+   This signals to your manager agent that you are done.
+3. Wait for your manager to merge or kill your session."
         else
             # Determine PR instructions based on config and gh availability
             local PR_INSTRUCTIONS=""
@@ -646,9 +670,9 @@ You need these criteria to judge whether a sub-agent has truly completed its wor
    - What files should be changed? What should the output look like?
    - What specific conditions define \"done\"? (tests pass, specific files exist, specific content present, etc.)
    - Track these tasks and criteria in your Claude Code tasks tracker (TodoWrite tool)
-2. Spawn LEAF sub-agents (--leaf) for each independent task
+2. Spawn WORKER sub-agents (--worker) for each independent task
    - Provide the specific task AND the clear completion criteria in the prompt
-   - Default to --leaf unless the sub-agent itself needs to coordinate multiple parallel sub-agents
+   - Default to --worker unless the sub-agent itself needs to coordinate multiple parallel sub-agents
 3. Enter WAITING mode - watchdogs will notify you when sub-agents need attention
 4. When notified, review sub-agent work against your predefined completion criteria:
    - Use \`ib look <agent-id>\` to see what the agent reports
@@ -668,18 +692,18 @@ $PR_INSTRUCTIONS"
     fi
 
     local IB_INSTRUCTIONS=""
-    if [[ "$LEAF_MODE" != true ]]; then
+    if [[ "$WORKER_MODE" != true ]]; then
         IB_INSTRUCTIONS="
 You have access to the 'ib' tool for multi-agent coordination.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
 
-  ib new-agent --parent $ID --leaf \"task\"   Spawn a leaf sub-agent (focused worker, no sub-agents)
-  ib list --parent $ID                        List your sub-agents
-  ib look <agent-id>                          Read an agent's output
-  ib send <agent-id> \"message\"               Send input to an agent
-  ib status <agent-id>                        Check agent's git commits
-  ib merge <agent-id>                         Merge agent's work and close it
-  ib kill <agent-id>                          Stop an agent without merging
+  ib new-agent --manager $ID --worker \"task\"   Spawn a worker sub-agent (focused worker, no sub-agents)
+  ib list --manager $ID                          List your sub-agents
+  ib look <agent-id>                             Read an agent's output
+  ib send <agent-id> \"message\"                  Send input to an agent
+  ib status <agent-id>                           Check agent's git commits
+  ib merge <agent-id>                            Merge agent's work and close it
+  ib kill <agent-id>                             Stop an agent without merging
 
 TASK SIZING STRATEGY:
 When you receive a task, think about what is needed to accomplish it, then decide:
@@ -688,15 +712,15 @@ When you receive a task, think about what is needed to accomplish it, then decid
     - One agent can finish quickly
     - Just do the task yourself - don't spawn sub-agents unnecessarily
 
-  MEDIUM TASK (2-3 parallel leaf agents)
+  MEDIUM TASK (2-3 parallel worker agents)
     - Can be split into 2-3 independent subtasks
-    - Spawn LEAF agents to work in parallel (always use --leaf unless sub-agent needs to manage its own sub-agents)
+    - Spawn WORKER agents to work in parallel (always use --worker unless sub-agent needs to manage its own sub-agents)
     - After spawning them, enter WAITING mode - you'll be notified when they complete
 
   LARGE TASK (multiple stages)
     - Requires multiple stages that must run serially
     - Use TodoWrite tool to track stages
-    - For each stage, spawn LEAF agents to work in parallel (always use --leaf)
+    - For each stage, spawn WORKER agents to work in parallel (always use --worker)
     - After spawning agents for a stage, enter WAITING mode
     - When notified of completion, review work and move to next stage
 
@@ -708,16 +732,16 @@ AUTOMATIC NOTIFICATIONS:
 
 If \`ib merge\` fails due to conflicts, choose the best strategy:
 1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
-2. Spawn a LEAF sub-agent to handle the merge resolution, then monitor it to completion
+2. Spawn a WORKER sub-agent to handle the merge resolution, then monitor it to completion
 3. If the merge is no longer needed, skip it and note this in your final report
 "
     else
-        # Leaf agents: simple communication with parent only
+        # Worker agents: simple communication with manager only
         IB_INSTRUCTIONS="
-You are a leaf/worker agent focused on your specific task.
+You are a worker agent focused on your specific task.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
 
-To communicate with your parent: ib send $PARENT \"your message\"
+To communicate with your manager: ib send $MANAGER \"your message\"
 
 Use this to:
 - Report completion or progress
@@ -726,16 +750,16 @@ Use this to:
 
 If you get stuck or encounter a blocker:
 1. Describe the specific problem you're facing
-2. Send a message to your parent: ib send $PARENT \"[STUCK] <description of problem>\"
+2. Send a message to your manager: ib send $MANAGER \"[STUCK] <description of problem>\"
 3. Enter WAITING state
-4. Your watchdog will notify your parent that you need help
+4. Your watchdog will notify your manager that you need help
 "
     fi
 
     # Add role identifier for spawned agents
     local ROLE_MARKER=""
-    if [[ "$LEAF_MODE" == true ]]; then
-        ROLE_MARKER="<ittybitty>You are an IttyBitty leaf agent.</ittybitty>
+    if [[ "$WORKER_MODE" == true ]]; then
+        ROLE_MARKER="<ittybitty>You are an IttyBitty worker agent.</ittybitty>
 
 "
     else
@@ -746,7 +770,7 @@ If you get stuck or encounter a blocker:
 
     local PROMPT_PREFIX="${ROLE_MARKER}[AGENT CONTEXT]
 $WORKTREE_INFO
-$PARENT_INFO
+$MANAGER_INFO
 $IB_INSTRUCTIONS
 $COMPLETION_INSTRUCTIONS
 
@@ -885,8 +909,8 @@ EOF
         auto_accept_workspace_trust "$TMUX_SESSION"
     fi
 
-    # Auto-spawn watchdog if agent has a parent
-    if [[ -n "$PARENT" ]]; then
+    # Auto-spawn watchdog if agent has a manager
+    if [[ -n "$MANAGER" ]]; then
         ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
 
@@ -899,13 +923,13 @@ EOF
 # =============================================================================
 
 cmd_list() {
-    local PARENT_FILTER=""
+    local MANAGER_FILTER=""
     local JSON_OUTPUT=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --parent)  PARENT_FILTER="$2"; shift 2 ;;
+            --manager|--parent)  MANAGER_FILTER="$2"; shift 2 ;;
             --json)    JSON_OUTPUT=true; shift ;;
             -h|--help)
                 cat <<EOF
@@ -914,7 +938,7 @@ Usage: ib list [options]
 Show all agents and their state.
 
 Options:
-  --parent ID           Only show children of this agent
+  --manager ID          Only show children of this agent
   --json                Output as JSON
   -h, --help            Show this help
 
@@ -923,7 +947,7 @@ Output columns:
   STATE     running, waiting, complete, or stopped
   AGE       Time since spawn
   MODEL     Claude model being used
-  PARENT    Parent agent ID (if any)
+  MANAGER   Manager agent ID (if any)
   PROMPT    First 40 chars of prompt
 
 States:
@@ -975,15 +999,15 @@ EOF
 
         # Read metadata
         local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
+        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
         local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
         local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
         if [[ "$model" == "null" || -z "$model" ]]; then
             model="-"
         fi
 
-        # Filter by parent if requested
-        if [[ -n "$PARENT_FILTER" && "$parent" != "$PARENT_FILTER" ]]; then
+        # Filter by manager if requested
+        if [[ -n "$MANAGER_FILTER" && "$manager" != "$MANAGER_FILTER" ]]; then
             continue
         fi
 
@@ -995,9 +1019,9 @@ EOF
         # Format age
         local age=$(format_age "$created")
 
-        # Handle null parent for display
-        if [[ "$parent" == "null" || -z "$parent" ]]; then
-            parent="-"
+        # Handle null manager for display
+        if [[ "$manager" == "null" || -z "$manager" ]]; then
+            manager="-"
         fi
 
         # Display "unknown" as "waiting" for users
@@ -1007,10 +1031,10 @@ EOF
         fi
 
         if [[ "$JSON_OUTPUT" == true ]]; then
-            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"model\":\"$model\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
+            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"manager\":\"$manager\",\"model\":\"$model\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
         else
             # Store pipe-delimited for column alignment
-            agent_lines+=("${id}|${display_state}|${age}|${model}|${parent}|${prompt}")
+            agent_lines+=("${id}|${display_state}|${age}|${model}|${manager}|${prompt}")
         fi
     done
 
@@ -1122,7 +1146,7 @@ reading the agent's meta.json, so messages are prefixed with the sender's identi
 Examples:
   ib send task-a1b2 "Option 2 - just verify links"
   ib send task-a1b2 "yes"
-  ib send --from worker-xyz parent-abc "I'm done with my task"
+  ib send --from worker-xyz manager-abc "I'm done with my task"
   echo "no" | ib send task-a1b2
 EOF
                 exit 0
@@ -1640,8 +1664,8 @@ Options:
 
 Examples:
   ib nuke                    # Kill ALL agents
-  ib nuke parent-agent       # Kill parent-agent and all its children/grandchildren
-  ib nuke parent-agent --force
+  ib nuke manager-agent      # Kill manager-agent and all its children/grandchildren
+  ib nuke manager-agent --force
 EOF
                 exit 0
                 ;;
@@ -1673,10 +1697,34 @@ EOF
         # Resolve partial ID
         TARGET_ID=$(resolve_agent_id "$TARGET_ID") || exit 1
 
+        # Check if this is a worker agent (has no children)
+        local AGENT_DIR="$AGENTS_DIR/$TARGET_ID"
+        local is_worker=$(jq -r '.worker // false' "$AGENT_DIR/meta.json" 2>/dev/null)
+
+        # Count children
+        local child_count=0
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            [[ -f "$agent_dir/meta.json" ]] || continue
+            local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
+            if [[ "$manager" == "$TARGET_ID" ]]; then
+                ((child_count++))
+            fi
+        done
+
+        # Reject if this is a worker with no children
+        if [[ "$is_worker" == "true" && $child_count -eq 0 ]]; then
+            echo "Error: '$TARGET_ID' is a worker agent with no descendants." >&2
+            echo "Use 'ib kill $TARGET_ID' instead to close a single agent." >&2
+            echo "" >&2
+            echo "The 'nuke' command is for killing manager agents along with all their descendants." >&2
+            exit 1
+        fi
+
         # Build list of all descendants recursively
         get_descendants() {
-            local parent_id="$1"
-            echo "$parent_id"  # Include the parent itself
+            local manager_id="$1"
+            echo "$manager_id"  # Include the manager itself
 
             # Find all direct children
             for agent_dir in "$AGENTS_DIR"/*/; do
@@ -1684,12 +1732,12 @@ EOF
                 [[ -f "$agent_dir/meta.json" ]] || continue
 
                 local id=$(basename "$agent_dir")
-                local parent=$(jq -r '.parent // ""' "$agent_dir/meta.json" 2>/dev/null)
-                if [[ "$parent" == "null" ]]; then
-                    parent=""
+                local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
+                if [[ "$manager" == "null" ]]; then
+                    manager=""
                 fi
 
-                if [[ "$parent" == "$parent_id" ]]; then
+                if [[ "$manager" == "$manager_id" ]]; then
                     # Recursively get this child's descendants
                     get_descendants "$id"
                 fi
@@ -2208,27 +2256,27 @@ cmd_watchdog() {
         exit 1
     fi
 
-    # Load parent from meta.json
-    local parent=$(jq -r '.parent // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+    # Load manager from meta.json
+    local manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
 
-    # Check if agent has a parent (skip check in quiet mode)
+    # Check if agent has a manager (skip check in quiet mode)
     if [[ "$QUIET" != "true" ]]; then
-        if [[ -z "$parent" || "$parent" == "null" ]]; then
-            echo "Agent $AGENT_ID has no parent, exiting" >&2
-            echo "Hint: Use --quiet to monitor agents without parents" >&2
+        if [[ -z "$manager" || "$manager" == "null" ]]; then
+            echo "Agent $AGENT_ID has no manager, exiting" >&2
+            echo "Hint: Use --quiet to monitor agents without managers" >&2
             exit 1
         fi
     else
-        # In quiet mode, set parent to "none" if it doesn't exist
-        if [[ -z "$parent" || "$parent" == "null" ]]; then
-            parent="(none)"
+        # In quiet mode, set manager to "none" if it doesn't exist
+        if [[ -z "$manager" || "$manager" == "null" ]]; then
+            manager="(none)"
         fi
     fi
 
     # Set up Ctrl+C trap for clean exit
     trap 'echo ""; echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
 
-    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
+    echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (manager: $manager)"
 
     # Initialize counters and flags
     local waiting_counter=0
@@ -2251,10 +2299,10 @@ cmd_watchdog() {
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
                     if [[ "$QUIET" == "true" ]]; then
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent is waiting for input"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent is waiting for input"
                     else
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent is waiting for input"
-                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent is waiting for input"
+                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
                     fi
                     waiting_counter=0  # Reset to avoid spam
                 fi
@@ -2265,10 +2313,10 @@ cmd_watchdog() {
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete"
                     if [[ "$QUIET" == "true" ]]; then
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify parent $parent: agent has completed"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent has completed"
                     else
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying parent $parent: agent has completed"
-                        ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent has completed"
+                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID has completed"
                     fi
                     notified_complete=true
                 fi
@@ -2326,7 +2374,7 @@ cmd_tree() {
                 cat <<EOF
 Usage: ib tree
 
-Show all agents in a tree structure displaying parent-child relationships.
+Show all agents in a tree structure displaying manager-worker relationships.
 
 This makes it easy to see the hierarchy of agents and which agents spawned
 which sub-agents.
@@ -2362,7 +2410,7 @@ EOF
 
         # Read metadata
         local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local parent=$(jq -r '.parent // ""' "$meta" 2>/dev/null)
+        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
         local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
         local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
 
@@ -2375,9 +2423,9 @@ EOF
             state="waiting"
         fi
 
-        # Handle null parent
-        if [[ "$parent" == "null" || -z "$parent" ]]; then
-            parent=""
+        # Handle null manager
+        if [[ "$manager" == "null" || -z "$manager" ]]; then
+            manager=""
         fi
 
         # Handle null model
@@ -2385,8 +2433,8 @@ EOF
             model="-"
         fi
 
-        # Store as: id|parent|state|age|model|prompt
-        echo "$id|$parent|$state|$age|$model|$prompt" >> "$tmpfile"
+        # Store as: id|manager|state|age|model|prompt
+        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
     done
 
     if [[ ! -s "$tmpfile" ]]; then
@@ -2401,10 +2449,10 @@ EOF
         grep "^${lookup_id}|" "$tmpfile" | head -1
     }
 
-    # Helper to get children of a parent
+    # Helper to get children of a manager
     get_children() {
-        local parent_id="$1"
-        grep "|${parent_id}|" "$tmpfile" | cut -d'|' -f1
+        local manager_id="$1"
+        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
     }
 
     # Recursive function to print tree
@@ -2412,11 +2460,11 @@ EOF
         local id="$1"
         local prefix="$2"
         local is_last="$3"
-        local is_orphan="$4"  # Optional: parent ID if orphaned
+        local is_orphan="$4"  # Optional: manager ID if orphaned
 
         # Get agent info
         local info=$(get_agent_info "$id")
-        local parent=$(echo "$info" | cut -d'|' -f2)
+        local manager=$(echo "$info" | cut -d'|' -f2)
         local state=$(echo "$info" | cut -d'|' -f3)
         local age=$(echo "$info" | cut -d'|' -f4)
         local model=$(echo "$info" | cut -d'|' -f5)
@@ -2592,7 +2640,7 @@ Usage: ib <command> [options]
 Commands:
   new-agent   Start a new agent with a prompt
   list        Show all agents and their state
-  tree        Show agents in a tree structure (parent-child hierarchy)
+  tree        Show agents in a tree structure (manager-worker hierarchy)
   send        Send input to an agent
   look        Look at an agent's recent output
   status      Show git status of agent's work (commits, changes)
@@ -2600,7 +2648,7 @@ Commands:
   merge       Merge agent's work into main branch and close the agent
   kill        Close an agent without merging
   resume      Restart a stopped agent's session
-  watchdog    Monitor an agent and notify parent when it needs attention
+  watchdog    Monitor an agent and notify manager when it needs attention
 
 Aliases:
   new         Alias for new-agent
