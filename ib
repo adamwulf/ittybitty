@@ -1822,9 +1822,23 @@ cmd_watchdog() {
         exit 0
     fi
 
-    # For now, just echo the parent and exit (monitoring loop will be added later)
-    echo "Watchdog monitoring agent $AGENT_ID (parent: $parent)"
-    echo "Parent: $parent"
+    # Set up Ctrl+C trap for clean exit
+    trap 'echo ""; echo "[watchdog] Stopped monitoring $AGENT_ID"; exit 0' INT
+
+    echo "[watchdog] Monitoring agent $AGENT_ID (parent: $parent)"
+
+    # Main monitoring loop - runs while agent's worktree exists
+    while [[ -d "$AGENT_DIR/repo" ]]; do
+        state=$(get_state "$AGENT_ID")
+
+        # For now, just echo the state (state handling logic will be added later)
+        echo "[watchdog] Agent state: $state"
+
+        sleep 5
+    done
+
+    # Agent killed/merged - worktree gone
+    echo "[watchdog] Agent $AGENT_ID worktree removed, exiting"
 }
 
 # =============================================================================
