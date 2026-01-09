@@ -1517,6 +1517,123 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: nuke (undocumented safety switch)
+# =============================================================================
+
+cmd_nuke() {
+    local FORCE=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force)   FORCE=true; shift ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib nuke [options]
+
+EMERGENCY STOP: Kill all active agents immediately.
+
+This is an undocumented safety command for when agent spawning
+gets out of control. It will terminate ALL agents without merging.
+
+Options:
+  --force         Don't ask for confirmation
+  -h, --help      Show this help
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                echo "Unknown argument: $1" >&2
+                echo "Usage: ib nuke [--force]" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Check if agents directory exists
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "No agents found."
+        exit 0
+    fi
+
+    # Count agents
+    local agent_count=0
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+        ((agent_count++))
+    done
+
+    if [[ $agent_count -eq 0 ]]; then
+        echo "No agents found."
+        exit 0
+    fi
+
+    # Confirm if not forced
+    if [[ "$FORCE" != true ]]; then
+        local confirm
+        echo "WARNING: This will kill ALL $agent_count agent(s) without merging!"
+        read -p "Are you sure? [y/N] " confirm
+        if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+
+    echo "Killing $agent_count agent(s)..."
+    local killed=0
+    local failed=0
+
+    # Kill each agent
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id=$(basename "$agent_dir")
+        local TMUX_SESSION=$(session_name "$id")
+
+        echo -n "  Killing $id... "
+
+        # Archive output before cleanup
+        archive_agent_output "$id" > /dev/null 2>&1 || true
+
+        # Kill tmux session if running
+        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        fi
+
+        # Remove git worktree if it exists
+        if [[ -d "$agent_dir/repo" ]]; then
+            git worktree remove "$agent_dir/repo" --force 2>/dev/null || {
+                rm -rf "$agent_dir/repo" 2>/dev/null || true
+            }
+            # Also try to delete the branch
+            git branch -D "agent/$id" 2>/dev/null || true
+        fi
+
+        # Remove agent directory
+        if rm -rf "$agent_dir" 2>/dev/null; then
+            echo "✓"
+            ((killed++))
+        else
+            echo "✗"
+            ((failed++))
+        fi
+    done
+
+    echo ""
+    echo "Results: $killed killed, $failed failed"
+
+    if [[ $failed -gt 0 ]]; then
+        exit 1
+    fi
+}
+
+# =============================================================================
 # COMMAND: resume
 # =============================================================================
 
@@ -2081,6 +2198,10 @@ case "${1:-help}" in
     kill)
         shift
         cmd_kill "$@"
+        ;;
+    nuke)
+        shift
+        cmd_nuke "$@"
         ;;
     resume)
         shift
