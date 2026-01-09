@@ -186,7 +186,7 @@ format_age() {
 }
 
 # Detect agent state from tmux
-# States: running, waiting, stopped
+# States: running, waiting, stopped, complete
 get_state() {
     local id="$1"
 
@@ -197,6 +197,12 @@ get_state() {
 
     # Capture recent output to detect state
     local recent=$(tmux capture-pane -t "$id" -p 2>/dev/null | tail -20)
+
+    # Check for completion signal (task agents say this when done)
+    if echo "$recent" | grep -qF 'I HAVE COMPLETED THE GOAL'; then
+        echo "complete"
+        return
+    fi
 
     # Check for Claude Code processing indicators (running)
     # "esc to interrupt" appears when Claude is actively working
@@ -376,10 +382,14 @@ EOF
         fi
     fi
 
+    # Generate a UUID for the Claude session (enables resume if tmux dies)
+    local SESSION_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
     # Write metadata
     cat > "$AGENT_DIR/meta.json" <<EOF
 {
   "id": "$ID",
+  "session_id": "$SESSION_UUID",
   "prompt": $(echo "$PROMPT" | jq -Rs .),
   "parent": $(if [[ -n "$PARENT" ]]; then echo "\"$PARENT\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
@@ -398,9 +408,26 @@ EOF
     local COMPLETION_INSTRUCTIONS=""
     if [[ "$USE_WORKTREE" == true ]]; then
         WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID."
-        COMPLETION_INSTRUCTIONS="When your task is complete:
+        if [[ "$LEAF_MODE" == true ]]; then
+            COMPLETION_INSTRUCTIONS="When your task is complete:
 1. Commit any changes you made (git add && git commit)
 2. Exit normally - the orchestrator will handle merging your branch"
+        else
+            COMPLETION_INSTRUCTIONS="Your workflow:
+1. Think through what specific tasks need to be done to accomplish the goal. These tasks should be specific and have clear completion guidelines.
+2. Track these tasks in your Claude Code tasks tracker (TodoWrite tool).
+3. Spawn a sub-agent for each independent task, providing the specific task and clear completion guidelines.
+4. Monitor child tasks every 30s with \`ib list --parent $ID\`
+   - If a sub-agent is \`waiting\`, use \`ib look <agent-id>\` to see what it may need. Either send it a message so it can continue working, or if that sub-agent is done, decide if you should merge/kill its session.
+   - If a sub-agent is \`complete\`, merge or kill it to close the session.
+   - If a sub-agent is \`stopped\`, its session ended unexpectedly. STOP and notify the user immediately. Tell them which agent stopped and suggest they use \`ib status <agent-id>\` and \`ib diff <agent-id>\` to check its work, then \`ib resume <agent-id>\` to restart it.
+   - Sometimes, an agent might get lost or broken and be unable to accomplish the task. It's ok to \`ib kill\` and restart the task with a new agent and clearer task and completion guidelines.
+5. When merging successful agents, commit any changes you made directly (git add && git commit).
+
+Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
+If so, say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
+This phrase signals to the orchestrator that you are done."
+        fi
     else
         WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
         COMPLETION_INSTRUCTIONS="When your task is complete:
@@ -412,12 +439,13 @@ EOF
     if [[ "$LEAF_MODE" != true ]]; then
         IB_INSTRUCTIONS="
 You have access to the 'ib' tool for multi-agent coordination:
-  ib new-agent --parent $ID \"task\"   Spawn a sub-agent
-  ib list --parent $ID                 List your sub-agents
-  ib look <agent-id>                   Read an agent's output
-  ib send <agent-id> \"message\"        Send input to an agent
-  ib status <agent-id>                 Check agent's git commits
-  ib kill <agent-id>                   Stop an agent
+  ib new-agent --parent $ID --leaf \"task\"   Spawn a leaf sub-agent (focused worker, no sub-agents)
+  ib list --parent $ID                        List your sub-agents
+  ib look <agent-id>                          Read an agent's output
+  ib send <agent-id> \"message\"               Send input to an agent
+  ib status <agent-id>                        Check agent's git commits
+  ib merge <agent-id>                         Merge agent's work and close it
+  ib kill <agent-id>                          Stop an agent without merging
 "
     else
         # Leaf agents: simple communication with parent only
@@ -520,7 +548,7 @@ EXITSCRIPT
 #!/bin/bash
 # Add git repo root to PATH so 'ib' is available
 export PATH="$GIT_ROOT:\$PATH"
-claude $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')"
+claude --session-id "$SESSION_UUID" $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')"
 $ABS_EXIT_SCRIPT
 EOF
     chmod +x "$STARTUP_SCRIPT"
@@ -601,10 +629,16 @@ Options:
 
 Output columns:
   ID        Agent identifier
-  STATE     running, waiting, or stopped
+  STATE     running, waiting, complete, or stopped
   AGE       Time since spawn
   PARENT    Parent agent ID (if any)
   PROMPT    First 40 chars of prompt
+
+States:
+  running   Agent is actively processing
+  waiting   Agent is idle, may need input
+  complete  Agent has signaled task completion (merge or kill to close)
+  stopped   Session ended unexpectedly, needs user intervention
 EOF
                 exit 0
                 ;;
@@ -1201,6 +1235,163 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: resume
+# =============================================================================
+
+cmd_resume() {
+    local ID=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib resume <id>
+
+Resume a stopped agent session.
+
+When an agent's tmux session ends unexpectedly (crash, reboot, etc.),
+the Claude conversation history is preserved. This command restarts
+the tmux session and resumes the Claude conversation where it left off.
+
+Arguments:
+  id              Agent identifier
+
+Requirements:
+  - Agent must exist (directory in .ittybitty/agents/)
+  - Agent must be stopped (no active tmux session)
+  - Agent must have a session_id in meta.json
+
+Examples:
+  ib resume task-a1b2
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib resume <id>" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Check agent state - must be stopped
+    local state=$(get_state "$ID")
+    if [[ "$state" != "stopped" ]]; then
+        echo "Error: agent '$ID' is not stopped (current state: $state)" >&2
+        case "$state" in
+            running)
+                echo "Agent is actively processing. Use 'ib look $ID' to view output." >&2
+                ;;
+            waiting)
+                echo "Agent is waiting for input. Use 'ib send $ID \"message\"' to continue." >&2
+                ;;
+            complete)
+                echo "Agent has completed. Use 'ib merge $ID' or 'ib kill $ID' to close it." >&2
+                ;;
+        esac
+        exit 1
+    fi
+
+    # Read session ID from meta.json
+    local META_FILE="$AGENT_DIR/meta.json"
+    if [[ ! -f "$META_FILE" ]]; then
+        echo "Error: meta.json not found for agent '$ID'" >&2
+        exit 1
+    fi
+
+    local SESSION_UUID=$(jq -r '.session_id // ""' "$META_FILE" 2>/dev/null)
+    if [[ -z "$SESSION_UUID" || "$SESSION_UUID" == "null" ]]; then
+        echo "Error: no session_id found in meta.json" >&2
+        echo "This agent was created before resume support was added." >&2
+        exit 1
+    fi
+
+    # Determine working directory
+    local WORK_PATH="$AGENT_DIR/repo"
+    if [[ ! -d "$WORK_PATH" ]]; then
+        # No worktree, use git root
+        WORK_PATH="$(pwd)"
+    fi
+
+    # Read yolo mode from original start.sh to preserve settings
+    local YOLO_MODE=false
+    if [[ -f "$AGENT_DIR/start.sh" ]] && grep -q "dangerously-skip-permissions" "$AGENT_DIR/start.sh"; then
+        YOLO_MODE=true
+    fi
+
+    # Build claude args for resume
+    local CLAUDE_ARGS=""
+    if [[ "$YOLO_MODE" == true ]]; then
+        CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
+    else
+        CLAUDE_ARGS="--permission-mode dontAsk"
+    fi
+
+    # Get git root for PATH
+    local GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+    # Write a resume script
+    local RESUME_SCRIPT="$AGENT_DIR/resume.sh"
+    local ABS_EXIT_SCRIPT="$(cd "$AGENT_DIR" && pwd)/exit-check.sh"
+    cat > "$RESUME_SCRIPT" <<EOF
+#!/bin/bash
+# Add git repo root to PATH so 'ib' is available
+export PATH="$GIT_ROOT:\$PATH"
+claude --resume "$SESSION_UUID" $CLAUDE_ARGS
+$ABS_EXIT_SCRIPT
+EOF
+    chmod +x "$RESUME_SCRIPT"
+
+    # Ensure tmux server is running
+    if ! tmux start-server 2>/dev/null; then
+        echo "Error: could not start tmux server" >&2
+        exit 1
+    fi
+
+    # Start tmux session with resume script
+    local ABS_RESUME_SCRIPT="$(cd "$AGENT_DIR" && pwd)/resume.sh"
+    if ! tmux new-session -d -s "$ID" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
+        echo "Error: could not create tmux session '$ID'" >&2
+        exit 1
+    fi
+
+    # For non-yolo mode, auto-accept the workspace trust dialog
+    if [[ "$YOLO_MODE" != true ]]; then
+        sleep 2
+        tmux send-keys -t "$ID" Enter
+    fi
+
+    echo "Resumed agent: $ID"
+    echo "Use 'ib look $ID' to view output"
+}
+
+# =============================================================================
 # COMMAND: merge
 # =============================================================================
 
@@ -1407,6 +1598,10 @@ case "${1:-help}" in
         shift
         cmd_kill "$@"
         ;;
+    resume)
+        shift
+        cmd_resume "$@"
+        ;;
     help|--help|-h)
         cat <<EOF
 ib (ittybitty) - multi-agent orchestration for Claude Code
@@ -1422,6 +1617,7 @@ Commands:
   diff        Show full diff of agent's work vs main
   merge       Merge agent's work into main branch and close the agent
   kill        Close an agent without merging
+  resume      Restart a stopped agent's session
 
 Aliases:
   new         Alias for new-agent
@@ -1445,6 +1641,7 @@ Examples:
   ib send agent-abc123 "yes, proceed with option 2"
   ib merge agent-abc123
   ib kill agent-abc123
+  ib resume agent-abc123
 EOF
         ;;
     *)

@@ -71,3 +71,35 @@ No formal test suite. Test manually by spawning agents:
 - "Waiting" detection is heuristic: looks for `?` at end of recent output
 - Exit handler (`exit-check.sh`): prompts for uncommitted changes when agent session ends
 - Send timing: message and Enter key sent separately with 0.1s delay to handle busy agents
+
+
+<ittybitty>
+## Multi-Agent Orchestration (ittybitty)
+
+You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), ib agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
+
+### When to Use
+
+- Large or complex tasks that benefit from isolation
+- Long-running research or analysis
+- When the user explicitly requests background agents
+- Tasks that can run while you continue other work
+
+### Workflow
+
+1. **Spawn**: `ib new-agent "clearly defined goal"` — returns the new agent's ID
+2. **Monitor**: `ib list` — see all agents and their status (running/waiting/stopped)
+3. **Look**: `ib look <id>` — view an agent's recent Claude history
+4. **Close**: When done, summarize the agent's work and ask the user:
+   - `ib merge <id>` — merge the agent's work into main and close
+   - `ib kill <id>` — close without merging
+
+### Key Differences from Task Tool
+
+| Task Tool | ib Agents |
+|-----------|-----------|
+| Blocks until complete | Runs in background |
+| Shares your context | Isolated conversation |
+| No git isolation | Own branch + worktree |
+| Cannot spawn children | Can manage sub-agents |
+</ittybitty>
