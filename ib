@@ -494,7 +494,12 @@ EOF
     if [[ "$USE_WORKTREE" == true ]]; then
         WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID."
         if [[ "$LEAF_MODE" == true ]]; then
-            COMPLETION_INSTRUCTIONS="When your task is complete:
+            COMPLETION_INSTRUCTIONS="State Management:
+- Whenever you stop working and are idle, you must end your message with either:
+  - 'WAITING' - if waiting for input or have nothing more to do without further instruction
+  - 'I HAVE COMPLETED THE GOAL' - if you have completed your task
+
+When your task is complete:
 1. Commit any changes you made (git add && git commit)
 2. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
    This signals to your parent agent that you are done.
@@ -518,7 +523,12 @@ This phrase signals to the orchestrator that you are done.
 Your work is on branch \`agent/$ID\` for review."
             fi
 
-            COMPLETION_INSTRUCTIONS="Your workflow:
+            COMPLETION_INSTRUCTIONS="State Management:
+- Whenever you stop working and are idle, you must end your message with either:
+  - 'WAITING' - if waiting for next monitoring cycle or have nothing more to do
+  - 'I HAVE COMPLETED THE GOAL' - if you have completed your primary goal
+
+Your workflow:
 1. Think through what specific tasks need to be done to accomplish the goal. These tasks should be specific and have clear completion guidelines.
 2. Track these tasks in your Claude Code tasks tracker (TodoWrite tool).
 3. Spawn a sub-agent for each independent task, providing the specific task and clear completion guidelines.
