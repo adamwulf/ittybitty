@@ -1861,7 +1861,8 @@ cmd_watchdog() {
 
                 if [[ $waiting_counter -ge 6 ]]; then
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
-                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID is waiting for input' to parent $parent"
+                    echo "[watchdog] Notifying parent $parent"
+                    ib send "$parent" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
                     waiting_counter=0  # Reset to avoid spam
                 fi
                 ;;
@@ -1870,7 +1871,8 @@ cmd_watchdog() {
                 waiting_counter=0
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete (first time)"
-                    echo "[watchdog] WOULD SEND: 'Your subtask $AGENT_ID has completed' to parent $parent"
+                    echo "[watchdog] Notifying parent $parent"
+                    ib send "$parent" "[watchdog]: Your subtask $AGENT_ID has completed"
                     notified_complete=true
                 else
                     echo "[watchdog] Agent state: complete (already notified)"
