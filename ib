@@ -244,7 +244,7 @@ format_age() {
 }
 
 # Detect agent state from tmux
-# States: running, waiting, stopped, complete
+# States: running, waiting, stopped, complete, unknown
 get_state() {
     local id="$1"
     local tmux_session=$(session_name "$id")
@@ -275,8 +275,14 @@ get_state() {
         return
     fi
 
-    # Has tmux session but not actively processing = waiting
-    echo "waiting"
+    # Check for explicit waiting message
+    if echo "$last_lines" | grep -qF 'WAITING'; then
+        echo "waiting"
+        return
+    fi
+
+    # Idle but no explicit state message = unknown
+    echo "unknown"
 }
 
 # =============================================================================
@@ -801,10 +807,14 @@ EOF
         # Handle null parent for display
         [[ "$parent" == "null" ]] && parent="-"
 
+        # Display "unknown" as "waiting" for users
+        local display_state="$state"
+        [[ "$state" == "unknown" ]] && display_state="waiting"
+
         if [[ "$JSON_OUTPUT" == true ]]; then
             agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
         else
-            printf "%-20s %-10s %-6s %-15s %s\n" "$id" "$state" "$age" "$parent" "$prompt"
+            printf "%-20s %-10s %-6s %-15s %s\n" "$id" "$display_state" "$age" "$parent" "$prompt"
         fi
     done
 
