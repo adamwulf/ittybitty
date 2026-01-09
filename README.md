@@ -21,15 +21,15 @@ ln -s /path/to/ittybitty/ib /usr/local/bin/ib
 
 `ib` helps you manage two Claude agent types:
 
-1. **Manager agents** — Can spawn other agents (both manager and/or leaf). Analyze tasks and delegate work.
-2. **Leaf agents** — Cannot spawn new agents. Must complete their work themselves.
+1. **Manager agents** — Can spawn other agents (both manager and/or worker). Analyze tasks and delegate work.
+2. **Worker agents** — Cannot spawn new agents. Must complete their work themselves.
 
 **Task sizing strategy (manager agents):**
 
 When a manager agent receives a task, it thinks through what's needed and decides:
 
 - **Small task** — Easy enough to be completed quickly by a single agent. Manager does it directly without spawning sub-agents.
-- **Medium task** — Needs to be done by a few agents in parallel. Manager spawns sub-agents (manager or leaf) to work concurrently.
+- **Medium task** — Needs to be done by a few agents in parallel. Manager spawns sub-agents (manager or worker) to work concurrently.
 - **Large task** — Needs to be done in stages with multiple agents. Manager spawns agents for each stage as the task progresses.
 
 **Two ways to use `ib`:**
@@ -55,31 +55,31 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 
 **Check the very beginning of this conversation:**
 - If you see `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` → MANAGER AGENT (can spawn children, see below)
-- If you see `<ittybitty>You are an IttyBitty leaf agent.</ittybitty>` → LEAF AGENT (cannot spawn children, must complete task yourself)
+- If you see `<ittybitty>You are an IttyBitty worker agent.</ittybitty>` → WORKER AGENT (cannot spawn children, must complete task yourself)
 - If you DON'T see either marker → PRIMARY AGENT (see below)
 
 ---
 
 ## For IttyBitty Manager Agents
 
-You will have specific instructions provided to you for your manager or leaf tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
+You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
 
 ### ✅ CORRECT: Spawn multiple helpers
-These helpers will probably be --leaf agents unless you think they will also need to subdivide work
+These helpers will probably be --worker agents unless you think they will also need to subdivide work
 ib new-agent "do part of task"
 ib new-agent "do part of task"
 ib new-agent "do part of task"
 
-### ❌ WRONG: Spawn ONE leaf with complete task
+### ❌ WRONG: Spawn ONE worker with complete task
 ib new-agent "do the full task that I was supposed to either do or delegate in parts"
 
 
-## For IttyBitty Leaf Agents
+## For IttyBitty Worker Agents
 
-You will have specific instructions provided to you for your manager or leaf tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
+You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
 
 ### ✅ CORRECT: Do the full task yourself
-Work on task and `ib send parent-id` a message if you get stuck
+Work on task and `ib send manager-id` a message if you get stuck
 
 
 ## For Primary Agents (NOT IttyBitty agents)
@@ -88,7 +88,7 @@ You're having a conversation with a human user. When using `ib`:
 - **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
 - You do NOT get automatic watchdog notifications (must poll manually)
 - Each spawned agent is a full Claude Code instance with all your capabilities
-- Agents can be manager agents (can spawn children) or leaf agents (workers only)
+- Agents can be manager agents (can spawn children) or worker agents (workers only)
 - Don't try to micromanage. Let agents spawn their own children.
 
 ### ❌ WRONG: Don't spawn all agents yourself
@@ -133,10 +133,10 @@ ib new-agent "Research best practices for React performance. Spawn 3 agents: one
 
 ## For Manager Agents
 
-You were spawned via `ib new-agent` without the `--leaf` flag. You run in a tmux session with your own git worktree.
+You were spawned via `ib new-agent` without the `--worker` flag. You run in a tmux session with your own git worktree.
 
 **Key capabilities:**
-- You CAN spawn child agents (manager or leaf)
+- You CAN spawn child agents (manager or worker)
 - You DO get automatic watchdog notifications for your children
 - You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
 
@@ -148,8 +148,8 @@ You were spawned via `ib new-agent` without the `--leaf` flag. You run in a tmux
    - **Complex task?** Spawn child agents for sub-tasks
 3. **If spawning children**:
    - Spawn each child with a clear, focused goal
-   - Use `--leaf` for workers that should just execute (no sub-agents)
-   - Don't use `--leaf` for managers that may need to delegate further
+   - Use `--worker` for workers that should just execute (no sub-agents)
+   - Don't use `--worker` for managers that may need to delegate further
    - Enter WAITING mode after spawning (`read` or similar)
 4. **When notified about children**:
    - Use `ib look <id>` to review their work
@@ -170,15 +170,15 @@ When you spawn a child agent:
 
 ---
 
-## For Leaf Agents
+## For Worker Agents
 
-You were spawned via `ib new-agent --leaf`. You run in a tmux session with your own git worktree.
+You were spawned via `ib new-agent --worker`. You run in a tmux session with your own git worktree.
 
 **Key restrictions:**
 - You CANNOT spawn child agents - you must complete the work yourself
 - You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
 
-### Leaf Agent Workflow
+### Worker Agent Workflow
 
 1. **Understand your goal**: Your prompt contains your specific task
 2. **Do the work**: Use all available tools (Read, Edit, Write, Bash, etc.) to complete your task
@@ -199,7 +199,7 @@ You were spawned via `ib new-agent --leaf`. You run in a tmux session with your 
 | `ib merge <id>` | Merge agent's work and permanently close it |
 | `ib kill <id>` | Permanently close agent without merging |
 | `ib resume <id>` | Restart a stopped agent's session |
-| `ib watchdog <id>` | Monitor agent and notify parent (auto-spawned for child agents) |
+| `ib watchdog <id>` | Monitor agent and notify manager (auto-spawned for child agents) |
 
 ### Agent States
 
@@ -241,7 +241,7 @@ ib diff research            # See what changed
 ib merge research           # Merge branch into main and cleanup
 ```
 
-Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--leaf` for worker agents that shouldn't spawn children.
+Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--worker` for worker agents that shouldn't spawn children.
 
 ## Eek! Too Many Agents!
 
@@ -266,8 +266,8 @@ Use `ib nuke --force` to skip the confirmation prompt.
 **Spawn options:**
 - `--name <name>` — Custom agent name (default: auto-generated ID)
 - `--no-worktree` — Work in repo root instead of isolated worktree
-- `--leaf` — Worker agent that cannot spawn sub-agents
-- `--parent <id>` — Track parent relationship for hierarchical coordination
+- `--worker` — Worker agent that cannot spawn sub-agents
+- `--manager <id>` — Track manager relationship for hierarchical coordination
 - `--yolo` — Full autonomy, skip all permission prompts
 - `--model <model>` — Use a specific model (opus, sonnet, haiku)
 - `--print` — One-shot mode: run and exit, no interaction
