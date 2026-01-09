@@ -927,6 +927,7 @@ EOF
 
     # Collect agent data
     local agents=()
+    local agent_lines=()
     local found_any=false
     local orphaned_dirs=()
 
@@ -970,9 +971,15 @@ EOF
         if [[ "$JSON_OUTPUT" == true ]]; then
             agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"parent\":\"$parent\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
         else
-            printf "%-20s %-10s %-6s %-15s %s\n" "$id" "$display_state" "$age" "$parent" "$prompt"
+            # Store pipe-delimited for column alignment
+            agent_lines+=("${id}|${display_state}|${age}|${parent}|${prompt}")
         fi
     done
+
+    # Print aligned table if not JSON
+    if [[ "$JSON_OUTPUT" != true && ${#agent_lines[@]} -gt 0 ]]; then
+        printf "%s\n" "${agent_lines[@]}" | column -t -s '|'
+    fi
 
     # Check for orphaned tmux sessions (sessions without matching agent directories)
     # Only check sessions with our prefix to avoid warning about unrelated sessions
