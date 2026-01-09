@@ -2396,9 +2396,9 @@ EOF
             tree_part="$prefix$connector $id"
         fi
 
-        # Print with columns: tree_part (max 35 chars, left-aligned) | state (10 chars) | age (6 chars) | orphan note (if any) | prompt
-        # Use tab-like spacing for better alignment regardless of tree depth
-        printf "%-35s  %-10s  %-6s  %-25s  %s\n" "$tree_part" "$state" "$age" "$orphan_note" "$prompt"
+        # Print with separator for column command to align
+        # Format: tree_part | state | age | orphan_note | prompt
+        echo "${tree_part}|${state}|${age}|${orphan_note}|${prompt}"
 
         # Print children
         local children=$(get_children "$id")
@@ -2441,18 +2441,20 @@ EOF
         exit 0
     fi
 
-    # Print each root and its tree
-    local root_array=($roots)
-    local root_count=${#root_array[@]}
-    local i=0
-    for root in "${root_array[@]}"; do
-        i=$((i + 1))
-        local is_last="false"
-        [[ $i -eq $root_count && $root_count -gt 1 ]] && is_last="true"
-        print_tree "$root" "" "$is_last"
-        # Add blank line between trees if multiple roots
-        [[ $i -lt $root_count ]] && echo ""
-    done
+    # Print each root and its tree, pipe through column for alignment
+    {
+        local root_array=($roots)
+        local root_count=${#root_array[@]}
+        local i=0
+        for root in "${root_array[@]}"; do
+            i=$((i + 1))
+            local is_last="false"
+            [[ $i -eq $root_count && $root_count -gt 1 ]] && is_last="true"
+            print_tree "$root" "" "$is_last"
+            # Add blank line between trees if multiple roots
+            [[ $i -lt $root_count ]] && echo ""
+        done
+    } | column -t -s '|'
 }
 
 # =============================================================================
