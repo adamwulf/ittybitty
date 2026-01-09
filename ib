@@ -107,12 +107,19 @@ build_agent_settings() {
     # Git commands are safe in worktrees: agents can't switch branches or push
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
 
-    # Merge everything together
+    # Merge everything together and add Stop hook
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
         --argjson cfg_allow "$allow_json" \
         --argjson cfg_deny "$deny_json" '
         .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
-        .permissions.deny = ((.permissions.deny // []) + $cfg_deny | unique)
+        .permissions.deny = ((.permissions.deny // []) + $cfg_deny | unique) |
+        .hooks.Stop = [{
+            "hooks": [{
+                "type": "command",
+                "command": "ib",
+                "args": ["hook-status", "__AGENT_ID__"]
+            }]
+        }]
     '
 }
 
@@ -433,6 +440,8 @@ EOF
         if command -v jq &>/dev/null; then
             # Run build_agent_settings from root repo context
             (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type") > "$AGENT_DIR/repo/.claude/settings.local.json"
+            # Replace agent ID placeholder in hook configuration
+            sed -i '' "s|__AGENT_ID__|$ID|g" "$AGENT_DIR/repo/.claude/settings.local.json"
         else
             # Fallback: minimal settings if jq not available
             if [[ -f "$ROOT_REPO_PATH/.claude/settings.local.json" ]]; then
