@@ -17,6 +17,30 @@ ln -s /path/to/ittybitty/ib /usr/local/bin/ib
 
 **Requirements:** tmux, jq, git
 
+## How `ib` Works
+
+`ib` helps you manage two Claude agent types:
+
+1. **Manager agents** — Can spawn other agents (both manager and/or leaf). Analyze tasks and delegate work.
+2. **Leaf agents** — Cannot spawn new agents. Must complete their work themselves.
+
+**Task sizing strategy (manager agents):**
+
+When a manager agent receives a task, it thinks through what's needed and decides:
+
+- **Small task** — Easy enough to be completed quickly by a single agent. Manager does it directly without spawning sub-agents.
+- **Medium task** — Needs to be done by a few agents in parallel. Manager spawns sub-agents (manager or leaf) to work concurrently.
+- **Large task** — Needs to be done in stages with multiple agents. Manager spawns agents for each stage as the task progresses.
+
+**Two ways to use `ib`:**
+
+1. **Manual mode** — Run `ib` commands directly from your terminal at the repo root to create, list, merge, and kill agents.
+2. **Integrated mode** — Copy the prompt from "Adding `ib` to Your Project" below into your project's `CLAUDE.md`. Then Claude can spawn and coordinate agents automatically during your normal Claude workflow.
+
+**Managing subagents:**
+
+When a manager spawns subagents, it will automatically track their progress and keep them working if they are stuck. This is done with a watchdog process that spawns in parallel to the child agent. This watchdog does not use Claude, which helps keep your Claude session use low when many agents are running and coordinating.
+
 ## Adding `ib` to Your Project
 
 To make Claude aware of `ib`, add this to your project's `CLAUDE.md`:
