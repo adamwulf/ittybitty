@@ -8,11 +8,17 @@
 set -e
 
 ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
+SESSION_PREFIX="ittybitty-"
 
 # Initialize paths - will be set to root repo after get_root_repo is defined
 AGENTS_DIR=""
 ARCHIVE_DIR=""
 ROOT_REPO_PATH=""
+
+# Convert agent ID to tmux session name
+session_name() {
+    echo "${SESSION_PREFIX}$1"
+}
 
 # =============================================================================
 # HELPERS
@@ -25,8 +31,9 @@ archive_agent_output() {
     local AGENT_DIR="$AGENTS_DIR/$ID"
 
     # Capture final output if session is still running
-    if tmux has-session -t "$ID" 2>/dev/null; then
-        tmux capture-pane -t "$ID" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    local SESSION=$(session_name "$ID")
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
     fi
 
     # Archive output.log if it exists
@@ -111,7 +118,7 @@ resolve_agent_id() {
     local matches=()
 
     # Check for exact match first (tmux session or directory)
-    if tmux has-session -t "$partial" 2>/dev/null || [[ -d "$AGENTS_DIR/$partial" ]]; then
+    if tmux has-session -t "$(session_name "$partial")" 2>/dev/null || [[ -d "$AGENTS_DIR/$partial" ]]; then
         echo "$partial"
         return 0
     fi
@@ -235,14 +242,15 @@ format_age() {
 # States: running, waiting, stopped, complete
 get_state() {
     local id="$1"
+    local tmux_session=$(session_name "$id")
 
-    if ! tmux has-session -t "$id" 2>/dev/null; then
+    if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
         echo "stopped"
         return
     fi
 
     # Capture visible pane for state detection
-    local recent=$(tmux capture-pane -t "$id" -p -S -20 2>/dev/null)
+    local recent=$(tmux capture-pane -t "$tmux_session" -p -S -20 2>/dev/null)
 
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
@@ -379,7 +387,8 @@ EOF
     fi
 
     # Check if agent already exists
-    if [[ -d "$AGENTS_DIR/$ID" ]] || tmux has-session -t "$ID" 2>/dev/null; then
+    local TMUX_SESSION=$(session_name "$ID")
+    if [[ -d "$AGENTS_DIR/$ID" ]] || tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         echo "Error: agent '$ID' already exists" >&2
         exit 1
     fi
@@ -638,8 +647,8 @@ EOF
 
     # Start tmux session with startup script (use absolute path)
     local ABS_STARTUP_SCRIPT="$ABS_AGENT_DIR/start.sh"
-    if ! tmux new-session -d -s "$ID" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
-        echo "Error: could not create tmux session '$ID'" >&2
+    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
+        echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         echo "Try running: tmux kill-server && tmux start-server" >&2
         rm -rf "$AGENT_DIR"
         if [[ "$USE_WORKTREE" == true ]]; then
@@ -650,8 +659,8 @@ EOF
     fi
 
     # Verify session was created
-    if ! tmux has-session -t "$ID" 2>/dev/null; then
-        echo "Error: tmux session '$ID' failed to start" >&2
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "Error: tmux session '$TMUX_SESSION' failed to start" >&2
         rm -rf "$AGENT_DIR"
         if [[ "$USE_WORKTREE" == true ]]; then
             git -C "$ROOT_REPO_PATH" worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || true
@@ -664,7 +673,7 @@ EOF
     # (yolo bypasses this entirely, but default and strict still see it)
     if [[ "$YOLO_MODE" != true ]]; then
         sleep 2
-        tmux send-keys -t "$ID" Enter
+        tmux send-keys -t "$TMUX_SESSION" Enter
     fi
 
     # Output the agent ID
@@ -779,6 +788,7 @@ EOF
     done
 
     # Check for orphaned tmux sessions (sessions without matching agent directories)
+    # Only check sessions with our prefix to avoid warning about unrelated sessions
     local orphans=()
     local known_ids=()
 
@@ -788,13 +798,17 @@ EOF
         known_ids+=("$(basename "$agent_dir")")
     done
 
-    # Check all tmux sessions for orphans
+    # Check our tmux sessions for orphans (only sessions with our prefix)
     while IFS= read -r session; do
         [[ -z "$session" ]] && continue
+        # Skip sessions that don't have our prefix
+        [[ "$session" != "${SESSION_PREFIX}"* ]] && continue
+        # Extract agent ID from session name (strip prefix)
+        local agent_id="${session#${SESSION_PREFIX}}"
         # Check if this session has a matching agent directory
         local is_known=false
         for known_id in "${known_ids[@]}"; do
-            if [[ "$session" == "$known_id" ]]; then
+            if [[ "$agent_id" == "$known_id" ]]; then
                 is_known=true
                 break
             fi
@@ -808,7 +822,7 @@ EOF
     if [[ ${#orphans[@]} -gt 0 ]]; then
         if [[ "$JSON_OUTPUT" != true ]]; then
             echo ""
-            echo "WARNING: Found ${#orphans[@]} orphaned tmux session(s) without agent data:"
+            echo "WARNING: Found ${#orphans[@]} orphaned ib session(s) without agent data:"
             for orphan in "${orphans[@]}"; do
                 printf "  %-20s (use 'tmux kill-session -t %s' to remove)\n" "$orphan" "$orphan"
             done
@@ -896,7 +910,8 @@ EOF
     ID=$(resolve_agent_id "$TARGET_ID") || exit 1
 
     # Check if agent is running
-    if ! tmux has-session -t "$ID" 2>/dev/null; then
+    local TMUX_SESSION=$(session_name "$ID")
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         echo "Error: agent '$ID' is not running" >&2
         exit 1
     fi
@@ -931,9 +946,9 @@ EOF
     # Send to tmux session
     # Send message first, then Enter separately with a tiny delay
     # This helps when the target agent is busy processing
-    tmux send-keys -t "$ID" "$MESSAGE"
+    tmux send-keys -t "$TMUX_SESSION" "$MESSAGE"
     sleep 0.1
-    tmux send-keys -t "$ID" Enter
+    tmux send-keys -t "$TMUX_SESSION" Enter
 
     echo "Sent to $ID"
 }
@@ -1000,9 +1015,10 @@ EOF
 
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
+    local TMUX_SESSION=$(session_name "$ID")
 
     # Check if agent session exists
-    if ! tmux has-session -t "$ID" 2>/dev/null; then
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         # Try to read from log if agent is done
         if [[ -f "$AGENTS_DIR/$ID/output.log" ]]; then
             echo "=== Agent finished, showing saved output ===" >&2
@@ -1019,12 +1035,12 @@ EOF
 
     if [[ "$FOLLOW" == true ]]; then
         echo "Attaching to $ID (Ctrl+b d to detach)..." >&2
-        tmux attach -t "$ID" -r
+        tmux attach -t "$TMUX_SESSION" -r
     else
         if [[ "$SHOW_ALL" == true ]]; then
-            tmux capture-pane -t "$ID" -p -S -
+            tmux capture-pane -t "$TMUX_SESSION" -p -S -
         else
-            tmux capture-pane -t "$ID" -p -S -"$LINES"
+            tmux capture-pane -t "$TMUX_SESSION" -p -S -"$LINES"
         fi
     fi
 }
@@ -1302,9 +1318,10 @@ EOF
     ID=$(resolve_agent_id "$ID") || exit 1
 
     local AGENT_DIR="$AGENTS_DIR/$ID"
+    local TMUX_SESSION=$(session_name "$ID")
 
     # Check if agent exists at all
-    if [[ ! -d "$AGENT_DIR" ]] && ! tmux has-session -t "$ID" 2>/dev/null; then
+    if [[ ! -d "$AGENT_DIR" ]] && ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         echo "Error: agent '$ID' not found" >&2
         exit 1
     fi
@@ -1323,8 +1340,8 @@ EOF
     archive_agent_output "$ID"
 
     # Kill tmux session if running
-    if tmux has-session -t "$ID" 2>/dev/null; then
-        tmux kill-session -t "$ID"
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION"
         echo "Killed session: $ID"
     else
         echo "Session not running: $ID"
@@ -1497,15 +1514,16 @@ EOF
 
     # Start tmux session with resume script
     local ABS_RESUME_SCRIPT="$(cd "$AGENT_DIR" && pwd)/resume.sh"
-    if ! tmux new-session -d -s "$ID" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
-        echo "Error: could not create tmux session '$ID'" >&2
+    local TMUX_SESSION=$(session_name "$ID")
+    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
+        echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         exit 1
     fi
 
     # For non-yolo mode, auto-accept the workspace trust dialog
     if [[ "$YOLO_MODE" != true ]]; then
         sleep 2
-        tmux send-keys -t "$ID" Enter
+        tmux send-keys -t "$TMUX_SESSION" Enter
     fi
 
     echo "Resumed agent: $ID"
@@ -1581,6 +1599,7 @@ EOF
 
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local BRANCH_NAME="agent/$ID"
+    local TMUX_SESSION=$(session_name "$ID")
 
     # Check if agent exists
     if [[ ! -d "$AGENT_DIR" ]]; then
@@ -1649,9 +1668,9 @@ EOF
     archive_agent_output "$ID"
 
     # Kill the agent session if still running
-    if tmux has-session -t "$ID" 2>/dev/null; then
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         echo "Stopping agent session..."
-        tmux kill-session -t "$ID"
+        tmux kill-session -t "$TMUX_SESSION"
     fi
 
     # Perform the merge
