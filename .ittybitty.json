@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "task": {
+      "allow": ["Read", "Write", "Edit", "Glob", "Grep"],
+      "deny": []
+    },
+    "leaf": {
+      "allow": ["Read", "Write", "Edit"],
+      "deny": ["Bash"]
+    }
+  }
+}
