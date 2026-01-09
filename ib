@@ -749,7 +749,11 @@ EOF
     fi
 
     # Send to tmux session
-    tmux send-keys -t "$ID" "$MESSAGE" Enter
+    # Send message first, then Enter separately with a tiny delay
+    # This helps when the target agent is busy processing
+    tmux send-keys -t "$ID" "$MESSAGE"
+    sleep 0.1
+    tmux send-keys -t "$ID" Enter
 
     echo "Sent to $ID"
 }
