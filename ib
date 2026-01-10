@@ -105,19 +105,15 @@ log_multi_line() {
 
 # Log tmux screen content for debugging state detection
 # Args: $1 = agent ID
-# Uses LAST_TMUX_CAPTURE if available (set by get_state), otherwise captures fresh
+# Uses LAST_TMUX_CAPTURE if available (set by capture_tmux/get_state), otherwise captures fresh
 log_tmux_screen() {
     local ID="$1"
 
-    # Use cached capture from get_state if available
+    # Use cached capture if available, otherwise capture fresh
     local tmux_content="$LAST_TMUX_CAPTURE"
-
-    # If no cached content, try to capture fresh (fallback)
     if [[ -z "$tmux_content" ]]; then
         local TMUX_SESSION=$(session_name "$ID")
-        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux_content=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null)
-        fi
+        tmux_content=$(capture_tmux "$TMUX_SESSION" 20)
     fi
 
     log_multi_line "$ID" "tmux" "$tmux_content"
@@ -574,26 +570,40 @@ format_age() {
 }
 
 # Global variable to store the last tmux capture for debugging
-# Set by get_state, used by log_tmux_screen
+# Set by capture_tmux, used by log_tmux_screen
 LAST_TMUX_CAPTURE=""
+
+# Capture tmux pane content and store in LAST_TMUX_CAPTURE
+# Args: $1 = tmux session name, $2 = number of lines (default 20)
+# Returns: captured content via stdout, also sets LAST_TMUX_CAPTURE
+capture_tmux() {
+    local session="$1"
+    local lines="${2:-20}"
+
+    LAST_TMUX_CAPTURE=""
+
+    if tmux has-session -t "$session" 2>/dev/null; then
+        LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null)
+    fi
+
+    echo "$LAST_TMUX_CAPTURE"
+}
 
 # Detect agent state from tmux
 # States: running, waiting, stopped, complete, unknown
-# Also sets LAST_TMUX_CAPTURE for debugging
+# Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
     local tmux_session=$(session_name "$id")
 
-    LAST_TMUX_CAPTURE=""  # Reset
-
     if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
+        LAST_TMUX_CAPTURE=""
         echo "stopped"
         return
     fi
 
-    # Capture visible pane for state detection
-    local recent=$(tmux capture-pane -t "$tmux_session" -p -S -20 2>/dev/null)
-    LAST_TMUX_CAPTURE="$recent"  # Store for debugging
+    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
+    local recent=$(capture_tmux "$tmux_session" 20)
 
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
