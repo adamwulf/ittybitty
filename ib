@@ -3592,12 +3592,22 @@ EOF
             fi
         fi
 
-        # Get agent log for selected agent
+        # Get agent log for selected agent (with line wrapping using fold)
         local log_lines=()
+        local log_raw_count=0
+        local log_first_width=""
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
-            while IFS= read -r line; do
-                log_lines+=("$line")
+            while IFS= read -r raw_line; do
+                ((log_raw_count++))
+                # Capture first line's width for debug
+                if [[ -z "$log_first_width" ]]; then
+                    log_first_width=$(printf '%s\n' "$raw_line" | wc -L | tr -d ' ')
+                fi
+                # Use fold to wrap long lines efficiently
+                while IFS= read -r wrapped_line; do
+                    log_lines+=("$wrapped_line")
+                done < <(printf '%s\n' "$raw_line" | fold -w "$right_pane_width")
             done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
         fi
 
@@ -3621,7 +3631,9 @@ EOF
             SCROLL_OFFSET=0
         fi
 
-        # Render split panes
+        # Render split panes using cursor positioning
+        # Pane starts at row 8 (after 5 tree + 1 prompt + 1 header)
+        local pane_start_row=8
         local pane_line
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             # Base index from bottom, then apply scroll offset
@@ -3634,50 +3646,66 @@ EOF
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
                 # Strip ANSI escape codes
                 left_content=$(printf '%s' "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
-                # Get display width and pad/truncate to left_pane_width
-                local left_display_width=$(printf '%s' "$left_content" | wc -L)
+                # Get display width (trim whitespace from wc -L output)
+                local left_display_width
+                left_display_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
                 if [[ $left_display_width -gt $left_pane_width ]]; then
                     # Truncate - remove chars from end until it fits
-                    while [[ $(printf '%s' "$left_content" | wc -L) -gt $left_pane_width && -n "$left_content" ]]; do
+                    while true; do
+                        local check_width
+                        check_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
+                        if [[ $check_width -le $left_pane_width ]] || [[ -z "$left_content" ]]; then
+                            break
+                        fi
                         left_content="${left_content%?}"
                     done
-                    left_display_width=$(printf '%s' "$left_content" | wc -L)
-                fi
-                # Pad with spaces to reach left_pane_width
-                local left_padding=$((left_pane_width - left_display_width))
-                if [[ $left_padding -gt 0 ]]; then
-                    left_content="${left_content}$(printf '%*s' $left_padding '')"
+                    left_display_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
                 fi
             else
-                left_content=$(printf '%*s' $left_pane_width '')
+                left_content=""
+                local left_display_width=0
             fi
 
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
                 right_content="${log_lines[$log_idx]}"
-                # Get display width and pad/truncate to right_pane_width
-                local right_display_width=$(printf '%s' "$right_content" | wc -L)
+                # Lines are pre-wrapped, but defensively truncate if needed
+                local right_display_width
+                right_display_width=$(printf '%s\n' "$right_content" | wc -L | tr -d ' ')
                 if [[ $right_display_width -gt $right_pane_width ]]; then
-                    while [[ $(printf '%s' "$right_content" | wc -L) -gt $right_pane_width && -n "$right_content" ]]; do
+                    while true; do
+                        local check_width
+                        check_width=$(printf '%s\n' "$right_content" | wc -L | tr -d ' ')
+                        if [[ $check_width -le $right_pane_width ]] || [[ -z "$right_content" ]]; then
+                            break
+                        fi
                         right_content="${right_content%?}"
                     done
-                    right_display_width=$(printf '%s' "$right_content" | wc -L)
-                fi
-                local right_padding=$((right_pane_width - right_display_width))
-                if [[ $right_padding -gt 0 ]]; then
-                    right_content="${right_content}$(printf '%*s' $right_padding '')"
                 fi
             else
-                right_content=$(printf '%*s' $right_pane_width '')
+                right_content=""
             fi
 
-            printf '%s │ %s\n' "$left_content" "$right_content"
+            # Use cursor positioning: move to row, clear line, print content
+            local row=$((pane_start_row + pane_line))
+            # Move to row, col 1; clear line; print left content
+            printf '\e[%d;1H\e[K' "$row"
+            printf '%s' "$left_content"
+            # Move to separator column and print separator
+            printf '\e[%d;%dH │ ' "$row" "$((left_pane_width + 1))"
+            # Print right content, truncated to right_pane_width
+            printf '%s' "$right_content"
         done
+        # Move cursor to line after panes
+        printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
-        # Bottom help line with scroll indicator (no trailing newline to avoid extra line)
+        # Bottom help line with scroll indicator and debug info (no trailing newline to avoid extra line)
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
         if [[ $SCROLL_OFFSET -gt 0 ]]; then
             help_text="[SCROLLED +$SCROLL_OFFSET]  $help_text"
         fi
+        # Debug: term WxH, tmux pane WxH, log pane WxH, line counts (raw->wrapped), first line width
+        local debug_info="term:${TERM_COLS}x${TERM_LINES} tmux:${left_pane_width}(${tmux_total}) log:${right_pane_width}(${log_raw_count}->${log_total},w=${log_first_width})"
+        help_text="${help_text}    [${debug_info}]"
         printf "%-${TERM_COLS}s" "$help_text"
 
         rm -f "$tmpfile"
