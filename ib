@@ -766,6 +766,221 @@ auto_accept_workspace_trust() {
 }
 
 # =============================================================================
+# TREE HELPERS (shared by cmd_tree and cmd_watch)
+# =============================================================================
+
+# Build agent data file for tree operations
+# Creates a temp file with format: id|manager|state|age|model|prompt
+# The caller is responsible for cleaning up the temp file
+# Usage: local tmpfile=$(build_agent_data_file)
+#        trap "rm -f '$tmpfile'" RETURN
+build_agent_data_file() {
+    local tmpfile=$(mktemp)
+
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "$tmpfile"
+        return
+    fi
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id=$(basename "$agent_dir")
+        local meta="$agent_dir/meta.json"
+
+        # Read metadata
+        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
+        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
+        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+
+        # Get state and age
+        local state=$(get_state "$id")
+        local age=$(format_age "$created")
+
+        # Display "unknown" as "waiting" for users
+        if [[ "$state" == "unknown" ]]; then
+            state="waiting"
+        fi
+
+        # Handle null manager
+        if [[ "$manager" == "null" || -z "$manager" ]]; then
+            manager=""
+        fi
+
+        # Handle null model
+        if [[ "$model" == "null" || -z "$model" ]]; then
+            model="-"
+        fi
+
+        # Store as: id|manager|state|age|model|prompt
+        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
+    done
+
+    echo "$tmpfile"
+}
+
+# Get agent IDs in depth-first tree order
+# Args: $1 = tmpfile from build_agent_data_file
+# Outputs: one agent ID per line in tree traversal order
+get_agent_ids_tree_order() {
+    local tmpfile="$1"
+
+    if [[ ! -s "$tmpfile" ]]; then
+        return
+    fi
+
+    # Helper to get children of a manager
+    _tree_get_children() {
+        local manager_id="$1"
+        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+    }
+
+    # Recursive helper to emit agent IDs in tree order
+    _tree_emit() {
+        local id="$1"
+        echo "$id"
+        local children=$(_tree_get_children "$id")
+        for child in $children; do
+            _tree_emit "$child"
+        done
+    }
+
+    # Find root agents (those with no parent OR whose parent doesn't exist)
+    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+    local roots=""
+    while IFS='|' read -r id parent _rest; do
+        if [[ -z "$parent" ]]; then
+            roots="$roots $id"
+        else
+            if ! echo "$all_ids" | grep -q "^${parent}$"; then
+                roots="$roots $id"
+            fi
+        fi
+    done < "$tmpfile"
+    roots="${roots# }"
+
+    for root in $roots; do
+        _tree_emit "$root"
+    done
+}
+
+# Build tree lines with formatting (pipe-delimited for column alignment)
+# Args: $1 = tmpfile from build_agent_data_file
+# Outputs: formatted tree lines, one per line
+# Caller should pipe through: column -t -s '|'
+build_tree_lines() {
+    local tmpfile="$1"
+
+    if [[ ! -s "$tmpfile" ]]; then
+        return
+    fi
+
+    # Helper to get agent info from tmpfile
+    _tree_get_agent_info() {
+        local lookup_id="$1"
+        grep "^${lookup_id}|" "$tmpfile" | head -1
+    }
+
+    # Helper to get children of a manager
+    _tree_get_children_for_print() {
+        local manager_id="$1"
+        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+    }
+
+    # Recursive function to print tree
+    _tree_print_node() {
+        local id="$1"
+        local prefix="$2"
+        local is_last="$3"
+
+        # Get agent info
+        local info=$(_tree_get_agent_info "$id")
+        local state=$(echo "$info" | cut -d'|' -f3)
+        local age=$(echo "$info" | cut -d'|' -f4)
+        local model=$(echo "$info" | cut -d'|' -f5)
+        local prompt=$(echo "$info" | cut -d'|' -f6-)
+
+        # Print this node with aligned columns
+        local connector child_prefix tree_part
+        if [[ -z "$prefix" ]]; then
+            # Root node - no prefix/connector
+            tree_part="$id"
+            child_prefix="."
+        elif [[ "$prefix" == "." ]]; then
+            # First level child
+            connector="├──"
+            child_prefix="│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="    "
+            fi
+            tree_part="$connector $id"
+        else
+            # Deeper level
+            connector="├──"
+            child_prefix="${prefix}│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="${prefix}    "
+            fi
+            tree_part="$prefix$connector $id"
+        fi
+
+        # Format: tree_part | state | age | model | (orphan note) | prompt
+        echo "${tree_part}|${state}|${age}|${model}||${prompt}"
+
+        # Print children
+        local children=$(_tree_get_children_for_print "$id")
+        if [[ -n "$children" ]]; then
+            local child_array=($children)
+            local child_count=${#child_array[@]}
+            local i=0
+            for child in "${child_array[@]}"; do
+                i=$((i + 1))
+                local child_is_last="false"
+                if [[ $i -eq $child_count ]]; then
+                    child_is_last="true"
+                fi
+                _tree_print_node "$child" "$child_prefix" "$child_is_last"
+            done
+        fi
+    }
+
+    # Find roots
+    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+    local roots=""
+    while IFS='|' read -r id parent _rest; do
+        if [[ -z "$parent" ]]; then
+            roots="$roots $id"
+        else
+            if ! echo "$all_ids" | grep -q "^${parent}$"; then
+                roots="$roots $id"
+            fi
+        fi
+    done < "$tmpfile"
+    roots="${roots# }"
+
+    # Print each root and its tree
+    local root_array=($roots)
+    local root_count=${#root_array[@]}
+    local i=0
+    for root in "${root_array[@]}"; do
+        i=$((i + 1))
+        local is_last="false"
+        if [[ $i -eq $root_count && $root_count -gt 1 ]]; then
+            is_last="true"
+        fi
+        _tree_print_node "$root" "" "$is_last"
+        # Add blank line between trees if multiple roots
+        if [[ $i -lt $root_count ]]; then
+            echo ""
+        fi
+    done
+}
+
+# =============================================================================
 # COMMAND: new-agent
 # =============================================================================
 
@@ -3171,178 +3386,17 @@ EOF
         exit 0
     fi
 
-    # Build a temporary data file with agent info
-    local tmpfile=$(mktemp)
+    # Build agent data using shared helper
+    local tmpfile=$(build_agent_data_file)
     trap "rm -f '$tmpfile'" EXIT
-
-    for agent_dir in "$AGENTS_DIR"/*/; do
-        [[ -d "$agent_dir" ]] || continue
-        [[ -f "$agent_dir/meta.json" ]] || continue
-
-        local id=$(basename "$agent_dir")
-        local meta="$agent_dir/meta.json"
-
-        # Read metadata
-        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
-        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
-        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
-
-        # Get state and age
-        local state=$(get_state "$id")
-        local age=$(format_age "$created")
-
-        # Display "unknown" as "waiting" for users
-        if [[ "$state" == "unknown" ]]; then
-            state="waiting"
-        fi
-
-        # Handle null manager
-        if [[ "$manager" == "null" || -z "$manager" ]]; then
-            manager=""
-        fi
-
-        # Handle null model
-        if [[ "$model" == "null" || -z "$model" ]]; then
-            model="-"
-        fi
-
-        # Store as: id|manager|state|age|model|prompt
-        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
-    done
 
     if [[ ! -s "$tmpfile" ]]; then
         echo "No agents found."
         exit 0
     fi
 
-
-    # Helper to get agent info
-    get_agent_info() {
-        local lookup_id="$1"
-        grep "^${lookup_id}|" "$tmpfile" | head -1
-    }
-
-    # Helper to get children of a manager
-    get_children() {
-        local manager_id="$1"
-        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
-    }
-
-    # Recursive function to print tree
-    print_tree() {
-        local id="$1"
-        local prefix="$2"
-        local is_last="$3"
-        local is_orphan="$4"  # Optional: manager ID if orphaned
-
-        # Get agent info
-        local info=$(get_agent_info "$id")
-        local manager=$(echo "$info" | cut -d'|' -f2)
-        local state=$(echo "$info" | cut -d'|' -f3)
-        local age=$(echo "$info" | cut -d'|' -f4)
-        local model=$(echo "$info" | cut -d'|' -f5)
-        local prompt=$(echo "$info" | cut -d'|' -f6-)
-
-        # Check if this is an orphaned root (has parent but parent doesn't exist)
-        local orphan_note=""
-        if [[ -z "$prefix" && -n "$parent" ]]; then
-            # This is a root but has a parent field, so it's orphaned
-            orphan_note=" [orphaned, parent: $parent]"
-        fi
-
-        # Print this node with aligned columns
-        local connector child_prefix tree_part
-        if [[ -z "$prefix" ]]; then
-            # Root node - no prefix/connector
-            tree_part="$id"
-            # Mark children as "first level" so they use connectors
-            child_prefix="."
-        elif [[ "$prefix" == "." ]]; then
-            # First level child (child of root) - just connector, no prefix before it
-            connector="├──"
-            child_prefix="│   "
-            if [[ "$is_last" == "true" ]]; then
-                connector="└──"
-                child_prefix="    "
-            fi
-            tree_part="$connector $id"
-        else
-            # Deeper level - prefix + connector
-            connector="├──"
-            child_prefix="${prefix}│   "
-            if [[ "$is_last" == "true" ]]; then
-                connector="└──"
-                child_prefix="${prefix}    "
-            fi
-            tree_part="$prefix$connector $id"
-        fi
-
-        # Print with separator for column command to align
-        # Format: tree_part | state | age | model | orphan_note | prompt
-        echo "${tree_part}|${state}|${age}|${model}|${orphan_note}|${prompt}"
-
-        # Print children
-        local children=$(get_children "$id")
-        if [[ -n "$children" ]]; then
-            local child_array=($children)
-            local child_count=${#child_array[@]}
-            local i=0
-            for child in "${child_array[@]}"; do
-                i=$((i + 1))
-                local child_is_last="false"
-                if [[ $i -eq $child_count ]]; then
-                    child_is_last="true"
-                fi
-                print_tree "$child" "$child_prefix" "$child_is_last"
-            done
-        fi
-    }
-
-    # Build list of all agent IDs
-    local all_ids=$(cut -d'|' -f1 "$tmpfile")
-
-    # Find root agents (those with no parent OR whose parent doesn't exist)
-    local roots=""
-    while IFS='|' read -r id parent _rest; do
-        if [[ -z "$parent" ]]; then
-            # No parent - definitely a root
-            roots="$roots $id"
-        else
-            # Has parent - check if parent exists
-            if ! echo "$all_ids" | grep -q "^${parent}$"; then
-                # Parent doesn't exist - orphaned agent, treat as root
-                roots="$roots $id"
-            fi
-        fi
-    done < "$tmpfile"
-
-    # Trim leading space
-    roots="${roots# }"
-
-    if [[ -z "$roots" ]]; then
-        echo "No root agents found."
-        exit 0
-    fi
-
-    # Print each root and its tree, pipe through column for alignment
-    {
-        local root_array=($roots)
-        local root_count=${#root_array[@]}
-        local i=0
-        for root in "${root_array[@]}"; do
-            i=$((i + 1))
-            local is_last="false"
-            if [[ $i -eq $root_count && $root_count -gt 1 ]]; then
-                is_last="true"
-            fi
-            print_tree "$root" "" "$is_last"
-            # Add blank line between trees if multiple roots
-            if [[ $i -lt $root_count ]]; then
-                echo ""
-            fi
-        done
-    } | column -t -s '|'
+    # Build and display tree using shared helper
+    build_tree_lines "$tmpfile" | column -t -s '|'
 }
 
 # =============================================================================
