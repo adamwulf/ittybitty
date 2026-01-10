@@ -3433,8 +3433,11 @@ EOF
         esac
     done
 
-    # Terminal control helpers
+    # State variables
     local TERM_LINES TERM_COLS
+    local SELECTED_INDEX=0
+    local AGENT_COUNT=0
+    local TREE_SCROLL=0  # Which line of tree to start display from
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -3463,6 +3466,7 @@ EOF
 
         if [[ ! -s "$tmpfile" ]]; then
             # No agents - show message
+            AGENT_COUNT=0
             echo "No agents running."
             echo ""
             echo "Waiting for agents... (Ctrl-C to exit)"
@@ -3477,31 +3481,57 @@ EOF
             return
         fi
 
+        # Get agent IDs in tree order (for selection tracking)
+        local agent_ids
+        mapfile -t agent_ids < <(get_agent_ids_tree_order "$tmpfile")
+        AGENT_COUNT=${#agent_ids[@]}
+
+        # Clamp selection to valid range
+        if [[ $SELECTED_INDEX -ge $AGENT_COUNT ]]; then
+            SELECTED_INDEX=$((AGENT_COUNT - 1))
+        fi
+        if [[ $SELECTED_INDEX -lt 0 ]]; then
+            SELECTED_INDEX=0
+        fi
+
+        # Get the selected agent ID
+        local selected_id="${agent_ids[$SELECTED_INDEX]}"
+
         # Get tree lines
-        local tree_output
-        tree_output=$(build_tree_lines "$tmpfile" | column -t -s '|')
+        local tree_lines
+        mapfile -t tree_lines < <(build_tree_lines "$tmpfile" | column -t -s '|')
+        local total_tree_lines=${#tree_lines[@]}
 
-        # Display first 5 lines of tree (for now, no selection highlighting)
-        local tree_line_count=0
-        while IFS= read -r line; do
-            if [[ $tree_line_count -lt 5 ]]; then
-                printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+        # Calculate tree scroll to keep selection visible (window of 5)
+        if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
+            TREE_SCROLL=$SELECTED_INDEX
+        elif [[ $SELECTED_INDEX -ge $((TREE_SCROLL + 5)) ]]; then
+            TREE_SCROLL=$((SELECTED_INDEX - 4))
+        fi
+
+        # Display 5 lines of tree with selection highlighting
+        local display_line
+        for ((display_line=0; display_line<5; display_line++)); do
+            local tree_idx=$((TREE_SCROLL + display_line))
+            if [[ $tree_idx -lt $total_tree_lines ]]; then
+                local line="${tree_lines[$tree_idx]}"
+                if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
+                    # Highlight selected line with reverse video
+                    printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
+                else
+                    printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+                fi
+            else
+                printf "%-${TERM_COLS}s\n" ""
             fi
-            ((tree_line_count++))
-        done <<< "$tree_output"
-
-        # Pad to 5 lines if fewer
-        while [[ $tree_line_count -lt 5 ]]; do
-            printf "%-${TERM_COLS}s\n" ""
-            ((tree_line_count++))
         done
 
         # Separator
         printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
 
-        # Placeholder for agent info
-        printf "%-${TERM_COLS}s\n" "Agent: (none selected)    Model: -"
-        printf "%-${TERM_COLS}s\n" "Prompt: -"
+        # Placeholder for agent info (will be implemented in Phase 4)
+        printf "%-${TERM_COLS}s\n" "Agent: $selected_id"
+        printf "%-${TERM_COLS}s\n" "Prompt: (Phase 4)"
 
         # Separator
         printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
@@ -3528,10 +3558,36 @@ EOF
         rm -f "$tmpfile"
     }
 
+    # Read single key with timeout
+    watch_read_key() {
+        local key
+        IFS= read -rsn1 -t 1 key
+        echo "$key"
+    }
+
     # Main loop
     while true; do
         watch_render
-        sleep 1
+
+        # Read key with 1 second timeout
+        local key
+        key=$(watch_read_key)
+
+        case "$key" in
+            j)
+                # Move selection down
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
+                fi
+                ;;
+            k)
+                # Move selection up
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
+                fi
+                ;;
+            # ; and l will be implemented in Phase 6
+        esac
     done
 }
 
