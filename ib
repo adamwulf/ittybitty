@@ -125,8 +125,7 @@ log_tmux_screen() {
 # so we can error out instead of blocking on interactive prompts
 is_running_as_agent() {
     local current_dir=$(pwd)
-    if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]] || \
-       [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+    if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
         return 0
     fi
     return 1
