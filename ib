@@ -426,7 +426,7 @@ build_agent_settings() {
     # Git commands are safe in worktrees: agents can't switch branches or push
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
 
-    # Merge everything together and add Stop hook
+    # Merge everything together and add hooks
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
         --argjson cfg_allow "$allow_json" \
         --argjson cfg_deny "$deny_json" '
@@ -437,6 +437,13 @@ build_agent_settings() {
                 "type": "command",
                 "command": "ib",
                 "args": ["hook-status", "__AGENT_ID__"]
+            }]
+        }] |
+        .hooks.PermissionRequest = [{
+            "hooks": [{
+                "type": "command",
+                "command": "bash",
+                "args": ["-c", "ib log --id __AGENT_ID__ --quiet \"Permission denied: $CLAUDE_TOOL_NAME\" && echo '\''{\"permissionDecision\":\"deny\"}'\''"]
             }]
         }]
     '

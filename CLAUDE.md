@@ -53,6 +53,31 @@ Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_ag
 - `permissions.worker.allow/deny` - tools for worker agents
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
+## Agent Hooks
+
+Each spawned agent automatically gets Claude Code hooks configured in their `settings.local.json`:
+
+| Hook | Purpose |
+|------|---------|
+| `Stop` | Calls `ib hook-status <id>` when agent stops to update state tracking |
+| `PermissionRequest` | Logs denied tool requests to agent.log and auto-denies them |
+
+### PermissionRequest Hook
+
+When an agent tries to use a tool not in its `allow` list, the `PermissionRequest` hook:
+1. Logs the denied request to `agent.log` via `ib log --quiet`
+2. Returns `{"permissionDecision": "deny"}` to block the tool
+
+This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
+```
+[2026-01-10T12:34:56-06:00] Permission denied: Bash
+```
+
+To review denied permissions for an agent:
+```bash
+grep "Permission denied" .ittybitty/agents/<id>/agent.log
+```
+
 ## Logging System
 
 Each agent has an `agent.log` file at `.ittybitty/agents/<id>/agent.log` that captures timestamped events.
@@ -72,6 +97,7 @@ log_agent "$ID" "message" --quiet   # logs only, no stdout
 | Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
 | Message received | `send` | "Received message from X: Y" (recipient's log) |
 | Message sent | `send` | "Sent message to X: Y" (sender's log) |
+| Permission denied | hook | "Permission denied: TOOL_NAME" |
 | Kill initiated | `kill` | "Agent killed" |
 | Process terminated | `kill/merge` | "Terminated Claude process" |
 | Session killed | `kill/merge` | "Killed tmux session" |
