@@ -2885,15 +2885,15 @@ cmd_watchdog() {
                 # No logging if already notified - silence
                 ;;
 
-            running|unknown)
+            running)
                 # Only log on state change or if clearing flags
-                if [[ "$prev_state" != "$state" ]]; then
+                if [[ "$prev_state" != "running" ]]; then
                     if [[ $waiting_counter -gt 0 ]]; then
-                        echo "[watchdog] Agent state: $state (reset waiting counter and interval)"
+                        echo "[watchdog] Agent state: running (reset waiting counter and interval)"
                     else
-                        echo "[watchdog] Agent state: $state"
+                        echo "[watchdog] Agent state: running"
                     fi
-                    log_agent "$AGENT_ID" "[watchdog] State changed to: $state" --quiet
+                    log_agent "$AGENT_ID" "[watchdog] State changed to: running" --quiet
                 fi
                 waiting_counter=0
                 notify_interval=6  # Reset to initial interval when resuming work
@@ -2903,6 +2903,41 @@ cmd_watchdog() {
                     echo "[watchdog] Agent resumed from complete - clearing completion flag"
                     log_agent "$AGENT_ID" "[watchdog] Resumed from complete" --quiet
                     notified_complete=false
+                fi
+                ;;
+
+            unknown)
+                # Treat unknown like waiting - agent may need attention
+                waiting_counter=$((waiting_counter + 1))
+
+                # Only log state change
+                if [[ "$prev_state" != "unknown" ]]; then
+                    echo "[watchdog] Agent state: unknown (counter: $waiting_counter, next notify at: $notify_interval)"
+                    log_agent "$AGENT_ID" "[watchdog] State changed to: unknown" --quiet
+                fi
+
+                # Check if we've reached the notification threshold
+                if [[ $waiting_counter -ge $notify_interval ]]; then
+                    local wait_time=$((notify_interval * 5))
+                    echo "[watchdog] THRESHOLD REACHED: Agent state unknown for ${wait_time}+ seconds"
+                    if [[ "$QUIET" == "true" ]]; then
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent state is unknown"
+                    else
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent state is unknown"
+                        log_agent "$AGENT_ID" "[watchdog] Notified manager $manager: state unknown" --quiet
+                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID state is unknown - may need attention"
+                    fi
+
+                    # Reset counter and double the interval (exponential backoff)
+                    waiting_counter=0
+                    notify_interval=$((notify_interval * 2))
+
+                    # Cap at max interval (64 minutes)
+                    if [[ $notify_interval -gt $max_notify_interval ]]; then
+                        notify_interval=$max_notify_interval
+                    fi
+
+                    echo "[watchdog] Next notification in $((notify_interval * 5)) seconds"
                 fi
                 ;;
 
