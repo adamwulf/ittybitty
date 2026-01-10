@@ -2986,7 +2986,9 @@ cmd_watchdog() {
                         notify_interval=$max_notify_interval
                     fi
 
-                    echo "[watchdog] Next notification in $((notify_interval * 5)) seconds"
+                    local next_seconds=$((notify_interval * 5))
+                    echo "[watchdog] Next notification in ${next_seconds} seconds"
+                    log_agent "$AGENT_ID" "[watchdog] Backoff increased: next notify in ${next_seconds}s" --quiet
                 fi
                 ;;
 
@@ -3063,7 +3065,9 @@ cmd_watchdog() {
                         notify_interval=$max_notify_interval
                     fi
 
-                    echo "[watchdog] Next notification in $((notify_interval * 5)) seconds"
+                    local next_seconds=$((notify_interval * 5))
+                    echo "[watchdog] Next notification in ${next_seconds} seconds"
+                    log_agent "$AGENT_ID" "[watchdog] Backoff increased: next notify in ${next_seconds}s" --quiet
                 fi
                 ;;
 
