@@ -83,16 +83,31 @@ log_agent() {
     fi
 }
 
+# Log multi-line content with a header/footer to an agent's log file
+# Args: $1 = agent ID, $2 = title, $3 = content
+log_multi_line() {
+    local ID="$1"
+    local TITLE="$2"
+    local CONTENT="$3"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local LOG_FILE="$AGENT_DIR/agent.log"
+
+    # Only log if agent directory exists and we have content
+    [[ -d "$AGENT_DIR" ]] || return
+    [[ -n "$CONTENT" ]] || return
+
+    {
+        echo "========== $TITLE =========="
+        echo "$CONTENT"
+        echo "============================="
+    } >> "$LOG_FILE"
+}
+
 # Log tmux screen content for debugging state detection
 # Args: $1 = agent ID
 # Uses LAST_TMUX_CAPTURE if available (set by get_state), otherwise captures fresh
 log_tmux_screen() {
     local ID="$1"
-    local AGENT_DIR="$AGENTS_DIR/$ID"
-    local LOG_FILE="$AGENT_DIR/agent.log"
-
-    # Only log if agent directory exists
-    [[ -d "$AGENT_DIR" ]] || return
 
     # Use cached capture from get_state if available
     local tmux_content="$LAST_TMUX_CAPTURE"
@@ -105,14 +120,7 @@ log_tmux_screen() {
         fi
     fi
 
-    # Log if we have content
-    if [[ -n "$tmux_content" ]]; then
-        {
-            echo "========== tmux =========="
-            echo "$tmux_content"
-            echo "=========================="
-        } >> "$LOG_FILE"
-    fi
+    log_multi_line "$ID" "tmux" "$tmux_content"
 }
 
 # Check if ib is being called from within an agent worktree
