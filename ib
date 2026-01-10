@@ -430,6 +430,63 @@ get_state() {
     echo "unknown"
 }
 
+# Wait for Claude to start - logo OR permissions screen appears
+# When permissions are NOT needed: logo appears immediately
+# When permissions ARE needed: permissions screen appears first, logo after accepting
+# Args: $1 = tmux session name
+# Returns: 0 if Claude started (logo or permissions detected), 1 if timed out
+# Sets global CLAUDE_STARTED_WITH to "logo" or "permissions"
+wait_for_claude_start() {
+    local TMUX_SESSION="$1"
+    local max_wait=30  # Max half-seconds to wait (15 seconds total)
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+
+        # Capture ALL history from tmux and check the top 50 lines
+        local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
+
+        # Check for Claude logo - indicates Claude launched (no permissions needed)
+        if echo "$top_output" | grep -q "Claude Code v"; then
+            CLAUDE_STARTED_WITH="logo"
+            return 0
+        fi
+
+        # Check for permissions screen - indicates Claude started but needs trust
+        if echo "$top_output" | grep -qi "Enter to confirm" && echo "$top_output" | grep -qi "trust"; then
+            CLAUDE_STARTED_WITH="permissions"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Wait for Claude logo only (used after accepting permissions)
+# Args: $1 = tmux session name
+# Returns: 0 if logo found, 1 if timed out
+wait_for_claude_logo() {
+    local TMUX_SESSION="$1"
+    local max_wait=30  # Max half-seconds to wait (15 seconds total)
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+
+        # Capture ALL history and check the top for logo
+        local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
+
+        if echo "$top_output" | grep -q "Claude Code v"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Wait for and auto-accept workspace trust dialog
 # Args: $1 = tmux session name
 # Returns: 0 if successful, 1 if timed out
@@ -438,24 +495,38 @@ auto_accept_workspace_trust() {
     local max_attempts=5
     local attempt=0
 
-    # Poll until permissions screen is gone or max attempts reached
+    # Wait for Claude to start (shows either logo or permissions screen)
+    echo "  [ib] Waiting for Claude to initialize..." >&2
+    if ! wait_for_claude_start "$TMUX_SESSION"; then
+        echo "  [ib] Warning: Claude did not start within timeout" >&2
+        return 1
+    fi
+
+    # If logo appeared directly, no permissions needed
+    if [[ "$CLAUDE_STARTED_WITH" == "logo" ]]; then
+        echo "  [ib] Past permissions screen" >&2
+        return 0
+    fi
+
+    # Permissions screen detected - accept it
     while [[ $attempt -lt $max_attempts ]]; do
-        # Initial grace period for Claude Code to start, then poll every 4s
+        echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
+        tmux send-keys -t "$TMUX_SESSION" Enter
+        attempt=$((attempt + 1))
+
+        # Wait for Claude to process the Enter
         sleep 4
 
-        # Capture recent output from tmux
+        # Check RECENT output to see if permissions are still showing
         local recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50 2>/dev/null)
 
-        # Check if still showing workspace trust dialog
-        # Require BOTH "Enter to confirm" AND "trust" to avoid false positives
-        if echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"; then
-            echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
-            tmux send-keys -t "$TMUX_SESSION" Enter
-            attempt=$((attempt + 1))
-        else
-            # No longer showing permissions - success
-            echo "  [ib] Past permissions screen" >&2
-            return 0
+        # If permissions gone from recent output, wait for logo to confirm success
+        if ! (echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"); then
+            # Permissions accepted - verify by waiting for logo
+            if wait_for_claude_logo "$TMUX_SESSION"; then
+                echo "  [ib] Past permissions screen" >&2
+                return 0
+            fi
         fi
     done
 
