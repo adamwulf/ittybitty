@@ -46,6 +46,115 @@ archive_agent_output() {
     fi
 }
 
+# Kill the Claude process for an agent using graceful shutdown
+# Args: $1 = agent ID
+# Returns: 0 if killed successfully, 1 if process not found
+kill_agent_process() {
+    local ID="$1"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local TMUX_SESSION=$(session_name "$ID")
+    local PID=""
+
+    # Strategy 1: Dynamic lookup from tmux (most reliable)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        local PANE_PID=$(tmux list-panes -t "$TMUX_SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
+        if [[ -n "$PANE_PID" ]]; then
+            # Find Claude process under this pane
+            PID=$(pgrep -P "$PANE_PID" -f "claude" 2>/dev/null | head -1)
+        fi
+    fi
+
+    # Strategy 2: Fallback to meta.json PID
+    if [[ -z "$PID" && -f "$AGENT_DIR/meta.json" ]]; then
+        PID=$(jq -r '.claude_pid // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        [[ "$PID" == "null" || -z "$PID" ]] && PID=""
+    fi
+
+    # No PID found - nothing to kill
+    [[ -z "$PID" ]] && return 1
+
+    # Check if process is still running
+    ! kill -0 "$PID" 2>/dev/null && return 0  # Already dead, success
+
+    # Graceful shutdown: SIGTERM first
+    kill -TERM "$PID" 2>/dev/null || return 1
+
+    # Wait up to 2 seconds for graceful shutdown
+    local waited=0
+    while kill -0 "$PID" 2>/dev/null && [[ $waited -lt 20 ]]; do
+        sleep 0.1
+        ((waited++))
+    done
+
+    # If still running, force kill with SIGKILL
+    if kill -0 "$PID" 2>/dev/null; then
+        kill -KILL "$PID" 2>/dev/null || return 1
+        sleep 0.1
+    fi
+
+    # Return success if process is dead
+    ! kill -0 "$PID" 2>/dev/null
+}
+
+# Scan for and kill orphaned Claude processes
+# An orphaned process is one where:
+# 1. The process cwd contains ".ittybitty/agents/"
+# 2. The agent directory no longer exists (deleted)
+# This prevents false positives from legitimate Claude instances
+scan_and_kill_orphans() {
+    local killed_count=0
+
+    while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+
+        # Get process working directory (macOS: lsof, Linux: /proc)
+        local proc_cwd=""
+        if [[ "$(uname)" == "Darwin" ]]; then
+            proc_cwd=$(lsof -a -d cwd -p "$pid" -Fn 2>/dev/null | grep '^n' | cut -c2-)
+        else
+            proc_cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
+        fi
+
+        [[ -z "$proc_cwd" ]] && continue
+
+        # Safety check 1: Must contain ".ittybitty/agents/"
+        [[ "$proc_cwd" != *"/.ittybitty/agents/"* ]] && continue
+
+        # Safety check 2: Extract agent dir and verify it doesn't exist
+        local agent_path=""
+        if [[ "$proc_cwd" =~ (.*/.ittybitty/agents/[^/]+) ]]; then
+            agent_path="${BASH_REMATCH[1]}"
+        fi
+
+        # Skip if we couldn't extract path or if directory still exists
+        [[ -z "$agent_path" || -d "$agent_path" ]] && continue
+
+        # Confirmed orphan - kill it
+        echo "  Found orphaned Claude process (PID $pid, deleted dir: $agent_path)"
+
+        if kill -TERM "$pid" 2>/dev/null; then
+            local waited=0
+            while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 20 ]]; do
+                sleep 0.1
+                ((waited++))
+            done
+
+            # Force kill if still alive
+            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+            sleep 0.1
+
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "    ✓ Killed orphaned process $pid"
+                ((killed_count++))
+            else
+                echo "    ✗ Failed to kill process $pid"
+            fi
+        fi
+    done < <(pgrep -f "claude" 2>/dev/null)
+
+    [[ $killed_count -gt 0 ]] && echo "Cleaned up $killed_count orphaned Claude process(es)"
+}
+
 # Load config from .ittybitty.json if it exists
 # Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL
 load_config() {
@@ -862,7 +971,21 @@ EXITSCRIPT
 #!/bin/bash
 # Add git repo root to PATH so 'ib' is available
 export PATH="$GIT_ROOT:\$PATH"
-claude --session-id "$SESSION_UUID" $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')"
+
+# Start Claude in background and capture PID
+claude --session-id "$SESSION_UUID" $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')" &
+CLAUDE_PID=\$!
+
+# Store PID in meta.json for recovery if needed
+if command -v jq &>/dev/null; then
+    TMP_FILE="\$(mktemp)"
+    jq --arg pid "\$CLAUDE_PID" '. + {claude_pid: \$pid}' "$ABS_AGENT_DIR/meta.json" > "\$TMP_FILE" && mv "\$TMP_FILE" "$ABS_AGENT_DIR/meta.json"
+fi
+
+# Wait for Claude to complete
+wait \$CLAUDE_PID
+
+# Run exit check
 $ABS_EXIT_SCRIPT
 EOF
     chmod +x "$STARTUP_SCRIPT"
@@ -1608,12 +1731,17 @@ EOF
     # Archive output before cleanup
     archive_agent_output "$ID"
 
+    # Kill Claude process gracefully before killing tmux session
+    if kill_agent_process "$ID"; then
+        echo "Terminated Claude process for agent: $ID"
+    fi
+
     # Kill tmux session if running
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION"
-        echo "Killed session: $ID"
+        echo "Killed tmux session: $ID"
     else
-        echo "Session not running: $ID"
+        echo "Tmux session not running: $ID"
     fi
 
     # Always cleanup
@@ -1632,6 +1760,9 @@ EOF
         rm -rf "$AGENT_DIR"
         echo "Closed agent: $ID"
     fi
+
+    # Scan for any orphaned Claude processes after cleanup
+    scan_and_kill_orphans
 }
 
 # =============================================================================
@@ -1802,6 +1933,9 @@ EOF
         # Archive output before cleanup
         archive_agent_output "$id" > /dev/null 2>&1 || true
 
+        # Kill Claude process gracefully before killing tmux session
+        kill_agent_process "$id" > /dev/null 2>&1 || true
+
         # Kill tmux session if running
         if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
@@ -1870,6 +2004,13 @@ EOF
                 echo "✗"
             fi
         done
+    fi
+
+    # Scan for any orphaned Claude processes after all cleanup
+    if [[ $killed -gt 0 || $orphans_killed -gt 0 ]]; then
+        echo ""
+        echo "Scanning for orphaned Claude processes..."
+        scan_and_kill_orphans
     fi
 
     # Print results
@@ -2024,12 +2165,27 @@ EOF
 
     # Write a resume script
     local RESUME_SCRIPT="$AGENT_DIR/resume.sh"
-    local ABS_EXIT_SCRIPT="$(cd "$AGENT_DIR" && pwd)/exit-check.sh"
+    local ABS_AGENT_DIR="$(cd "$AGENT_DIR" && pwd)"
+    local ABS_EXIT_SCRIPT="$ABS_AGENT_DIR/exit-check.sh"
     cat > "$RESUME_SCRIPT" <<EOF
 #!/bin/bash
 # Add git repo root to PATH so 'ib' is available
 export PATH="$GIT_ROOT:\$PATH"
-claude --resume "$SESSION_UUID" $CLAUDE_ARGS
+
+# Start Claude in background and capture PID
+claude --resume "$SESSION_UUID" $CLAUDE_ARGS &
+CLAUDE_PID=\$!
+
+# Store PID in meta.json for recovery if needed
+if command -v jq &>/dev/null; then
+    TMP_FILE="\$(mktemp)"
+    jq --arg pid "\$CLAUDE_PID" '. + {claude_pid: \$pid}' "$ABS_AGENT_DIR/meta.json" > "\$TMP_FILE" && mv "\$TMP_FILE" "$ABS_AGENT_DIR/meta.json"
+fi
+
+# Wait for Claude to complete
+wait \$CLAUDE_PID
+
+# Run exit check
 $ABS_EXIT_SCRIPT
 EOF
     chmod +x "$RESUME_SCRIPT"
@@ -2205,9 +2361,14 @@ EOF
     # Archive output before cleanup
     archive_agent_output "$ID"
 
+    # Kill Claude process gracefully before killing tmux session
+    if kill_agent_process "$ID"; then
+        echo "Terminated Claude process for agent: $ID"
+    fi
+
     # Kill the agent session if still running
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "Stopping agent session..."
+        echo "Stopping tmux session..."
         tmux kill-session -t "$TMUX_SESSION"
     fi
 
@@ -2237,6 +2398,9 @@ EOF
     # Remove agent directory
     rm -rf "$AGENT_DIR"
     echo "Closed agent: $ID"
+
+    # Scan for any orphaned Claude processes after cleanup
+    scan_and_kill_orphans
 }
 
 # =============================================================================
