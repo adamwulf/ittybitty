@@ -3634,7 +3634,8 @@ EOF
             local right_content=""
 
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                left_content="${tmux_lines[$tmux_idx]}"
+                # Strip ANSI escape codes for proper width calculation
+                left_content=$(echo "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
             fi
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
                 right_content="${log_lines[$log_idx]}"
@@ -3643,12 +3644,12 @@ EOF
             printf "%-${pane_width}.${pane_width}s │ %-${pane_width}.${pane_width}s\n" "$left_content" "$right_content"
         done
 
-        # Bottom help line with scroll indicator
+        # Bottom help line with scroll indicator (no trailing newline to avoid extra line)
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
         if [[ $SCROLL_OFFSET -gt 0 ]]; then
             help_text="[SCROLLED +$SCROLL_OFFSET]  $help_text"
         fi
-        printf "%-${TERM_COLS}s\n" "$help_text"
+        printf "%-${TERM_COLS}s" "$help_text"
 
         rm -f "$tmpfile"
     }
