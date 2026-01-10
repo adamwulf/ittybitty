@@ -83,6 +83,66 @@ log_agent() {
     fi
 }
 
+# Teardown an agent: kill processes, remove worktree, archive, cleanup
+# Args: $1 = agent ID
+#       $2 = --quiet (optional, suppress stdout for batch mode)
+#       $3 = log message (optional, defaults to "Agent killed")
+# Returns: 0 if successful, 1 if failed
+# Note: Does NOT do confirmation prompts or orphan scanning - callers handle those
+teardown_agent() {
+    local ID="$1"
+    local QUIET="${2:-}"
+    local LOG_MSG="${3:-Agent killed}"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local TMUX_SESSION=$(session_name "$ID")
+
+    # Log the action
+    log_agent "$ID" "$LOG_MSG" "$QUIET"
+
+    # Capture tmux output BEFORE killing session (so archive has it)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
+
+    # Kill Claude process gracefully before killing tmux session
+    if kill_agent_process "$ID" 2>/dev/null; then
+        log_agent "$ID" "Terminated Claude process" "$QUIET"
+    fi
+
+    # Kill tmux session if running
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        log_agent "$ID" "Killed tmux session" "$QUIET"
+    fi
+
+    # Remove git worktree if it exists
+    if [[ -d "$AGENT_DIR/repo" ]]; then
+        git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
+            log_agent "$ID" "Warning: could not remove worktree, removing directory manually" "$QUIET"
+            rm -rf "$AGENT_DIR/repo"
+        }
+        # Also try to delete the branch
+        if git branch -D "agent/$ID" 2>/dev/null; then
+            log_agent "$ID" "Deleted branch agent/$ID" "$QUIET"
+        fi
+    fi
+
+    # Archive output after teardown (captures complete log)
+    if [[ "$QUIET" == "--quiet" ]]; then
+        archive_agent_output "$ID" > /dev/null 2>&1 || true
+    else
+        archive_agent_output "$ID"
+    fi
+
+    # Remove agent directory last
+    if [[ -d "$AGENT_DIR" ]]; then
+        rm -rf "$AGENT_DIR"
+        return 0
+    fi
+
+    return 1
+}
+
 # Kill the Claude process for an agent using graceful shutdown
 # Args: $1 = agent ID
 # Returns: 0 if killed successfully, 1 if process not found
@@ -1856,47 +1916,9 @@ EOF
         fi
     fi
 
-    # Log the kill action
-    log_agent "$ID" "Agent killed"
-
-    # Capture tmux output BEFORE killing session (so archive has it)
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
-    fi
-
-    # Kill Claude process gracefully before killing tmux session
-    if kill_agent_process "$ID"; then
-        log_agent "$ID" "Terminated Claude process"
-    fi
-
-    # Kill tmux session if running
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux kill-session -t "$TMUX_SESSION"
-        log_agent "$ID" "Killed tmux session"
-    fi
-
-    # Cleanup worktree first (while we can still log)
-    if [[ -d "$AGENT_DIR" ]]; then
-        if [[ -d "$AGENT_DIR/repo" ]]; then
-            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
-                log_agent "$ID" "Warning: could not remove worktree, removing directory manually"
-                rm -rf "$AGENT_DIR/repo"
-            }
-            # Also try to delete the branch
-            if git branch -D "agent/$ID" 2>/dev/null; then
-                log_agent "$ID" "Deleted branch agent/$ID"
-            fi
-        fi
-    fi
-
-    # Archive output after teardown (captures complete log)
-    archive_agent_output "$ID"
-
-    # Remove agent directory last
-    if [[ -d "$AGENT_DIR" ]]; then
-        rm -rf "$AGENT_DIR"
-        echo "Closed agent: $ID"
-    fi
+    # Teardown the agent (logs, kills, archives, removes)
+    teardown_agent "$ID" "" "Agent killed"
+    echo "Closed agent: $ID"
 
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
@@ -2061,48 +2083,12 @@ EOF
 
     # Kill each agent in the list
     for id in "${agents_to_kill[@]}"; do
-        local agent_dir="$AGENTS_DIR/$id"
-        [[ -d "$agent_dir" ]] || continue
-        local TMUX_SESSION=$(session_name "$id")
+        [[ -d "$AGENTS_DIR/$id" ]] || continue
 
         echo -n "  Killing $id... "
 
-        # Log the nuke (quiet for batch mode)
-        log_agent "$id" "Agent nuked" --quiet
-
-        # Capture tmux output BEFORE killing session (so archive has it)
-        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$agent_dir/output.log" 2>/dev/null || true
-        fi
-
-        # Kill Claude process gracefully before killing tmux session
-        if kill_agent_process "$id" 2>/dev/null; then
-            log_agent "$id" "Terminated Claude process" --quiet
-        fi
-
-        # Kill tmux session if running
-        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-            log_agent "$id" "Killed tmux session" --quiet
-        fi
-
-        # Remove git worktree if it exists
-        if [[ -d "$agent_dir/repo" ]]; then
-            git worktree remove "$agent_dir/repo" --force 2>/dev/null || {
-                log_agent "$id" "Warning: removing worktree manually" --quiet
-                rm -rf "$agent_dir/repo" 2>/dev/null || true
-            }
-            # Also try to delete the branch
-            if git branch -D "agent/$id" 2>/dev/null; then
-                log_agent "$id" "Deleted branch agent/$id" --quiet
-            fi
-        fi
-
-        # Archive output after teardown (captures complete log)
-        archive_agent_output "$id" > /dev/null 2>&1 || true
-
-        # Remove agent directory last
-        if rm -rf "$agent_dir" 2>/dev/null; then
+        # Teardown the agent (quiet mode for batch)
+        if teardown_agent "$id" "--quiet" "Agent nuked"; then
             echo "✓"
             ((killed++))
         else
