@@ -65,8 +65,15 @@ Each spawned agent automatically gets Claude Code hooks configured in their `set
 ### PermissionRequest Hook
 
 When an agent tries to use a tool not in its `allow` list, the `PermissionRequest` hook:
-1. Logs the denied request to `agent.log` via `ib log --quiet`
-2. Returns `{"permissionDecision": "deny"}` to block the tool
+1. Reads the tool name from JSON stdin (`tool_name` field)
+2. Logs the denied request to `agent.log` via `ib log --quiet`
+3. Returns the proper hook output format to auto-deny the tool
+
+The hook command:
+```bash
+jq -r '.tool_name' | xargs -I {} ib log --id <agent-id> --quiet "Permission denied: {}" &&
+echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}'
+```
 
 This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
 ```
