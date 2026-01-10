@@ -126,7 +126,7 @@ log_tmux_screen() {
 is_running_as_agent() {
     local current_dir=$(pwd)
     if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]] || \
-       [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+       [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
         return 0
     fi
     return 1
@@ -1606,9 +1606,9 @@ EOF
     # Auto-detect if we're in an agent worktree (FROM_ID not already set)
     if [[ -z "$FROM_ID" ]]; then
         local current_dir=$(pwd)
-        if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+        if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
             # Find the agent directory and read meta.json
-            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
                 FROM_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
             fi
@@ -2849,9 +2849,9 @@ EOF
             if [[ -f "$agent_dir/meta.json" ]]; then
                 AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
             fi
-        elif [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+        elif [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
             # Legacy path format
-            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
                 AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
             fi
