@@ -3570,141 +3570,98 @@ EOF
             PREV_SELECTED_INDEX=$SELECTED_INDEX
         fi
 
+        # ===== PHASE 1: COLLECT & PROCESS DATA =====
+
         # Capture more lines for scrolling (up to 500 lines of history)
         local capture_lines=500
 
-        # Get tmux output for selected agent
+        # Get tmux output for selected agent (all lines, for total count)
         local tmux_session
         tmux_session=$(session_name "$selected_id")
-        local tmux_lines=()
+        local all_tmux_lines=()
         if tmux has-session -t "$tmux_session" 2>/dev/null; then
-            # Live session - capture history
             while IFS= read -r line; do
-                tmux_lines+=("$line")
+                all_tmux_lines+=("$line")
             done < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
         else
-            # No session - try output.log
             local output_file="$AGENTS_DIR/$selected_id/output.log"
             if [[ -f "$output_file" ]]; then
                 while IFS= read -r line; do
-                    tmux_lines+=("$line")
+                    all_tmux_lines+=("$line")
                 done < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
             fi
         fi
 
-        # Get agent log for selected agent (with line wrapping using fold)
-        local log_lines=()
+        # Get agent log and wrap it (all lines, for total count)
+        local all_log_lines=()
         local log_raw_count=0
-        local log_first_width=""
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
             while IFS= read -r raw_line; do
                 ((log_raw_count++))
-                # Capture first line's width for debug
-                if [[ -z "$log_first_width" ]]; then
-                    log_first_width=$(printf '%s\n' "$raw_line" | wc -L | tr -d ' ')
-                fi
-                # Use fold to wrap long lines efficiently
                 while IFS= read -r wrapped_line; do
-                    log_lines+=("$wrapped_line")
+                    all_log_lines+=("$wrapped_line")
                 done < <(printf '%s\n' "$raw_line" | fold -w "$right_pane_width")
             done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
         fi
 
-        local tmux_total=${#tmux_lines[@]}
-        local log_total=${#log_lines[@]}
+        local tmux_total=${#all_tmux_lines[@]}
+        local log_total=${#all_log_lines[@]}
 
-        # Calculate max scroll offset (so we can't scroll past the beginning)
-        # Use the smaller of the two to ensure both panes can reach their top
+        # Calculate and clamp scroll offset
         local tmux_max_scroll=$((tmux_total - pane_height))
         local log_max_scroll=$((log_total - pane_height))
-        if [[ $tmux_max_scroll -lt 0 ]]; then tmux_max_scroll=0; fi
-        if [[ $log_max_scroll -lt 0 ]]; then log_max_scroll=0; fi
+        [[ $tmux_max_scroll -lt 0 ]] && tmux_max_scroll=0
+        [[ $log_max_scroll -lt 0 ]] && log_max_scroll=0
         local max_scroll=$tmux_max_scroll
-        if [[ $log_max_scroll -lt $max_scroll ]]; then max_scroll=$log_max_scroll; fi
+        [[ $log_max_scroll -lt $max_scroll ]] && max_scroll=$log_max_scroll
+        [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+        [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
 
-        # Clamp scroll offset
-        if [[ $SCROLL_OFFSET -gt $max_scroll ]]; then
-            SCROLL_OFFSET=$max_scroll
-        fi
-        if [[ $SCROLL_OFFSET -lt 0 ]]; then
-            SCROLL_OFFSET=0
-        fi
-
-        # Render split panes using cursor positioning
-        # Pane starts at row 8 (after 5 tree + 1 prompt + 1 header)
-        local pane_start_row=8
+        # Extract visible window of tmux lines (strip ANSI, truncate to width)
+        local visible_tmux_lines=()
         local pane_line
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            # Base index from bottom, then apply scroll offset
             local tmux_idx=$((tmux_total - pane_height + pane_line - SCROLL_OFFSET))
-            local log_idx=$((log_total - pane_height + pane_line - SCROLL_OFFSET))
-
-            local left_content=""
-            local right_content=""
-
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                # Strip ANSI escape codes
-                left_content=$(printf '%s' "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
-                # Get display width (trim whitespace from wc -L output)
-                local left_display_width
-                left_display_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
-                if [[ $left_display_width -gt $left_pane_width ]]; then
-                    # Truncate - remove chars from end until it fits
-                    while true; do
-                        local check_width
-                        check_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
-                        if [[ $check_width -le $left_pane_width ]] || [[ -z "$left_content" ]]; then
-                            break
-                        fi
-                        left_content="${left_content%?}"
-                    done
-                    left_display_width=$(printf '%s\n' "$left_content" | wc -L | tr -d ' ')
-                fi
+                # Strip ANSI and truncate in one pipeline
+                local processed
+                processed=$(printf '%s' "${all_tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-"$left_pane_width")
+                visible_tmux_lines+=("$processed")
             else
-                left_content=""
-                local left_display_width=0
+                visible_tmux_lines+=("")
             fi
-
-            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
-                right_content="${log_lines[$log_idx]}"
-                # Lines are pre-wrapped, but defensively truncate if needed
-                local right_display_width
-                right_display_width=$(printf '%s\n' "$right_content" | wc -L | tr -d ' ')
-                if [[ $right_display_width -gt $right_pane_width ]]; then
-                    while true; do
-                        local check_width
-                        check_width=$(printf '%s\n' "$right_content" | wc -L | tr -d ' ')
-                        if [[ $check_width -le $right_pane_width ]] || [[ -z "$right_content" ]]; then
-                            break
-                        fi
-                        right_content="${right_content%?}"
-                    done
-                fi
-            else
-                right_content=""
-            fi
-
-            # Use cursor positioning: move to row, clear line, print content
-            local row=$((pane_start_row + pane_line))
-            # Move to row, col 1; clear line; print left content
-            printf '\e[%d;1H\e[K' "$row"
-            printf '%s' "$left_content"
-            # Move to separator column and print separator
-            printf '\e[%d;%dH │ ' "$row" "$((left_pane_width + 1))"
-            # Print right content, truncated to right_pane_width
-            printf '%s' "$right_content"
         done
+
+        # Extract visible window of log lines (already wrapped, just slice)
+        local visible_log_lines=()
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local log_idx=$((log_total - pane_height + pane_line - SCROLL_OFFSET))
+            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
+                visible_log_lines+=("${all_log_lines[$log_idx]}")
+            else
+                visible_log_lines+=("")
+            fi
+        done
+
+        # ===== PHASE 2: RENDER (no processing, just print) =====
+
+        local pane_start_row=8
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local row=$((pane_start_row + pane_line))
+            printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
+                "$row" "${visible_tmux_lines[$pane_line]}" \
+                "$row" "$((left_pane_width + 1))" \
+                "${visible_log_lines[$pane_line]}"
+        done
+
         # Move cursor to line after panes
         printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
-        # Bottom help line with scroll indicator and debug info (no trailing newline to avoid extra line)
+        # Bottom help line
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
-        if [[ $SCROLL_OFFSET -gt 0 ]]; then
-            help_text="[SCROLLED +$SCROLL_OFFSET]  $help_text"
-        fi
-        # Debug: term WxH, tmux pane WxH, log pane WxH, line counts (raw->wrapped), first line width
-        local debug_info="term:${TERM_COLS}x${TERM_LINES} tmux:${left_pane_width}(${tmux_total}) log:${right_pane_width}(${log_raw_count}->${log_total},w=${log_first_width})"
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
+        local debug_info="term:${TERM_COLS}x${TERM_LINES} tmux:${left_pane_width}(${tmux_total}) log:${right_pane_width}(${log_raw_count}->${log_total})"
         help_text="${help_text}    [${debug_info}]"
         printf "%-${TERM_COLS}s" "$help_text"
 
