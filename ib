@@ -3537,12 +3537,7 @@ EOF
             fi
         done
 
-        # Separator
-        printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
-
-        # Agent info display
-        printf "%-${TERM_COLS}s\n" "Agent: $selected_id    State: $selected_state    Model: $selected_model"
-        # Truncate prompt to fit terminal width minus "Prompt: " prefix (8 chars)
+        # Prompt display (agent ID/state/model already shown in tree)
         local prompt_max=$((TERM_COLS - 8))
         local display_prompt="$selected_prompt"
         if [[ ${#display_prompt} -gt $prompt_max ]]; then
@@ -3550,13 +3545,13 @@ EOF
         fi
         printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
 
-        # Calculate pane dimensions (need this before headers)
-        local pane_height=$((TERM_LINES - 10))
+        # Calculate pane dimensions
+        local pane_height=$((TERM_LINES - 8))
         local pane_width=$(( (TERM_COLS - 3) / 2 ))
 
-        # Pane headers
-        local left_header="─── TMUX OUTPUT "
-        local right_header="─── AGENT LOG "
+        # Pane headers (use same separator as content for alignment)
+        local left_header="── TMUX OUTPUT "
+        local right_header="── AGENT LOG "
         # Pad headers with ─ to fill width
         while [[ ${#left_header} -lt $pane_width ]]; do
             left_header="${left_header}─"
@@ -3564,7 +3559,7 @@ EOF
         while [[ ${#right_header} -lt $pane_width ]]; do
             right_header="${right_header}─"
         done
-        printf "%-${pane_width}.${pane_width}s─┬─%-${pane_width}.${pane_width}s\n" "$left_header" "$right_header"
+        printf "%s │ %s\n" "$left_header" "$right_header"
 
         # Reset scroll offset when agent changes
         if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
