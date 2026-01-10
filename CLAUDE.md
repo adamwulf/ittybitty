@@ -13,11 +13,11 @@ You (human)
   ↕ conversation
 Primary Agent (responsive, strategic)
   ↓ uses ib to spawn
-Task Agent (runs in tmux, has worktree)
+Manager Agent (runs in tmux, has worktree)
   ↑ can ask questions (send to another agent's stdin)
   ↓ can receive answers (as stdin from another agent)
   ↓ uses ib to spawn
-Leaf Agents (focused workers, no sub-agents)
+Worker Agents (focused workers, no sub-agents)
 ```
 
 **Key insight**: Agents communicate via tmux stdin/stdout. No files, no protocols—just text.
@@ -47,8 +47,8 @@ Helper functions at the top: `load_config`, `build_agent_settings`, `resolve_age
 ## Configuration
 
 `.ittybitty.json` configures permissions for spawned agents:
-- `permissions.task.allow/deny` - tools for regular agents
-- `permissions.leaf.allow/deny` - tools for leaf/worker agents
+- `permissions.manager.allow/deny` - tools for manager agents
+- `permissions.worker.allow/deny` - tools for worker agents
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
 ## Testing
@@ -94,16 +94,16 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 
 **IMPORTANT**: Watchdog notifications only work between agents, not between user and agent.
 
-- If **Agent A** spawns **Agent B**: Agent A gets automatic watchdog notifications about Agent B
+- If **Manager Agent A** spawns **Worker Agent B**: Agent A gets automatic watchdog notifications about Agent B
 - If **you (user)** spawn **Agent A**: You will NOT get automatic notifications, even if Agent A spawns children
 - **Primary agents in user conversations** must actively poll with `ib list` to check on their children
 
 When agent spawns child agent (agent-to-agent):
 - A watchdog is automatically spawned to monitor the child
-- The watchdog notifies the parent agent when:
+- The watchdog notifies the manager agent when:
   - Child is waiting for >30 seconds (needs input)
   - Child completes (ready to review/merge)
-- Parent agents should enter WAITING mode after spawning children
+- Manager agents should enter WAITING mode after spawning children
 - No need for agents to poll `ib list` - watchdogs ensure timely notifications
 
 ### Workflow
@@ -116,7 +116,7 @@ When agent spawns child agent (agent-to-agent):
 5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
 
 **If you are a background agent spawning sub-agents (automatic watchdog notifications):**
-1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects parent, watchdog auto-spawns
+1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects manager, watchdog auto-spawns
 2. **Enter WAITING**: Enter WAITING mode after spawning sub-agents (use `read` or similar)
 3. **Auto-notify**: Watchdog monitors each child and notifies you when:
    - Child has been waiting >30s (needs input)
@@ -136,7 +136,7 @@ When agent spawns child agent (agent-to-agent):
 | `ib merge <id>`       | Merge agent's work and permanently close it                  |
 | `ib kill <id>`        | Permanently close agent without merging                      |
 | `ib resume <id>`      | Restart a stopped agent's session                            |
-| `ib watchdog <id>`    | Monitor agent and notify parent (auto-spawned for child agents) |
+| `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
 
 ### Agent States
 
