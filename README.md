@@ -17,6 +17,12 @@ ln -s /path/to/ittybitty/ib /usr/local/bin/ib
 
 **Requirements:** tmux, jq, git
 
+**Add to .gitignore:** The `.ittybitty` directory stores agent data (worktrees, logs, metadata). Add it to your project's `.gitignore`:
+
+```bash
+echo ".ittybitty" >> .gitignore
+```
+
 ## How `ib` Works
 
 `ib` helps you manage two Claude agent types:
