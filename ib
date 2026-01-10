@@ -25,7 +25,7 @@ session_name() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>.txt
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -36,14 +36,111 @@ archive_agent_output() {
         tmux capture-pane -t "$SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
     fi
 
-    # Archive output.log if it exists
-    if [[ -f "$AGENT_DIR/output.log" ]]; then
-        mkdir -p "$ARCHIVE_DIR"
+    # Only archive if there's something to archive
+    if [[ -f "$AGENT_DIR/output.log" || -f "$AGENT_DIR/agent.log" || -f "$AGENT_DIR/meta.json" ]]; then
         local timestamp=$(date +%Y%m%d-%H%M%S)
-        local archive_file="$ARCHIVE_DIR/${timestamp}-${ID}.txt"
-        mv "$AGENT_DIR/output.log" "$archive_file"
-        echo "Archived output to: $archive_file"
+        local archive_folder="$ARCHIVE_DIR/${timestamp}-${ID}"
+        mkdir -p "$archive_folder"
+
+        # Archive output.log (tmux output)
+        if [[ -f "$AGENT_DIR/output.log" ]]; then
+            mv "$AGENT_DIR/output.log" "$archive_folder/output.log"
+        fi
+
+        # Archive agent.log (agent's log entries)
+        if [[ -f "$AGENT_DIR/agent.log" ]]; then
+            cp "$AGENT_DIR/agent.log" "$archive_folder/agent.log"
+        fi
+
+        # Archive meta.json (agent config: prompt, model, session_id, etc.)
+        if [[ -f "$AGENT_DIR/meta.json" ]]; then
+            cp "$AGENT_DIR/meta.json" "$archive_folder/meta.json"
+        fi
+
+        echo "Archived to: $archive_folder/"
     fi
+}
+
+# Log a message to an agent's log file and optionally echo to stdout
+# Args: $1 = agent ID, $2 = message, $3 = --quiet (optional, suppress stdout)
+# This is the central logging function - use it for all agent logging
+log_agent() {
+    local ID="$1"
+    local MESSAGE="$2"
+    local QUIET="${3:-}"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local LOG_FILE="$AGENT_DIR/agent.log"
+
+    # Only log if agent directory exists
+    if [[ -d "$AGENT_DIR" ]]; then
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $MESSAGE" >> "$LOG_FILE"
+    fi
+
+    # Echo to stdout unless --quiet
+    if [[ "$QUIET" != "--quiet" ]]; then
+        echo "$MESSAGE"
+    fi
+}
+
+# Teardown an agent: kill processes, remove worktree, archive, cleanup
+# Args: $1 = agent ID
+#       $2 = --quiet (optional, suppress stdout for batch mode)
+#       $3 = log message (optional, defaults to "Agent killed")
+# Returns: 0 if successful, 1 if failed
+# Note: Does NOT do confirmation prompts or orphan scanning - callers handle those
+teardown_agent() {
+    local ID="$1"
+    local QUIET="${2:-}"
+    local LOG_MSG="${3:-Agent killed}"
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local TMUX_SESSION=$(session_name "$ID")
+
+    # Log the action
+    log_agent "$ID" "$LOG_MSG" "$QUIET"
+
+    # Capture tmux output BEFORE killing session (so archive has it)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
+
+    # Kill Claude process gracefully before killing tmux session
+    if kill_agent_process "$ID" 2>/dev/null; then
+        log_agent "$ID" "Terminated Claude process" "$QUIET"
+    fi
+
+    # Kill tmux session if running
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+        log_agent "$ID" "Killed tmux session" "$QUIET"
+    fi
+
+    # Remove git worktree if it exists
+    if [[ -d "$AGENT_DIR/repo" ]]; then
+        git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
+            log_agent "$ID" "Warning: could not remove worktree, removing directory manually" "$QUIET"
+            rm -rf "$AGENT_DIR/repo"
+        }
+        # Also try to delete the branch
+        if git branch -D "agent/$ID" 2>/dev/null; then
+            log_agent "$ID" "Deleted branch agent/$ID" "$QUIET"
+        fi
+    fi
+
+    # Archive output after teardown (captures complete log)
+    if [[ "$QUIET" == "--quiet" ]]; then
+        archive_agent_output "$ID" > /dev/null 2>&1 || true
+    else
+        archive_agent_output "$ID"
+    fi
+
+    # Remove agent directory last
+    if [[ -d "$AGENT_DIR" ]]; then
+        rm -rf "$AGENT_DIR"
+        return 0
+    fi
+
+    return 1
 }
 
 # Kill the Claude process for an agent using graceful shutdown
@@ -430,6 +527,63 @@ get_state() {
     echo "unknown"
 }
 
+# Wait for Claude to start - logo OR permissions screen appears
+# When permissions are NOT needed: logo appears immediately
+# When permissions ARE needed: permissions screen appears first, logo after accepting
+# Args: $1 = tmux session name
+# Returns: 0 if Claude started (logo or permissions detected), 1 if timed out
+# Sets global CLAUDE_STARTED_WITH to "logo" or "permissions"
+wait_for_claude_start() {
+    local TMUX_SESSION="$1"
+    local max_wait=30  # Max half-seconds to wait (15 seconds total)
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+
+        # Capture ALL history from tmux and check the top 50 lines
+        local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
+
+        # Check for Claude logo - indicates Claude launched (no permissions needed)
+        if echo "$top_output" | grep -q "Claude Code v"; then
+            CLAUDE_STARTED_WITH="logo"
+            return 0
+        fi
+
+        # Check for permissions screen - indicates Claude started but needs trust
+        if echo "$top_output" | grep -qi "Enter to confirm" && echo "$top_output" | grep -qi "trust"; then
+            CLAUDE_STARTED_WITH="permissions"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Wait for Claude logo only (used after accepting permissions)
+# Args: $1 = tmux session name
+# Returns: 0 if logo found, 1 if timed out
+wait_for_claude_logo() {
+    local TMUX_SESSION="$1"
+    local max_wait=30  # Max half-seconds to wait (15 seconds total)
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+
+        # Capture ALL history and check the top for logo
+        local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
+
+        if echo "$top_output" | grep -q "Claude Code v"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Wait for and auto-accept workspace trust dialog
 # Args: $1 = tmux session name
 # Returns: 0 if successful, 1 if timed out
@@ -438,24 +592,38 @@ auto_accept_workspace_trust() {
     local max_attempts=5
     local attempt=0
 
-    # Poll until permissions screen is gone or max attempts reached
+    # Wait for Claude to start (shows either logo or permissions screen)
+    echo "  [ib] Waiting for Claude to initialize..." >&2
+    if ! wait_for_claude_start "$TMUX_SESSION"; then
+        echo "  [ib] Warning: Claude did not start within timeout" >&2
+        return 1
+    fi
+
+    # If logo appeared directly, no permissions needed
+    if [[ "$CLAUDE_STARTED_WITH" == "logo" ]]; then
+        echo "  [ib] Past permissions screen" >&2
+        return 0
+    fi
+
+    # Permissions screen detected - accept it
     while [[ $attempt -lt $max_attempts ]]; do
-        # Initial grace period for Claude Code to start, then poll every 4s
+        echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
+        tmux send-keys -t "$TMUX_SESSION" Enter
+        attempt=$((attempt + 1))
+
+        # Wait for Claude to process the Enter
         sleep 4
 
-        # Capture recent output from tmux
+        # Check RECENT output to see if permissions are still showing
         local recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50 2>/dev/null)
 
-        # Check if still showing workspace trust dialog
-        # Require BOTH "Enter to confirm" AND "trust" to avoid false positives
-        if echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"; then
-            echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
-            tmux send-keys -t "$TMUX_SESSION" Enter
-            attempt=$((attempt + 1))
-        else
-            # No longer showing permissions - success
-            echo "  [ib] Past permissions screen" >&2
-            return 0
+        # If permissions gone from recent output, wait for logo to confirm success
+        if ! (echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"); then
+            # Permissions accepted - verify by waiting for logo
+            if wait_for_claude_logo "$TMUX_SESSION"; then
+                echo "  [ib] Past permissions screen" >&2
+                return 0
+            fi
         fi
     done
 
@@ -725,6 +893,13 @@ EOF
   "model": $(if [[ -n "$MODEL" ]]; then echo "\"$MODEL\""; else echo "null"; fi)
 }
 EOF
+
+    # Log agent creation
+    if [[ -n "$MANAGER" ]]; then
+        log_agent "$ID" "Agent created (manager: $MANAGER, prompt: $PROMPT)" --quiet
+    else
+        log_agent "$ID" "Agent created (prompt: $PROMPT)" --quiet
+    fi
 
     # Build prompt with context prefix
     local MANAGER_INFO=""
@@ -1342,7 +1517,20 @@ EOF
     sleep 0.1
     tmux send-keys -t "$TMUX_SESSION" Enter
 
-    echo "Sent to $ID"
+    # Log to recipient (quiet - goes to their log only)
+    if [[ -n "$FROM_ID" ]]; then
+        log_agent "$ID" "Received message from $FROM_ID: ${MESSAGE#\[sent by agent $FROM_ID\]: }" --quiet
+    else
+        log_agent "$ID" "Received message: $MESSAGE" --quiet
+    fi
+
+    # Log to sender and print confirmation
+    if [[ -n "$FROM_ID" ]]; then
+        log_agent "$FROM_ID" "Sent message to $ID: ${MESSAGE#\[sent by agent $FROM_ID\]: }"
+    else
+        # No sender agent, just print confirmation
+        echo "Sent to $ID"
+    fi
 }
 
 # =============================================================================
@@ -1728,38 +1916,9 @@ EOF
         fi
     fi
 
-    # Archive output before cleanup
-    archive_agent_output "$ID"
-
-    # Kill Claude process gracefully before killing tmux session
-    if kill_agent_process "$ID"; then
-        echo "Terminated Claude process for agent: $ID"
-    fi
-
-    # Kill tmux session if running
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux kill-session -t "$TMUX_SESSION"
-        echo "Killed tmux session: $ID"
-    else
-        echo "Tmux session not running: $ID"
-    fi
-
-    # Always cleanup
-    if [[ -d "$AGENT_DIR" ]]; then
-        # Remove git worktree if it exists
-        if [[ -d "$AGENT_DIR/repo" ]]; then
-            git worktree remove "$AGENT_DIR/repo" --force 2>/dev/null || {
-                echo "Warning: could not remove worktree, removing directory manually" >&2
-                rm -rf "$AGENT_DIR/repo"
-            }
-            # Also try to delete the branch
-            git branch -D "agent/$ID" 2>/dev/null || true
-        fi
-
-        # Remove agent directory
-        rm -rf "$AGENT_DIR"
-        echo "Closed agent: $ID"
-    fi
+    # Teardown the agent (logs, kills, archives, removes)
+    teardown_agent "$ID" "" "Agent killed"
+    echo "Closed agent: $ID"
 
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
@@ -1924,34 +2083,12 @@ EOF
 
     # Kill each agent in the list
     for id in "${agents_to_kill[@]}"; do
-        local agent_dir="$AGENTS_DIR/$id"
-        [[ -d "$agent_dir" ]] || continue
-        local TMUX_SESSION=$(session_name "$id")
+        [[ -d "$AGENTS_DIR/$id" ]] || continue
 
         echo -n "  Killing $id... "
 
-        # Archive output before cleanup
-        archive_agent_output "$id" > /dev/null 2>&1 || true
-
-        # Kill Claude process gracefully before killing tmux session
-        kill_agent_process "$id" > /dev/null 2>&1 || true
-
-        # Kill tmux session if running
-        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-        fi
-
-        # Remove git worktree if it exists
-        if [[ -d "$agent_dir/repo" ]]; then
-            git worktree remove "$agent_dir/repo" --force 2>/dev/null || {
-                rm -rf "$agent_dir/repo" 2>/dev/null || true
-            }
-            # Also try to delete the branch
-            git branch -D "agent/$id" 2>/dev/null || true
-        fi
-
-        # Remove agent directory
-        if rm -rf "$agent_dir" 2>/dev/null; then
+        # Teardown the agent (quiet mode for batch)
+        if teardown_agent "$id" "--quiet" "Agent nuked"; then
             echo "✓"
             ((killed++))
         else
@@ -2209,7 +2346,8 @@ EOF
         auto_accept_workspace_trust "$TMUX_SESSION"
     fi
 
-    echo "Resumed agent: $ID"
+    # Log and print the resume
+    log_agent "$ID" "Agent resumed"
     echo "Use 'ib look $ID' to view output"
 }
 
@@ -2358,23 +2496,28 @@ EOF
         fi
     fi
 
-    # Archive output before cleanup
-    archive_agent_output "$ID"
+    # Log the merge action
+    log_agent "$ID" "Agent merged into $TARGET_BRANCH ($commit_count commits)"
+
+    # Capture tmux output BEFORE killing session (so archive has it)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
 
     # Kill Claude process gracefully before killing tmux session
     if kill_agent_process "$ID"; then
-        echo "Terminated Claude process for agent: $ID"
+        log_agent "$ID" "Terminated Claude process"
     fi
 
     # Kill the agent session if still running
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "Stopping tmux session..."
         tmux kill-session -t "$TMUX_SESSION"
+        log_agent "$ID" "Stopped tmux session"
     fi
 
     # Perform the merge
     if [[ "$commit_count" -gt 0 ]]; then
-        echo "Merging $BRANCH_NAME into $TARGET_BRANCH..."
+        log_agent "$ID" "Merging $BRANCH_NAME into $TARGET_BRANCH..."
         git checkout "$TARGET_BRANCH" || {
             echo "Error: could not checkout $TARGET_BRANCH" >&2
             exit 1
@@ -2383,19 +2526,24 @@ EOF
             echo "Error: merge failed (conflicts?). Resolve manually." >&2
             exit 1
         }
-        echo "Merged successfully!"
+        log_agent "$ID" "Merged successfully"
     fi
 
-    # Always cleanup
-    echo "Cleaning up..."
-    # Remove git worktree
+    # Cleanup worktree (while we can still log)
+    log_agent "$ID" "Cleaning up..."
     git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
-        echo "Warning: could not remove worktree, removing directory manually" >&2
+        log_agent "$ID" "Warning: could not remove worktree, removing directory manually"
         rm -rf "$WORKTREE_PATH"
     }
     # Delete the branch
-    git branch -D "$BRANCH_NAME" 2>/dev/null && echo "Deleted branch: $BRANCH_NAME"
-    # Remove agent directory
+    if git branch -D "$BRANCH_NAME" 2>/dev/null; then
+        log_agent "$ID" "Deleted branch: $BRANCH_NAME"
+    fi
+
+    # Archive output after teardown (captures complete log)
+    archive_agent_output "$ID"
+
+    # Remove agent directory last
     rm -rf "$AGENT_DIR"
     echo "Closed agent: $ID"
 
@@ -2431,6 +2579,95 @@ cmd_hook_status() {
 
     # Always print the state for debugging
     echo "$state"
+}
+
+# =============================================================================
+# COMMAND: log
+# =============================================================================
+
+cmd_log() {
+    local AGENT_ID=""
+    local MESSAGE=""
+    local QUIET=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id)
+                AGENT_ID="$2"
+                shift 2
+                ;;
+            --quiet|-q)
+                QUIET="--quiet"
+                shift
+                ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib log [--id <agent-id>] [--quiet] "message"
+
+Write a timestamped message to the agent's log file and echo to stdout.
+
+The agent ID is auto-detected when run from an agent worktree.
+Log file location: .ittybitty/agents/<id>/agent.log
+
+Options:
+  --id ID     Specify agent ID (auto-detected in agent worktrees)
+  --quiet,-q  Write to log file only, don't echo to stdout
+  -h, --help  Show this help
+
+Examples:
+  ib log "Starting task analysis"
+  ib log "Found 5 files to process"
+  ib log --id my-agent "External log entry"
+  ib log --quiet "Silent log entry"
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                MESSAGE="$1"
+                shift
+                ;;
+        esac
+    done
+
+    # Auto-detect agent ID if not specified
+    if [[ -z "$AGENT_ID" ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+            # Extract agent ID from path
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        elif [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+            # Legacy path format
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        fi
+    fi
+
+    if [[ -z "$AGENT_ID" ]]; then
+        echo "Error: Could not detect agent ID. Run from an agent worktree or use --id." >&2
+        exit 1
+    fi
+
+    if [[ -z "$MESSAGE" ]]; then
+        echo "Error: Message required" >&2
+        echo "Usage: ib log \"message\"" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID if needed
+    AGENT_ID=$(resolve_agent_id "$AGENT_ID") || exit 1
+
+    # Use the log_agent helper
+    log_agent "$AGENT_ID" "$MESSAGE" "$QUIET"
 }
 
 cmd_watchdog() {
@@ -2865,11 +3102,20 @@ case "${1:-help}" in
         shift
         cmd_hook_status "$@"
         ;;
+    log)
+        shift
+        cmd_log "$@"
+        ;;
     watchdog)
         shift
         cmd_watchdog "$@"
         ;;
     help|--help|-h)
+        SHOW_UNDOCUMENTED=false
+        if [[ "$2" == "--undocumented" || "$2" == "-u" ]]; then
+            SHOW_UNDOCUMENTED=true
+        fi
+
         cat <<EOF
 ib (ittybitty) - multi-agent orchestration for Claude Code
 
@@ -2891,6 +3137,22 @@ Commands:
 Aliases:
   new         Alias for new-agent
   ls          Alias for list
+EOF
+
+        if [[ "$SHOW_UNDOCUMENTED" == true ]]; then
+            cat <<EOF
+
+Undocumented Commands:
+  nuke        EMERGENCY STOP: Kill all agents, or a manager and all descendants
+  hook-status Internal: Check agent state and nudge if unknown (used by hooks)
+  log         Write timestamped message to agent's log file (auto-detects agent ID)
+
+Undocumented Options:
+  help --undocumented   Show this extended help (you found it!)
+EOF
+        fi
+
+        cat <<EOF
 
 Environment:
   ITTYBITTY_DIR    Base directory for all data (default: .ittybitty)

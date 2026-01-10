@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ittybitty (`ib`) is a minimal multi-agent orchestration tool for Claude Code. It uses tmux sessions and git worktrees to spawn and manage multiple Claude agents in parallel. The entire tool is a single bash script (`ib`, ~1800 lines).
+ittybitty (`ib`) is a minimal multi-agent orchestration tool for Claude Code. It uses tmux sessions and git worktrees to spawn and manage multiple Claude agents in parallel. The entire tool is a single bash script (`ib`, ~2000 lines).
 
 ## Architecture
 
@@ -23,7 +23,7 @@ Worker Agents (focused workers, no sub-agents)
 **Key insight**: Agents communicate via tmux stdin/stdout. No files, no protocols—just text.
 
 - Each agent gets its own git worktree on branch `agent/<id>`
-- Agent data stored in `.ittybitty/agents/<id>/` (meta.json, prompt.txt, start.sh, repo/)
+- Agent data stored in `.ittybitty/agents/<id>/` (meta.json, prompt.txt, start.sh, repo/, agent.log)
 - Messages between agents are prefixed with `[sent by agent <id>]:`
 
 ## Script Structure
@@ -41,8 +41,10 @@ The `ib` script is organized into commands, each implemented as a function:
 | `cmd_kill` | `kill` | Close agent without merging |
 | `cmd_resume` | `resume` | Restart a stopped agent's session |
 | `cmd_merge` | `merge` | Merge agent's branch and close |
+| `cmd_log` | `log` | Write timestamped entry to agent's log |
+| `cmd_nuke` | `nuke` | Emergency stop: kill all or a manager tree |
 
-Helper functions at the top: `load_config`, `build_agent_settings`, `resolve_agent_id`, `get_state`, `archive_agent_output`, etc.
+Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_agent_process`, `wait_for_claude_start`, `auto_accept_workspace_trust`, etc.
 
 ## Configuration
 
@@ -50,6 +52,158 @@ Helper functions at the top: `load_config`, `build_agent_settings`, `resolve_age
 - `permissions.manager.allow/deny` - tools for manager agents
 - `permissions.worker.allow/deny` - tools for worker agents
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
+
+## Logging System
+
+Each agent has an `agent.log` file at `.ittybitty/agents/<id>/agent.log` that captures timestamped events.
+
+### How Logging Works
+
+The `log_agent` helper function (ib:62) both writes to the log file AND echoes to stdout:
+```bash
+log_agent "$ID" "message"           # logs and prints
+log_agent "$ID" "message" --quiet   # logs only, no stdout
+```
+
+### What Gets Logged
+
+| Event | Command | Logged Message |
+|-------|---------|----------------|
+| Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
+| Message received | `send` | "Received message from X: Y" (recipient's log) |
+| Message sent | `send` | "Sent message to X: Y" (sender's log) |
+| Kill initiated | `kill` | "Agent killed" |
+| Process terminated | `kill/merge` | "Terminated Claude process" |
+| Session killed | `kill/merge` | "Killed tmux session" |
+| Branch deleted | `kill/merge` | "Deleted branch agent/X" |
+| Merge completed | `merge` | "Agent merged into BRANCH (N commits)" |
+| Agent resumed | `resume` | "Agent resumed" |
+
+### Archive Structure
+
+When agents are killed/merged/nuked, logs are archived to `.ittybitty/archive/`:
+```
+.ittybitty/archive/
+  20260110-011339-agent-name/
+    output.log    # Full tmux scrollback
+    agent.log     # Timestamped event log
+    meta.json     # Agent config (prompt, model, session_id, manager, etc.)
+```
+
+The teardown order ensures complete logs:
+1. Log all teardown events (kill, session stop, branch delete)
+2. Archive (captures complete log)
+3. Remove agent directory
+
+### Using `ib log` for Debugging
+
+Agents can write to their own log during execution:
+```bash
+ib log "Starting task analysis"
+ib log "Found 5 files to process"
+ib log --quiet "Silent debug info"  # no stdout
+```
+
+### Debugging with tmux Output
+
+For deep debugging, you can capture tmux output to the agent log:
+```bash
+# Capture current visible pane
+tmux capture-pane -t "$SESSION" -p >> "$AGENT_DIR/agent.log"
+
+# Capture full scrollback history
+tmux capture-pane -t "$SESSION" -p -S - >> "$AGENT_DIR/agent.log"
+```
+
+## Process and Session Management
+
+### Process Hierarchy
+
+```
+tmux session (ittybitty-<agent-id>)
+  └── bash shell (pane_pid)
+        └── claude process (claude_pid)
+```
+
+### Finding Process IDs
+
+The `kill_agent_process` function uses two strategies:
+
+1. **Dynamic lookup (preferred)**: Find Claude via tmux pane PID
+   ```bash
+   PANE_PID=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}')
+   CLAUDE_PID=$(pgrep -P "$PANE_PID" -f "claude")
+   ```
+
+2. **Fallback**: Read from `meta.json` (set at startup via start.sh)
+   ```bash
+   PID=$(jq -r '.claude_pid' "$AGENT_DIR/meta.json")
+   ```
+
+### Agent State Detection
+
+The `get_state` function (ib:424) reads recent tmux output to determine state:
+
+| State | Detection Method |
+|-------|------------------|
+| `stopped` | tmux session doesn't exist |
+| `running` | Output contains "esc to interrupt", "ctrl+b ctrl+b", or "⎿  Running" |
+| `complete` | Last 15 lines contain "I HAVE COMPLETED THE GOAL" |
+| `waiting` | Last 15 lines contain standalone "WAITING" |
+| `unknown` | Session exists but no clear indicators |
+
+**Important**: Check for `running` indicators FIRST, before completion phrases, because the completion phrase may exist in context/history while the agent is still working.
+
+### Graceful Process Shutdown
+
+When killing agents:
+1. Send SIGTERM to Claude process
+2. Wait up to 2 seconds for graceful shutdown
+3. Send SIGKILL if still running
+4. Kill tmux session
+
+### Orphan Detection
+
+The `scan_and_kill_orphans` function finds Claude processes whose working directory is a deleted agent directory. Safety checks:
+- Process cwd must contain `/.ittybitty/agents/`
+- The agent directory must NOT exist (truly orphaned)
+
+## Claude Startup and Permission Screen
+
+### The Permission Screen Problem
+
+When Claude starts in a new worktree, it may show a "Do you trust the files in this folder?" permission screen. If we send Enter too early or when not needed, it can:
+- Trigger tab-completion if Claude has already started
+- Send an unintended command to Claude's input
+
+### Detection Strategy
+
+The `wait_for_claude_start` function (ib:471) waits for EITHER:
+1. **Logo** ("Claude Code v") - Claude started, no permissions needed
+2. **Permissions screen** ("Enter to confirm" + "trust") - needs acceptance
+
+This is stored in `CLAUDE_STARTED_WITH` global variable.
+
+### Handling Flow
+
+```
+wait_for_claude_start()
+  ├── Logo detected first → Done (no Enter needed)
+  └── Permissions detected → send Enter → wait_for_claude_logo()
+```
+
+The `auto_accept_workspace_trust` function (ib:525):
+1. Waits for Claude to start (logo OR permissions)
+2. If logo appeared first → return immediately
+3. If permissions screen → send Enter, wait 4s, verify logo appears
+4. Retry up to 5 times if permissions persist
+
+### Key Lessons Learned
+
+1. **Wait before sending Enter**: Always detect what screen is showing first
+2. **Check for logo after permissions**: Verify Claude actually started after accepting
+3. **Use delays between retries**: 4 second delay allows Claude to process
+4. **Don't send Enter blindly**: Only send when permissions screen is confirmed
 
 ## Testing
 
@@ -71,12 +225,13 @@ ib kill test --force
 
 ## Key Implementation Details
 
-- Agent state detection (`get_state`): checks tmux session existence and output patterns
-- States: `running` (actively processing), `waiting` (idle), `complete` (signaled done), `stopped` (no session)
-- "Complete" detection: looks for exact phrase "I HAVE COMPLETED THE GOAL" in recent output
-- Session persistence: each agent gets a UUID (`session_id` in meta.json) enabling `claude --resume`
-- Exit handler (`exit-check.sh`): prompts for uncommitted changes when agent session ends
-- Send timing: message and Enter key sent separately with 0.1s delay to handle busy agents
+- **State detection**: See "Process and Session Management" section above for detailed `get_state` behavior
+- **Logging**: All commands log to `agent.log`; see "Logging System" section
+- **Permission handling**: See "Claude Startup and Permission Screen" section for startup flow
+- **Session persistence**: Each agent gets a UUID (`session_id` in meta.json) enabling `claude --resume`
+- **Exit handler** (`exit-check.sh`): Prompts for uncommitted changes when agent session ends
+- **Send timing**: Message and Enter key sent separately with 0.1s delay to handle busy agents
+- **Orphan cleanup**: `scan_and_kill_orphans` runs after kill/merge to clean up stray Claude processes
 
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
@@ -136,6 +291,7 @@ When agent spawns child agent (agent-to-agent):
 | `ib merge <id>`       | Merge agent's work and permanently close it                  |
 | `ib kill <id>`        | Permanently close agent without merging                      |
 | `ib resume <id>`      | Restart a stopped agent's session                            |
+| `ib log "msg"`        | Write timestamped message to agent's log (auto-detects agent) |
 | `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
 
 ### Agent States
