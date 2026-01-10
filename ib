@@ -25,7 +25,7 @@ session_name() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>.txt
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log and agent.log
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -36,13 +36,23 @@ archive_agent_output() {
         tmux capture-pane -t "$SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
     fi
 
-    # Archive output.log if it exists
-    if [[ -f "$AGENT_DIR/output.log" ]]; then
-        mkdir -p "$ARCHIVE_DIR"
+    # Only archive if there's something to archive
+    if [[ -f "$AGENT_DIR/output.log" || -f "$AGENT_DIR/agent.log" ]]; then
         local timestamp=$(date +%Y%m%d-%H%M%S)
-        local archive_file="$ARCHIVE_DIR/${timestamp}-${ID}.txt"
-        mv "$AGENT_DIR/output.log" "$archive_file"
-        echo "Archived output to: $archive_file"
+        local archive_folder="$ARCHIVE_DIR/${timestamp}-${ID}"
+        mkdir -p "$archive_folder"
+
+        # Archive output.log (tmux output)
+        if [[ -f "$AGENT_DIR/output.log" ]]; then
+            mv "$AGENT_DIR/output.log" "$archive_folder/output.log"
+        fi
+
+        # Archive agent.log (agent's log entries)
+        if [[ -f "$AGENT_DIR/agent.log" ]]; then
+            cp "$AGENT_DIR/agent.log" "$archive_folder/agent.log"
+        fi
+
+        echo "Archived to: $archive_folder/"
     fi
 }
 
