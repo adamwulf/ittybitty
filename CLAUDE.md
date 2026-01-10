@@ -65,20 +65,18 @@ Each spawned agent automatically gets Claude Code hooks configured in their `set
 ### PermissionRequest Hook
 
 When an agent tries to use a tool not in its `allow` list, the `PermissionRequest` hook:
-1. Reads the tool name from JSON stdin (`tool_name` field)
-2. Logs the denied request to `agent.log` via `ib log --quiet`
+1. Reads the tool name and input from JSON stdin (`tool_name` and `tool_input` fields)
+2. Logs the denied request to `agent.log` via `ib log --quiet`, including truncated tool parameters
 3. Returns the proper hook output format to auto-deny the tool
-
-The hook command:
-```bash
-jq -r '.tool_name' | xargs -I {} ib log --id <agent-id> --quiet "Permission denied: {}" &&
-echo '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}'
-```
 
 This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
 ```
-[2026-01-10T12:34:56-06:00] Permission denied: Bash
+[2026-01-10T15:05:06-06:00] Permission denied: Bash (command: curl https://this-is..., description: Execute curl request...)
 ```
+
+Each tool input parameter is truncated to 20 characters with `...` appended for readability.
+
+**Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
 
 To review denied permissions for an agent:
 ```bash
