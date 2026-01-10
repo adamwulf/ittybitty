@@ -3658,12 +3658,13 @@ EOF
         # Move cursor to line after panes
         printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
-        # Bottom help line
+        # Bottom help line with time on far right
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
-        local debug_info="term:${TERM_COLS}x${TERM_LINES} tmux:${left_pane_width}(${tmux_total}) log:${right_pane_width}(${log_raw_count}->${log_total})"
-        help_text="${help_text}    [${debug_info}]"
-        printf "%-${TERM_COLS}s" "$help_text"
+        local current_time
+        current_time=$(date +%H:%M:%S)
+        local padding=$((TERM_COLS - ${#help_text} - ${#current_time}))
+        printf "%s%*s%s" "$help_text" "$padding" "" "$current_time"
 
         rm -f "$tmpfile"
     }
