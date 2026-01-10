@@ -3400,6 +3400,142 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: watch (undocumented)
+# =============================================================================
+
+cmd_watch() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib watch
+
+Full-screen dashboard for monitoring all agents.
+
+Controls:
+  j/k     Select next/previous agent
+  ;/l     Scroll panes down/up
+  Ctrl-C  Exit
+
+The display shows:
+  - Agent tree (top 5 lines, scrolls with selection)
+  - Selected agent info (model, prompt)
+  - Split view: tmux output (left) and agent log (right)
+
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Terminal control helpers
+    local TERM_LINES TERM_COLS
+
+    # Cleanup function for exit
+    watch_cleanup() {
+        tput cnorm  # Show cursor
+        tput clear  # Clear screen
+        echo "Exited ib watch"
+    }
+
+    # Trap Ctrl-C and other exits
+    trap watch_cleanup EXIT
+
+    # Hide cursor
+    tput civis
+
+    # Main render function
+    watch_render() {
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Move cursor to top-left (no flicker vs clear)
+        tput cup 0 0
+
+        # Build agent data
+        local tmpfile=$(build_agent_data_file)
+
+        if [[ ! -s "$tmpfile" ]]; then
+            # No agents - show message
+            echo "No agents running."
+            echo ""
+            echo "Waiting for agents... (Ctrl-C to exit)"
+
+            # Clear rest of screen
+            local line
+            for ((line=3; line<TERM_LINES; line++)); do
+                printf "%-${TERM_COLS}s\n" ""
+            done
+
+            rm -f "$tmpfile"
+            return
+        fi
+
+        # Get tree lines
+        local tree_output
+        tree_output=$(build_tree_lines "$tmpfile" | column -t -s '|')
+
+        # Display first 5 lines of tree (for now, no selection highlighting)
+        local tree_line_count=0
+        while IFS= read -r line; do
+            if [[ $tree_line_count -lt 5 ]]; then
+                printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+            fi
+            ((tree_line_count++))
+        done <<< "$tree_output"
+
+        # Pad to 5 lines if fewer
+        while [[ $tree_line_count -lt 5 ]]; do
+            printf "%-${TERM_COLS}s\n" ""
+            ((tree_line_count++))
+        done
+
+        # Separator
+        printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
+
+        # Placeholder for agent info
+        printf "%-${TERM_COLS}s\n" "Agent: (none selected)    Model: -"
+        printf "%-${TERM_COLS}s\n" "Prompt: -"
+
+        # Separator
+        printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
+
+        # Calculate pane dimensions
+        local pane_height=$((TERM_LINES - 10))
+        local pane_width=$(( (TERM_COLS - 3) / 2 ))
+
+        # Placeholder panes
+        local pane_line
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local left_content="(tmux output)"
+            local right_content="(agent log)"
+            if [[ $pane_line -gt 0 ]]; then
+                left_content=""
+                right_content=""
+            fi
+            printf "%-${pane_width}.${pane_width}s │ %-${pane_width}.${pane_width}s\n" "$left_content" "$right_content"
+        done
+
+        # Bottom help line
+        printf "%-${TERM_COLS}s\n" "j/k: select    ;/l: scroll    Ctrl-C: quit"
+
+        rm -f "$tmpfile"
+    }
+
+    # Main loop
+    while true; do
+        watch_render
+        sleep 1
+    done
+}
+
+# =============================================================================
 # MAIN DISPATCH
 # =============================================================================
 
@@ -3418,6 +3554,10 @@ case "${1:-help}" in
     tree)
         shift
         cmd_tree "$@"
+        ;;
+    watch)
+        shift
+        cmd_watch "$@"
         ;;
     status)
         shift
