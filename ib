@@ -96,6 +96,42 @@ is_running_as_agent() {
     return 1
 }
 
+# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of unfinished child IDs (empty if none)
+# Children in running, waiting, or complete state all need attention before manager can complete
+get_unfinished_children() {
+    local MANAGER_ID="$1"
+    local unfinished_children=""
+
+    # Iterate through all agent directories
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local child_id=$(basename "$agent_dir")
+        local meta_file="$agent_dir/meta.json"
+
+        # Skip if no meta.json
+        [[ -f "$meta_file" ]] || continue
+
+        # Check if this agent's manager matches
+        local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
+        if [[ "$manager" == "$MANAGER_ID" ]]; then
+            # Check if this child is in an unfinished state (running, waiting, or complete)
+            # All of these need to be merged or killed before manager can complete
+            local state=$(get_state "$child_id")
+            if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                if [[ -n "$unfinished_children" ]]; then
+                    unfinished_children="$unfinished_children $child_id"
+                else
+                    unfinished_children="$child_id"
+                fi
+            fi
+        fi
+    done
+
+    echo "$unfinished_children"
+}
+
 # Teardown an agent: kill processes, remove worktree, archive, cleanup
 # Args: $1 = agent ID
 #       $2 = --quiet (optional, suppress stdout for batch mode)
@@ -2599,13 +2635,27 @@ cmd_hook_status() {
 
     local state=$(get_state "$ID")
 
+    local TMUX_SESSION=$(session_name "$ID")
+
     if [[ "$state" == "unknown" ]]; then
-        local TMUX_SESSION=$(session_name "$ID")
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
         sleep 0.1
         tmux send-keys -t "$TMUX_SESSION" Enter
+    elif [[ "$state" == "complete" ]]; then
+        # Check if this manager has unfinished children that need to be merged/killed
+        local unfinished=$(get_unfinished_children "$ID")
+        if [[ -n "$unfinished" ]]; then
+            # Count children and build message
+            local child_count=$(echo "$unfinished" | wc -w | tr -d ' ')
+            local child_list=$(echo "$unfinished" | tr ' ' ', ')
+            local prompt="You have $child_count unfinished sub-agent(s) that need attention: $child_list. Before you can complete, you must merge or kill each sub-agent using 'ib merge <id>' or 'ib kill <id>'. Use 'ib list' to check their status, 'ib look <id>' to see their output, 'ib status <id>' for their commits, and 'ib diff <id>' to review their changes."
+
+            tmux send-keys -t "$TMUX_SESSION" "$prompt"
+            sleep 0.1
+            tmux send-keys -t "$TMUX_SESSION" Enter
+        fi
     fi
 
     # Always print the state for debugging
