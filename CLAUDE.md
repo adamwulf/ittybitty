@@ -53,6 +53,36 @@ Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_ag
 - `permissions.worker.allow/deny` - tools for worker agents
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
+## Agent Hooks
+
+Each spawned agent automatically gets Claude Code hooks configured in their `settings.local.json`:
+
+| Hook | Purpose |
+|------|---------|
+| `Stop` | Calls `ib hook-status <id>` when agent stops to update state tracking |
+| `PermissionRequest` | Logs denied tool requests to agent.log and auto-denies them |
+
+### PermissionRequest Hook
+
+When an agent tries to use a tool not in its `allow` list, the `PermissionRequest` hook:
+1. Reads the tool name and input from JSON stdin (`tool_name` and `tool_input` fields)
+2. Logs the denied request to `agent.log` via `ib log --quiet`, including truncated tool parameters
+3. Returns the proper hook output format to auto-deny the tool
+
+This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
+```
+[2026-01-10T15:05:06-06:00] Permission denied: Bash (command: curl https://this-is..., description: Execute curl request...)
+```
+
+Each tool input parameter is truncated to 20 characters with `...` appended for readability.
+
+**Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
+
+To review denied permissions for an agent:
+```bash
+grep "Permission denied" .ittybitty/agents/<id>/agent.log
+```
+
 ## Logging System
 
 Each agent has an `agent.log` file at `.ittybitty/agents/<id>/agent.log` that captures timestamped events.
@@ -72,6 +102,7 @@ log_agent "$ID" "message" --quiet   # logs only, no stdout
 | Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
 | Message received | `send` | "Received message from X: Y" (recipient's log) |
 | Message sent | `send` | "Sent message to X: Y" (sender's log) |
+| Permission denied | hook | "Permission denied: TOOL_NAME" |
 | Kill initiated | `kill` | "Agent killed" |
 | Process terminated | `kill/merge` | "Terminated Claude process" |
 | Session killed | `kill/merge` | "Killed tmux session" |
@@ -85,9 +116,10 @@ When agents are killed/merged/nuked, logs are archived to `.ittybitty/archive/`:
 ```
 .ittybitty/archive/
   20260110-011339-agent-name/
-    output.log    # Full tmux scrollback
-    agent.log     # Timestamped event log
-    meta.json     # Agent config (prompt, model, session_id, manager, etc.)
+    output.log           # Full tmux scrollback
+    agent.log            # Timestamped event log
+    meta.json            # Agent config (prompt, model, session_id, manager, etc.)
+    settings.local.json  # Permissions and hooks configuration
 ```
 
 The teardown order ensures complete logs:

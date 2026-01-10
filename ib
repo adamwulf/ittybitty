@@ -57,6 +57,12 @@ archive_agent_output() {
             cp "$AGENT_DIR/meta.json" "$archive_folder/meta.json"
         fi
 
+        # Archive settings.local.json (permissions and hooks configuration)
+        # Note: copied to $AGENT_DIR before worktree removal in teardown_agent
+        if [[ -f "$AGENT_DIR/settings.local.json" ]]; then
+            mv "$AGENT_DIR/settings.local.json" "$archive_folder/settings.local.json"
+        fi
+
         echo "Archived to: $archive_folder/"
     fi
 }
@@ -197,6 +203,11 @@ teardown_agent() {
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
         log_agent "$ID" "Killed tmux session" "$QUIET"
+    fi
+
+    # Copy settings.local.json before removing worktree (for archiving)
+    if [[ -f "$AGENT_DIR/repo/.claude/settings.local.json" ]]; then
+        cp "$AGENT_DIR/repo/.claude/settings.local.json" "$AGENT_DIR/settings.local.json"
     fi
 
     # Remove git worktree if it exists
@@ -426,10 +437,16 @@ build_agent_settings() {
     # Git commands are safe in worktrees: agents can't switch branches or push
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
 
-    # Merge everything together and add Stop hook
+    # Build the PermissionRequest hook command
+    # The hook receives JSON via stdin with tool_name, tool_input, etc.
+    # Format: "Permission denied: ToolName (key1: val1..., key2: val2...)"
+    local hook_cmd="jq -r '\"Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring | if length > 20 then .[0:20] + \"...\" else . end)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
+
+    # Merge everything together and add hooks
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
         --argjson cfg_allow "$allow_json" \
-        --argjson cfg_deny "$deny_json" '
+        --argjson cfg_deny "$deny_json" \
+        --arg perm_hook "$hook_cmd" '
         .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
         .permissions.deny = ((.permissions.deny // []) + $cfg_deny | unique) |
         .hooks.Stop = [{
@@ -437,6 +454,13 @@ build_agent_settings() {
                 "type": "command",
                 "command": "ib",
                 "args": ["hook-status", "__AGENT_ID__"]
+            }]
+        }] |
+        .hooks.PermissionRequest = [{
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "command": $perm_hook
             }]
         }]
     '
@@ -1176,11 +1200,11 @@ $PROMPT"
     echo "$PROMPT_PREFIX" > "$PROMPT_FILE"
 
     # Build claude command arguments
+    # Note: We don't use --permission-mode dontAsk because we want the
+    # PermissionRequest hook to fire for non-allowed tools (to log and deny)
     local CLAUDE_ARGS=""
     if [[ "$YOLO_MODE" == true ]]; then
         CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
-    else
-        CLAUDE_ARGS="--permission-mode dontAsk"
     fi
     if [[ "$PRINT_MODE" == true ]]; then
         CLAUDE_ARGS="$CLAUDE_ARGS --print"
@@ -2409,11 +2433,11 @@ EOF
     fi
 
     # Build claude args for resume
+    # Note: We don't use --permission-mode dontAsk because we want the
+    # PermissionRequest hook to fire for non-allowed tools (to log and deny)
     local CLAUDE_ARGS=""
     if [[ "$YOLO_MODE" == true ]]; then
         CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
-    else
-        CLAUDE_ARGS="--permission-mode dontAsk"
     fi
     if [[ -n "$MODEL" ]]; then
         CLAUDE_ARGS="$CLAUDE_ARGS --model $MODEL"
