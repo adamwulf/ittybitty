@@ -1762,14 +1762,11 @@ EOF
             ((agent_count++))
         done
 
-        if [[ $agent_count -eq 0 ]]; then
-            echo "No agents found."
-            exit 0
-        fi
+        # Note: Don't exit early if no agents found - continue to check for orphaned sessions
     fi
 
-    # Confirm if not forced
-    if [[ "$FORCE" != true ]]; then
+    # Confirm if not forced and there are agents to kill
+    if [[ "$FORCE" != true && ${#agents_to_kill[@]} -gt 0 ]]; then
         local confirm
         if [[ -n "$TARGET_ID" ]]; then
             echo "WARNING: This will kill agent '$TARGET_ID' and ${#agents_to_kill[@]} total agent(s) (including descendants) without merging!"
@@ -1787,7 +1784,10 @@ EOF
         fi
     fi
 
-    echo "Killing ${#agents_to_kill[@]} agent(s)..."
+    # Kill agents if any found
+    if [[ ${#agents_to_kill[@]} -gt 0 ]]; then
+        echo "Killing ${#agents_to_kill[@]} agent(s)..."
+    fi
     local killed=0
     local failed=0
 
@@ -1826,8 +1826,65 @@ EOF
         fi
     done
 
-    echo ""
-    echo "Results: $killed killed, $failed failed"
+    # Clean up orphaned tmux sessions (sessions without agent directories)
+    local orphans=()
+    local known_ids=()
+
+    # Build list of remaining known agent IDs
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        known_ids+=("$(basename "$agent_dir")")
+    done
+
+    # Check our tmux sessions for orphans (only sessions with our prefix)
+    while IFS= read -r session; do
+        [[ -z "$session" ]] && continue
+        # Skip sessions that don't have our prefix
+        [[ "$session" != "${SESSION_PREFIX}"* ]] && continue
+        # Extract agent ID from session name (strip prefix)
+        local agent_id="${session#${SESSION_PREFIX}}"
+        # Check if this session has a matching agent directory
+        local is_known=false
+        for known_id in "${known_ids[@]}"; do
+            if [[ "$agent_id" == "$known_id" ]]; then
+                is_known=true
+                break
+            fi
+        done
+        if [[ "$is_known" == false ]]; then
+            orphans+=("$session")
+        fi
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+
+    # Kill orphaned sessions if any found
+    local orphans_killed=0
+    if [[ ${#orphans[@]} -gt 0 ]]; then
+        echo ""
+        echo "Cleaning up ${#orphans[@]} orphaned tmux session(s)..."
+        for orphan in "${orphans[@]}"; do
+            echo -n "  Killing $orphan... "
+            if tmux kill-session -t "$orphan" 2>/dev/null; then
+                echo "✓"
+                ((orphans_killed++))
+            else
+                echo "✗"
+            fi
+        done
+    fi
+
+    # Print results
+    if [[ $killed -eq 0 && $orphans_killed -eq 0 ]]; then
+        echo "No agents or orphaned sessions found."
+    else
+        echo ""
+        if [[ $killed -gt 0 && $orphans_killed -gt 0 ]]; then
+            echo "Results: $killed agent(s) killed, $orphans_killed orphaned session(s) cleaned up, $failed failed"
+        elif [[ $killed -gt 0 ]]; then
+            echo "Results: $killed agent(s) killed, $failed failed"
+        elif [[ $orphans_killed -gt 0 ]]; then
+            echo "Results: $orphans_killed orphaned session(s) cleaned up"
+        fi
+    fi
 
     if [[ $failed -gt 0 ]]; then
         exit 1
