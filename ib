@@ -334,6 +334,7 @@ scan_and_kill_orphans() {
     done < <(pgrep -f "claude" 2>/dev/null)
 
     [[ $killed_count -gt 0 ]] && echo "Cleaned up $killed_count orphaned Claude process(es)"
+    return 0
 }
 
 # Load config from .ittybitty.json if it exists
