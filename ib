@@ -2743,6 +2743,14 @@ cmd_hook_status() {
 
     local TMUX_SESSION=$(session_name "$ID")
 
+    # Get agent's manager (if any) for worker notifications
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local manager=""
+    if [[ -f "$AGENT_DIR/meta.json" ]]; then
+        manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        [[ "$manager" == "null" ]] && manager=""
+    fi
+
     if [[ "$state" == "unknown" ]]; then
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
@@ -2750,17 +2758,28 @@ cmd_hook_status() {
         sleep 0.1
         tmux send-keys -t "$TMUX_SESSION" Enter
     elif [[ "$state" == "complete" ]]; then
-        # Check if this manager has unfinished children that need to be merged/killed
-        local unfinished=$(get_unfinished_children "$ID")
-        if [[ -n "$unfinished" ]]; then
-            # Count children and build message
-            local child_count=$(echo "$unfinished" | wc -w | tr -d ' ')
-            local child_list=$(echo "$unfinished" | tr ' ' ', ')
-            local prompt="You have $child_count unfinished sub-agent(s) that need attention: $child_list. Before you can complete, you must merge or kill each sub-agent using 'ib merge <id>' or 'ib kill <id>'. Use 'ib list' to check their status, 'ib look <id>' to see their output, 'ib status <id>' for their commits, and 'ib diff <id>' to review their changes."
+        # For workers: notify manager immediately
+        if [[ -n "$manager" ]]; then
+            log_agent "$ID" "[hook] Notifying manager $manager: completed"
+            ib send "$manager" "[hook]: Your subtask $ID has completed"
+        else
+            # For managers: check for unfinished children
+            local unfinished=$(get_unfinished_children "$ID")
+            if [[ -n "$unfinished" ]]; then
+                local child_count=$(echo "$unfinished" | wc -w | tr -d ' ')
+                local child_list=$(echo "$unfinished" | tr ' ' ', ')
+                local prompt="You have $child_count unfinished sub-agent(s) that need attention: $child_list. Before you can complete, you must merge or kill each sub-agent using 'ib merge <id>' or 'ib kill <id>'. Use 'ib list' to check their status, 'ib look <id>' to see their output, 'ib status <id>' for their commits, and 'ib diff <id>' to review their changes."
 
-            tmux send-keys -t "$TMUX_SESSION" "$prompt"
-            sleep 0.1
-            tmux send-keys -t "$TMUX_SESSION" Enter
+                tmux send-keys -t "$TMUX_SESSION" "$prompt"
+                sleep 0.1
+                tmux send-keys -t "$TMUX_SESSION" Enter
+            fi
+        fi
+    elif [[ "$state" == "waiting" ]]; then
+        # For workers: notify manager immediately
+        if [[ -n "$manager" ]]; then
+            log_agent "$ID" "[hook] Notifying manager $manager: waiting"
+            ib send "$manager" "[hook]: Your subtask $ID is waiting for input"
         fi
     fi
 
