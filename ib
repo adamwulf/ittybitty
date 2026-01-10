@@ -57,6 +57,12 @@ archive_agent_output() {
             cp "$AGENT_DIR/meta.json" "$archive_folder/meta.json"
         fi
 
+        # Archive settings.local.json (permissions and hooks configuration)
+        # Note: copied to $AGENT_DIR before worktree removal in teardown_agent
+        if [[ -f "$AGENT_DIR/settings.local.json" ]]; then
+            mv "$AGENT_DIR/settings.local.json" "$archive_folder/settings.local.json"
+        fi
+
         echo "Archived to: $archive_folder/"
     fi
 }
@@ -197,6 +203,11 @@ teardown_agent() {
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
         log_agent "$ID" "Killed tmux session" "$QUIET"
+    fi
+
+    # Copy settings.local.json before removing worktree (for archiving)
+    if [[ -f "$AGENT_DIR/repo/.claude/settings.local.json" ]]; then
+        cp "$AGENT_DIR/repo/.claude/settings.local.json" "$AGENT_DIR/settings.local.json"
     fi
 
     # Remove git worktree if it exists
@@ -1183,11 +1194,11 @@ $PROMPT"
     echo "$PROMPT_PREFIX" > "$PROMPT_FILE"
 
     # Build claude command arguments
+    # Note: We don't use --permission-mode dontAsk because we want the
+    # PermissionRequest hook to fire for non-allowed tools (to log and deny)
     local CLAUDE_ARGS=""
     if [[ "$YOLO_MODE" == true ]]; then
         CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
-    else
-        CLAUDE_ARGS="--permission-mode dontAsk"
     fi
     if [[ "$PRINT_MODE" == true ]]; then
         CLAUDE_ARGS="$CLAUDE_ARGS --print"
@@ -2416,11 +2427,11 @@ EOF
     fi
 
     # Build claude args for resume
+    # Note: We don't use --permission-mode dontAsk because we want the
+    # PermissionRequest hook to fire for non-allowed tools (to log and deny)
     local CLAUDE_ARGS=""
     if [[ "$YOLO_MODE" == true ]]; then
         CLAUDE_ARGS="--dangerously-skip-permissions --permission-mode bypassPermissions"
-    else
-        CLAUDE_ARGS="--permission-mode dontAsk"
     fi
     if [[ -n "$MODEL" ]]; then
         CLAUDE_ARGS="$CLAUDE_ARGS --model $MODEL"
