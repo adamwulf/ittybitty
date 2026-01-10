@@ -83,6 +83,19 @@ log_agent() {
     fi
 }
 
+# Check if ib is being called from within an agent worktree
+# Returns: 0 if running as an agent, 1 if not
+# Use this to detect when commands like kill/merge/nuke are called by an agent
+# so we can error out instead of blocking on interactive prompts
+is_running_as_agent() {
+    local current_dir=$(pwd)
+    if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]] || \
+       [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # Teardown an agent: kill processes, remove worktree, archive, cleanup
 # Args: $1 = agent ID
 #       $2 = --quiet (optional, suppress stdout for batch mode)
@@ -1908,6 +1921,12 @@ EOF
 
     # Confirm if not forced
     if [[ "$FORCE" != true ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib kill $ID --force" >&2
+            exit 1
+        fi
         local confirm
         read -p "Kill agent '$ID' and remove all data? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
@@ -2057,6 +2076,12 @@ EOF
 
     # Confirm if not forced and there are agents to kill
     if [[ "$FORCE" != true && ${#agents_to_kill[@]} -gt 0 ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib nuke --force" >&2
+            exit 1
+        fi
         local confirm
         if [[ -n "$TARGET_ID" ]]; then
             echo "WARNING: This will kill agent '$TARGET_ID' and ${#agents_to_kill[@]} total agent(s) (including descendants) without merging!"
@@ -2488,6 +2513,12 @@ EOF
 
     # Confirm if not forced
     if [[ "$FORCE" != true && "$commit_count" -gt 0 ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib merge $ID --force" >&2
+            exit 1
+        fi
         local confirm
         read -p "Proceed with merge? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
