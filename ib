@@ -302,7 +302,7 @@ get_state() {
         return
     fi
 
-    # Check for completion signal (task agents say this when done)
+    # Check for completion signal (agents say this when done)
     # Use last 15 lines to see past status bar but avoid matching instructions
     local last_lines=$(echo "$recent" | tail -15)
     if echo "$last_lines" | grep -qF 'I HAVE COMPLETED THE GOAL'; then
