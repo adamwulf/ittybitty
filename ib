@@ -2737,9 +2737,15 @@ cmd_hook_status() {
     fi
 
     # Resolve partial ID
-    ID=$(resolve_agent_id "$ID") || exit 1
+    local RESOLVED_ID
+    if ! RESOLVED_ID=$(resolve_agent_id "$ID" 2>&1); then
+        echo "[hook] Resolution failed for '$ID': $RESOLVED_ID" >&2
+        exit 1
+    fi
+    ID="$RESOLVED_ID"
 
     local state=$(get_state "$ID")
+    log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
 
     local TMUX_SESSION=$(session_name "$ID")
 
@@ -2752,6 +2758,7 @@ cmd_hook_status() {
     fi
 
     if [[ "$state" == "unknown" ]]; then
+        log_agent "$ID" "[hook] State unknown, sending nudge prompt" --quiet
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
@@ -2768,11 +2775,14 @@ cmd_hook_status() {
             if [[ -n "$unfinished" ]]; then
                 local child_count=$(echo "$unfinished" | wc -w | tr -d ' ')
                 local child_list=$(echo "$unfinished" | tr ' ' ', ')
+                log_agent "$ID" "[hook] Complete but has $child_count unfinished children ($child_list), sending reminder" --quiet
                 local prompt="You have $child_count unfinished sub-agent(s) that need attention: $child_list. Before you can complete, you must merge or kill each sub-agent using 'ib merge <id>' or 'ib kill <id>'. Use 'ib list' to check their status, 'ib look <id>' to see their output, 'ib status <id>' for their commits, and 'ib diff <id>' to review their changes."
 
                 tmux send-keys -t "$TMUX_SESSION" "$prompt"
                 sleep 0.1
                 tmux send-keys -t "$TMUX_SESSION" Enter
+            else
+                log_agent "$ID" "[hook] Complete with no manager and no unfinished children, no action" --quiet
             fi
         fi
     elif [[ "$state" == "waiting" ]]; then
@@ -2780,7 +2790,12 @@ cmd_hook_status() {
         if [[ -n "$manager" ]]; then
             log_agent "$ID" "[hook] Notifying manager $manager: waiting"
             ib send "$manager" "[hook]: Your subtask $ID is waiting for input"
+        else
+            log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
         fi
+    else
+        # State is running, stopped, or other - no action needed
+        log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
 
     # Always print the state for debugging
