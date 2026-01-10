@@ -3551,15 +3551,49 @@ EOF
         local pane_height=$((TERM_LINES - 10))
         local pane_width=$(( (TERM_COLS - 3) / 2 ))
 
-        # Placeholder panes
+        # Get tmux output for selected agent
+        local tmux_session
+        tmux_session=$(session_name "$selected_id")
+        local tmux_lines=()
+        if tmux has-session -t "$tmux_session" 2>/dev/null; then
+            # Live session - capture last N lines
+            mapfile -t tmux_lines < <(tmux capture-pane -t "$tmux_session" -p -S -"$pane_height" 2>/dev/null)
+        else
+            # No session - try output.log
+            local output_file="$AGENTS_DIR/$selected_id/output.log"
+            if [[ -f "$output_file" ]]; then
+                mapfile -t tmux_lines < <(tail -n "$pane_height" "$output_file" 2>/dev/null)
+            fi
+        fi
+
+        # Get agent log for selected agent
+        local log_lines=()
+        local log_file="$AGENTS_DIR/$selected_id/agent.log"
+        if [[ -f "$log_file" ]]; then
+            mapfile -t log_lines < <(tail -n "$pane_height" "$log_file" 2>/dev/null)
+        fi
+
+        # Render split panes
         local pane_line
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            local left_content="(tmux output)"
-            local right_content="(agent log)"
-            if [[ $pane_line -gt 0 ]]; then
-                left_content=""
-                right_content=""
+            # Calculate which line to show (from bottom of content)
+            local tmux_total=${#tmux_lines[@]}
+            local log_total=${#log_lines[@]}
+
+            # Show last N lines (autoscroll to bottom)
+            local tmux_idx=$((tmux_total - pane_height + pane_line))
+            local log_idx=$((log_total - pane_height + pane_line))
+
+            local left_content=""
+            local right_content=""
+
+            if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
+                left_content="${tmux_lines[$tmux_idx]}"
             fi
+            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
+                right_content="${log_lines[$log_idx]}"
+            fi
+
             printf "%-${pane_width}.${pane_width}s │ %-${pane_width}.${pane_width}s\n" "$left_content" "$right_content"
         done
 
