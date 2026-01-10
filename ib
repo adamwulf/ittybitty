@@ -853,9 +853,9 @@ EOF
     # Auto-detect manager if not explicitly set and we're in an agent worktree
     if [[ -z "$MANAGER" ]]; then
         local current_dir=$(pwd)
-        if [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+        if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
             # Find the agent directory and read meta.json
-            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
                 MANAGER=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
             fi
