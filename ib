@@ -550,9 +550,10 @@ get_state() {
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
     # - "esc to interrupt" appears when Claude is actively generating
+    # - "ctrl+c to interrupt" appears when Claude is actively generating (alternate form)
     # - "ctrl+b ctrl+b" appears when a bash command is running
     # - "⎿  Running…" appears when bash tool is executing
-    if echo "$recent" | grep -qE 'esc to interrupt|ctrl\+b ctrl\+b|⎿  Running'; then
+    if echo "$recent" | grep -qE 'esc to interrupt|ctrl\+c to interrupt|ctrl\+b ctrl\+b|⎿  Running'; then
         echo "running"
         return
     fi
