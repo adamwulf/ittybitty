@@ -3665,8 +3665,9 @@ EOF
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
         local current_time
         current_time=$(date +%H:%M:%S)
-        local padding=$((TERM_COLS - ${#help_text} - ${#current_time}))
-        printf "%s%*s%s" "$help_text" "$padding" "" "$current_time"
+        local right_info="q:${LAST_QUEUE_SIZE}  ${current_time}"
+        local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
+        printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
 
         rm -f "$tmpfile"
     }
@@ -3701,22 +3702,56 @@ EOF
         esac
     }
 
+    # Collect all user input during a duration
+    # Usage: keys=$(get_user_input_during_duration <seconds> <keyfile>)
+    # Uses a background reader + sleep for bash 3.x compatibility
+    get_user_input_during_duration() {
+        local duration="$1"
+        local keyfile="$2"
+
+        # Clear key file
+        : > "$keyfile"
+
+        # Start background key reader
+        (
+            while IFS= read -rsn1 k; do
+                printf "%s" "$k" >> "$keyfile"
+            done
+        ) &
+        local reader_pid=$!
+
+        # Wait for specified duration
+        sleep "$duration"
+
+        # Kill reader
+        kill $reader_pid 2>/dev/null
+        wait $reader_pid 2>/dev/null
+
+        # Output collected keys
+        cat "$keyfile" 2>/dev/null
+    }
+
     # Main loop
+    local LAST_QUEUE_SIZE=0
+    local keyfile=$(mktemp)
+
     while true; do
-        # Drain all queued input first (non-blocking)
-        while IFS= read -rsn1 -t 0 key; do
-            watch_process_key "$key"
+        # Collect input for 0.1 seconds
+        local keys_to_process
+        keys_to_process=$(get_user_input_during_duration 0.1 "$keyfile")
+        LAST_QUEUE_SIZE=${#keys_to_process}
+
+        # Process all accumulated keys
+        local i
+        for ((i=0; i<${#keys_to_process}; i++)); do
+            watch_process_key "${keys_to_process:$i:1}"
         done
 
         # Render frame
         watch_render
-
-        # Wait for next key or timeout (1 second)
-        local key
-        if IFS= read -rsn1 -t 1 key; then
-            watch_process_key "$key"
-        fi
     done
+
+    rm -f "$keyfile"
 }
 
 # =============================================================================
