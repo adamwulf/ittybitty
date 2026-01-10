@@ -9,6 +9,7 @@ set -e
 
 ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
 SESSION_PREFIX="ittybitty-"
+TMUX_WIDTH=60  # Width for agent tmux panes (used by watch command)
 
 # Initialize paths - will be set to root repo after get_root_repo is defined
 AGENTS_DIR=""
@@ -1528,7 +1529,7 @@ EOF
 
     # Start tmux session with startup script (use absolute path)
     local ABS_STARTUP_SCRIPT="$ABS_AGENT_DIR/start.sh"
-    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
+    if ! tmux new-session -d -x "$TMUX_WIDTH" -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
         echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         echo "Try running: tmux kill-server && tmux start-server" >&2
         rm -rf "$AGENT_DIR"
@@ -2697,7 +2698,7 @@ EOF
     # Start tmux session with resume script
     local ABS_RESUME_SCRIPT="$(cd "$AGENT_DIR" && pwd)/resume.sh"
     local TMUX_SESSION=$(session_name "$ID")
-    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
+    if ! tmux new-session -d -x "$TMUX_WIDTH" -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
         echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         exit 1
     fi
@@ -3546,17 +3547,19 @@ EOF
         printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
 
         # Calculate pane dimensions
+        # Left pane uses TMUX_WIDTH, right pane gets the rest
         local pane_height=$((TERM_LINES - 8))
-        local pane_width=$(( (TERM_COLS - 3) / 2 ))
+        local left_pane_width=$TMUX_WIDTH
+        local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
         # Pane headers (use same separator as content for alignment)
         local left_header="── TMUX OUTPUT "
         local right_header="── AGENT LOG "
         # Pad headers with ─ to fill width
-        while [[ ${#left_header} -lt $pane_width ]]; do
+        while [[ ${#left_header} -lt $left_pane_width ]]; do
             left_header="${left_header}─"
         done
-        while [[ ${#right_header} -lt $pane_width ]]; do
+        while [[ ${#right_header} -lt $right_pane_width ]]; do
             right_header="${right_header}─"
         done
         printf "%s │ %s\n" "$left_header" "$right_header"
@@ -3631,40 +3634,40 @@ EOF
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
                 # Strip ANSI escape codes
                 left_content=$(printf '%s' "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
-                # Get display width and pad/truncate to pane_width
+                # Get display width and pad/truncate to left_pane_width
                 local left_display_width=$(printf '%s' "$left_content" | wc -L)
-                if [[ $left_display_width -gt $pane_width ]]; then
+                if [[ $left_display_width -gt $left_pane_width ]]; then
                     # Truncate - remove chars from end until it fits
-                    while [[ $(printf '%s' "$left_content" | wc -L) -gt $pane_width && -n "$left_content" ]]; do
+                    while [[ $(printf '%s' "$left_content" | wc -L) -gt $left_pane_width && -n "$left_content" ]]; do
                         left_content="${left_content%?}"
                     done
                     left_display_width=$(printf '%s' "$left_content" | wc -L)
                 fi
-                # Pad with spaces to reach pane_width
-                local left_padding=$((pane_width - left_display_width))
+                # Pad with spaces to reach left_pane_width
+                local left_padding=$((left_pane_width - left_display_width))
                 if [[ $left_padding -gt 0 ]]; then
                     left_content="${left_content}$(printf '%*s' $left_padding '')"
                 fi
             else
-                left_content=$(printf '%*s' $pane_width '')
+                left_content=$(printf '%*s' $left_pane_width '')
             fi
 
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
                 right_content="${log_lines[$log_idx]}"
-                # Get display width and pad/truncate to pane_width
+                # Get display width and pad/truncate to right_pane_width
                 local right_display_width=$(printf '%s' "$right_content" | wc -L)
-                if [[ $right_display_width -gt $pane_width ]]; then
-                    while [[ $(printf '%s' "$right_content" | wc -L) -gt $pane_width && -n "$right_content" ]]; do
+                if [[ $right_display_width -gt $right_pane_width ]]; then
+                    while [[ $(printf '%s' "$right_content" | wc -L) -gt $right_pane_width && -n "$right_content" ]]; do
                         right_content="${right_content%?}"
                     done
                     right_display_width=$(printf '%s' "$right_content" | wc -L)
                 fi
-                local right_padding=$((pane_width - right_display_width))
+                local right_padding=$((right_pane_width - right_display_width))
                 if [[ $right_padding -gt 0 ]]; then
                     right_content="${right_content}$(printf '%*s' $right_padding '')"
                 fi
             else
-                right_content=$(printf '%*s' $pane_width '')
+                right_content=$(printf '%*s' $right_pane_width '')
             fi
 
             printf '%s │ %s\n' "$left_content" "$right_content"
