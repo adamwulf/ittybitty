@@ -2767,8 +2767,8 @@ cmd_hook_status() {
     elif [[ "$state" == "complete" ]]; then
         # For workers: notify manager immediately
         if [[ -n "$manager" ]]; then
-            log_agent "$ID" "[hook] Notifying manager $manager: completed"
-            ib send "$manager" "[hook]: Your subtask $ID has completed"
+            log_agent "$ID" "[hook] Notifying manager $manager: just completed"
+            ib send "$manager" "[hook]: Your subtask $ID just completed"
         else
             # For managers: check for unfinished children
             local unfinished=$(get_unfinished_children "$ID")
@@ -2788,8 +2788,8 @@ cmd_hook_status() {
     elif [[ "$state" == "waiting" ]]; then
         # For workers: notify manager immediately
         if [[ -n "$manager" ]]; then
-            log_agent "$ID" "[hook] Notifying manager $manager: waiting"
-            ib send "$manager" "[hook]: Your subtask $ID is waiting for input"
+            log_agent "$ID" "[hook] Notifying manager $manager: now waiting"
+            ib send "$manager" "[hook]: Your subtask $ID is now waiting for input"
         else
             log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
         fi
@@ -2985,11 +2985,11 @@ cmd_watchdog() {
                     local wait_time=$((notify_interval * 5))
                     echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for ${wait_time}+ seconds"
                     if [[ "$QUIET" == "true" ]]; then
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent is waiting for input"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent recently started waiting"
                     else
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent is waiting for input"
-                        log_agent "$AGENT_ID" "[watchdog] Notified manager $manager: waiting for input" --quiet
-                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent recently started waiting"
+                        log_agent "$AGENT_ID" "[watchdog] Notified manager $manager: recently waiting" --quiet
+                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID recently started waiting for input"
                     fi
 
                     # Reset counter and double the interval (exponential backoff: 30s, 1m, 2m, 4m, 8m, 16m, 32m, 64m)
@@ -3015,11 +3015,11 @@ cmd_watchdog() {
                     log_agent "$AGENT_ID" "[watchdog] State changed to: complete" --quiet
                     log_tmux_screen "$AGENT_ID"
                     if [[ "$QUIET" == "true" ]]; then
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent has completed"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent recently completed"
                     else
-                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent has completed"
-                        log_agent "$AGENT_ID" "[watchdog] Notified manager $manager: completed" --quiet
-                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID has completed"
+                        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent recently completed"
+                        log_agent "$AGENT_ID" "[watchdog] Notified manager $manager: recently completed" --quiet
+                        ib send "$manager" "[watchdog]: Your subtask $AGENT_ID recently completed"
                     fi
                     notified_complete=true
                 fi
