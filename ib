@@ -25,7 +25,7 @@ session_name() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log and agent.log
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -37,7 +37,7 @@ archive_agent_output() {
     fi
 
     # Only archive if there's something to archive
-    if [[ -f "$AGENT_DIR/output.log" || -f "$AGENT_DIR/agent.log" ]]; then
+    if [[ -f "$AGENT_DIR/output.log" || -f "$AGENT_DIR/agent.log" || -f "$AGENT_DIR/meta.json" ]]; then
         local timestamp=$(date +%Y%m%d-%H%M%S)
         local archive_folder="$ARCHIVE_DIR/${timestamp}-${ID}"
         mkdir -p "$archive_folder"
@@ -50,6 +50,11 @@ archive_agent_output() {
         # Archive agent.log (agent's log entries)
         if [[ -f "$AGENT_DIR/agent.log" ]]; then
             cp "$AGENT_DIR/agent.log" "$archive_folder/agent.log"
+        fi
+
+        # Archive meta.json (agent config: prompt, model, session_id, etc.)
+        if [[ -f "$AGENT_DIR/meta.json" ]]; then
+            cp "$AGENT_DIR/meta.json" "$archive_folder/meta.json"
         fi
 
         echo "Archived to: $archive_folder/"
@@ -1854,6 +1859,11 @@ EOF
     # Log the kill action
     log_agent "$ID" "Agent killed"
 
+    # Capture tmux output BEFORE killing session (so archive has it)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
+
     # Kill Claude process gracefully before killing tmux session
     if kill_agent_process "$ID"; then
         log_agent "$ID" "Terminated Claude process"
@@ -2059,6 +2069,11 @@ EOF
 
         # Log the nuke (quiet for batch mode)
         log_agent "$id" "Agent nuked" --quiet
+
+        # Capture tmux output BEFORE killing session (so archive has it)
+        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$agent_dir/output.log" 2>/dev/null || true
+        fi
 
         # Kill Claude process gracefully before killing tmux session
         if kill_agent_process "$id" 2>/dev/null; then
@@ -2497,6 +2512,11 @@ EOF
 
     # Log the merge action
     log_agent "$ID" "Agent merged into $TARGET_BRANCH ($commit_count commits)"
+
+    # Capture tmux output BEFORE killing session (so archive has it)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
+    fi
 
     # Kill Claude process gracefully before killing tmux session
     if kill_agent_process "$ID"; then

@@ -87,6 +87,7 @@ When agents are killed/merged/nuked, logs are archived to `.ittybitty/archive/`:
   20260110-011339-agent-name/
     output.log    # Full tmux scrollback
     agent.log     # Timestamped event log
+    meta.json     # Agent config (prompt, model, session_id, manager, etc.)
 ```
 
 The teardown order ensures complete logs:
