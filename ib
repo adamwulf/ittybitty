@@ -2338,6 +2338,8 @@ cmd_watchdog() {
     # Initialize counters and flags
     local waiting_counter=0
     local notified_complete=false
+    local notify_interval=6  # Start at 30 seconds (6 * 5s), doubles after each notification
+    local max_notify_interval=768  # Cap at 64 minutes (768 * 5s = 3840s)
     local prev_state=""
 
     # Main monitoring loop - runs while agent's worktree exists
@@ -2350,23 +2352,36 @@ cmd_watchdog() {
 
                 # Only log state change or when counter increments (to show progress)
                 if [[ "$prev_state" != "waiting" ]]; then
-                    echo "[watchdog] Agent state: waiting (counter: $waiting_counter)"
+                    echo "[watchdog] Agent state: waiting (counter: $waiting_counter, next notify at: $notify_interval)"
                 fi
 
-                if [[ $waiting_counter -ge 6 ]]; then
-                    echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for 30+ seconds"
+                # Check if we've reached the notification threshold
+                if [[ $waiting_counter -ge $notify_interval ]]; then
+                    local wait_time=$((notify_interval * 5))
+                    echo "[watchdog] THRESHOLD REACHED: Agent has been waiting for ${wait_time}+ seconds"
                     if [[ "$QUIET" == "true" ]]; then
                         echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent is waiting for input"
                     else
                         echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Notifying manager $manager: agent is waiting for input"
                         ib send "$manager" "[watchdog]: Your subtask $AGENT_ID is waiting for input"
                     fi
-                    waiting_counter=0  # Reset to avoid spam
+
+                    # Reset counter and double the interval (exponential backoff: 30s, 1m, 2m, 4m, 8m, 16m, 32m, 64m)
+                    waiting_counter=0
+                    notify_interval=$((notify_interval * 2))
+
+                    # Cap at max interval (64 minutes)
+                    if [[ $notify_interval -gt $max_notify_interval ]]; then
+                        notify_interval=$max_notify_interval
+                    fi
+
+                    echo "[watchdog] Next notification in $((notify_interval * 5)) seconds"
                 fi
                 ;;
 
             complete)
                 waiting_counter=0
+                notify_interval=6  # Reset to initial interval when completing
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete"
                     if [[ "$QUIET" == "true" ]]; then
@@ -2384,12 +2399,13 @@ cmd_watchdog() {
                 # Only log on state change or if clearing flags
                 if [[ "$prev_state" != "$state" ]]; then
                     if [[ $waiting_counter -gt 0 ]]; then
-                        echo "[watchdog] Agent state: $state (reset waiting counter)"
+                        echo "[watchdog] Agent state: $state (reset waiting counter and interval)"
                     else
                         echo "[watchdog] Agent state: $state"
                     fi
                 fi
                 waiting_counter=0
+                notify_interval=6  # Reset to initial interval when resuming work
 
                 # If agent resumed from complete, allow re-notification
                 if [[ "$notified_complete" == "true" ]]; then
@@ -2402,12 +2418,13 @@ cmd_watchdog() {
                 # Only log on state change
                 if [[ "$prev_state" != "stopped" ]]; then
                     if [[ $waiting_counter -gt 0 ]]; then
-                        echo "[watchdog] Agent state: stopped (reset waiting counter)"
+                        echo "[watchdog] Agent state: stopped (reset waiting counter and interval)"
                     else
                         echo "[watchdog] Agent state: stopped"
                     fi
                 fi
                 waiting_counter=0
+                notify_interval=6  # Reset to initial interval
                 ;;
         esac
 
