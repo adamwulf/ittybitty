@@ -2941,6 +2941,11 @@ case "${1:-help}" in
         cmd_watchdog "$@"
         ;;
     help|--help|-h)
+        SHOW_UNDOCUMENTED=false
+        if [[ "$2" == "--undocumented" || "$2" == "-u" ]]; then
+            SHOW_UNDOCUMENTED=true
+        fi
+
         cat <<EOF
 ib (ittybitty) - multi-agent orchestration for Claude Code
 
@@ -2962,6 +2967,21 @@ Commands:
 Aliases:
   new         Alias for new-agent
   ls          Alias for list
+EOF
+
+        if [[ "$SHOW_UNDOCUMENTED" == true ]]; then
+            cat <<EOF
+
+Undocumented Commands:
+  nuke        EMERGENCY STOP: Kill all agents, or a manager and all descendants
+  hook-status Internal: Check agent state and nudge if unknown (used by hooks)
+
+Undocumented Options:
+  help --undocumented   Show this extended help (you found it!)
+EOF
+        fi
+
+        cat <<EOF
 
 Environment:
   ITTYBITTY_DIR    Base directory for all data (default: .ittybitty)
