@@ -1009,11 +1009,13 @@ You need these criteria to judge whether a sub-agent has truly completed its wor
 3. Enter WAITING mode - watchdogs will notify you when sub-agents need attention
 4. When notified, review sub-agent work against your predefined completion criteria:
    - Use \`ib look <agent-id>\` to see what the agent reports
+   - Use \`ib status <agent-id>\` to see the agent's commits
    - Use \`ib diff <agent-id>\` to verify the actual changes match your criteria
    - If criteria met: \`ib merge <agent-id>\` or \`ib kill <agent-id>\` (if no changes needed)
    - If criteria NOT met: \`ib send <agent-id> \"message\"\` explaining what's missing and how to fix it
    - If a sub-agent is \`stopped\`, STOP and notify the user immediately
 5. When merging successful agents, commit any changes you made directly (git add && git commit).
+6. BEFORE completing: You MUST merge or kill ALL sub-agents. Use \`ib list\` to verify no children remain in running, waiting, or complete state.
 
 $PR_INSTRUCTIONS"
         fi
