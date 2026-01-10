@@ -2504,6 +2504,93 @@ cmd_hook_status() {
     echo "$state"
 }
 
+# =============================================================================
+# COMMAND: log
+# =============================================================================
+
+cmd_log() {
+    local AGENT_ID=""
+    local MESSAGE=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --id)
+                AGENT_ID="$2"
+                shift 2
+                ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib log [--id <agent-id>] "message"
+
+Write a timestamped message to the agent's log file.
+
+The agent ID is auto-detected when run from an agent worktree.
+Log file location: .ittybitty/agents/<id>/agent.log
+
+Options:
+  --id ID     Specify agent ID (auto-detected in agent worktrees)
+  -h, --help  Show this help
+
+Examples:
+  ib log "Starting task analysis"
+  ib log "Found 5 files to process"
+  ib log --id my-agent "External log entry"
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                MESSAGE="$1"
+                shift
+                ;;
+        esac
+    done
+
+    # Auto-detect agent ID if not specified
+    if [[ -z "$AGENT_ID" ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+            # Extract agent ID from path
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        elif [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+            # Legacy path format
+            local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.agents/[^/]*\)/repo.*|\1|')
+            if [[ -f "$agent_dir/meta.json" ]]; then
+                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+            fi
+        fi
+    fi
+
+    if [[ -z "$AGENT_ID" ]]; then
+        echo "Error: Could not detect agent ID. Run from an agent worktree or use --id." >&2
+        exit 1
+    fi
+
+    if [[ -z "$MESSAGE" ]]; then
+        echo "Error: Message required" >&2
+        echo "Usage: ib log \"message\"" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID if needed
+    AGENT_ID=$(resolve_agent_id "$AGENT_ID") || exit 1
+
+    # Get agent directory
+    local AGENT_DIR="$AGENTS_DIR/$AGENT_ID"
+    local LOG_FILE="$AGENT_DIR/agent.log"
+
+    # Write timestamped log entry
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $MESSAGE" >> "$LOG_FILE"
+}
+
 cmd_watchdog() {
     local AGENT_ID=""
     local QUIET=false
@@ -2936,6 +3023,10 @@ case "${1:-help}" in
         shift
         cmd_hook_status "$@"
         ;;
+    log)
+        shift
+        cmd_log "$@"
+        ;;
     watchdog)
         shift
         cmd_watchdog "$@"
@@ -2975,6 +3066,7 @@ EOF
 Undocumented Commands:
   nuke        EMERGENCY STOP: Kill all agents, or a manager and all descendants
   hook-status Internal: Check agent state and nudge if unknown (used by hooks)
+  log         Write timestamped message to agent's log file (auto-detects agent ID)
 
 Undocumented Options:
   help --undocumented   Show this extended help (you found it!)
