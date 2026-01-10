@@ -3494,8 +3494,13 @@ EOF
             SELECTED_INDEX=0
         fi
 
-        # Get the selected agent ID
+        # Get the selected agent ID and its data from tmpfile
         local selected_id="${agent_ids[$SELECTED_INDEX]}"
+        local selected_info
+        selected_info=$(grep "^${selected_id}|" "$tmpfile" | head -1)
+        local selected_state=$(echo "$selected_info" | cut -d'|' -f3)
+        local selected_model=$(echo "$selected_info" | cut -d'|' -f5)
+        local selected_prompt=$(echo "$selected_info" | cut -d'|' -f6-)
 
         # Get tree lines
         local tree_lines
@@ -3529,9 +3534,15 @@ EOF
         # Separator
         printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
 
-        # Placeholder for agent info (will be implemented in Phase 4)
-        printf "%-${TERM_COLS}s\n" "Agent: $selected_id"
-        printf "%-${TERM_COLS}s\n" "Prompt: (Phase 4)"
+        # Agent info display
+        printf "%-${TERM_COLS}s\n" "Agent: $selected_id    State: $selected_state    Model: $selected_model"
+        # Truncate prompt to fit terminal width minus "Prompt: " prefix (8 chars)
+        local prompt_max=$((TERM_COLS - 8))
+        local display_prompt="$selected_prompt"
+        if [[ ${#display_prompt} -gt $prompt_max ]]; then
+            display_prompt="${display_prompt:0:$((prompt_max - 3))}..."
+        fi
+        printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
 
         # Separator
         printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
