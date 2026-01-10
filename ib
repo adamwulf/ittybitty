@@ -3436,8 +3436,10 @@ EOF
     # State variables
     local TERM_LINES TERM_COLS
     local SELECTED_INDEX=0
+    local PREV_SELECTED_INDEX=-1  # Track for scroll reset on agent change
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
+    local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -3551,18 +3553,27 @@ EOF
         local pane_height=$((TERM_LINES - 10))
         local pane_width=$(( (TERM_COLS - 3) / 2 ))
 
+        # Reset scroll offset when agent changes
+        if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
+            SCROLL_OFFSET=0
+            PREV_SELECTED_INDEX=$SELECTED_INDEX
+        fi
+
+        # Capture more lines for scrolling (up to 500 lines of history)
+        local capture_lines=500
+
         # Get tmux output for selected agent
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local tmux_lines=()
         if tmux has-session -t "$tmux_session" 2>/dev/null; then
-            # Live session - capture last N lines
-            mapfile -t tmux_lines < <(tmux capture-pane -t "$tmux_session" -p -S -"$pane_height" 2>/dev/null)
+            # Live session - capture history
+            mapfile -t tmux_lines < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
         else
             # No session - try output.log
             local output_file="$AGENTS_DIR/$selected_id/output.log"
             if [[ -f "$output_file" ]]; then
-                mapfile -t tmux_lines < <(tail -n "$pane_height" "$output_file" 2>/dev/null)
+                mapfile -t tmux_lines < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
             fi
         fi
 
@@ -3570,19 +3581,35 @@ EOF
         local log_lines=()
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
-            mapfile -t log_lines < <(tail -n "$pane_height" "$log_file" 2>/dev/null)
+            mapfile -t log_lines < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
+        fi
+
+        local tmux_total=${#tmux_lines[@]}
+        local log_total=${#log_lines[@]}
+
+        # Calculate max scroll offset (so we can't scroll past the beginning)
+        # Use the smaller of the two to ensure both panes can reach their top
+        local tmux_max_scroll=$((tmux_total - pane_height))
+        local log_max_scroll=$((log_total - pane_height))
+        if [[ $tmux_max_scroll -lt 0 ]]; then tmux_max_scroll=0; fi
+        if [[ $log_max_scroll -lt 0 ]]; then log_max_scroll=0; fi
+        local max_scroll=$tmux_max_scroll
+        if [[ $log_max_scroll -lt $max_scroll ]]; then max_scroll=$log_max_scroll; fi
+
+        # Clamp scroll offset
+        if [[ $SCROLL_OFFSET -gt $max_scroll ]]; then
+            SCROLL_OFFSET=$max_scroll
+        fi
+        if [[ $SCROLL_OFFSET -lt 0 ]]; then
+            SCROLL_OFFSET=0
         fi
 
         # Render split panes
         local pane_line
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            # Calculate which line to show (from bottom of content)
-            local tmux_total=${#tmux_lines[@]}
-            local log_total=${#log_lines[@]}
-
-            # Show last N lines (autoscroll to bottom)
-            local tmux_idx=$((tmux_total - pane_height + pane_line))
-            local log_idx=$((log_total - pane_height + pane_line))
+            # Base index from bottom, then apply scroll offset
+            local tmux_idx=$((tmux_total - pane_height + pane_line - SCROLL_OFFSET))
+            local log_idx=$((log_total - pane_height + pane_line - SCROLL_OFFSET))
 
             local left_content=""
             local right_content=""
@@ -3631,7 +3658,17 @@ EOF
                     SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
                 fi
                 ;;
-            # ; and l will be implemented in Phase 6
+            \;)
+                # Scroll down (show older content) - ; key
+                SCROLL_OFFSET=$((SCROLL_OFFSET + 10))
+                ;;
+            l)
+                # Scroll up (show newer content, toward bottom)
+                SCROLL_OFFSET=$((SCROLL_OFFSET - 10))
+                if [[ $SCROLL_OFFSET -lt 0 ]]; then
+                    SCROLL_OFFSET=0
+                fi
+                ;;
         esac
     done
 }
