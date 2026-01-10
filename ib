@@ -83,6 +83,55 @@ log_agent() {
     fi
 }
 
+# Check if ib is being called from within an agent worktree
+# Returns: 0 if running as an agent, 1 if not
+# Use this to detect when commands like kill/merge/nuke are called by an agent
+# so we can error out instead of blocking on interactive prompts
+is_running_as_agent() {
+    local current_dir=$(pwd)
+    if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]] || \
+       [[ "$current_dir" == *"/.agents/"*"/repo"* ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of unfinished child IDs (empty if none)
+# Children in running, waiting, or complete state all need attention before manager can complete
+get_unfinished_children() {
+    local MANAGER_ID="$1"
+    local unfinished_children=""
+
+    # Iterate through all agent directories
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local child_id=$(basename "$agent_dir")
+        local meta_file="$agent_dir/meta.json"
+
+        # Skip if no meta.json
+        [[ -f "$meta_file" ]] || continue
+
+        # Check if this agent's manager matches
+        local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
+        if [[ "$manager" == "$MANAGER_ID" ]]; then
+            # Check if this child is in an unfinished state (running, waiting, or complete)
+            # All of these need to be merged or killed before manager can complete
+            local state=$(get_state "$child_id")
+            if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                if [[ -n "$unfinished_children" ]]; then
+                    unfinished_children="$unfinished_children $child_id"
+                else
+                    unfinished_children="$child_id"
+                fi
+            fi
+        fi
+    done
+
+    echo "$unfinished_children"
+}
+
 # Teardown an agent: kill processes, remove worktree, archive, cleanup
 # Args: $1 = agent ID
 #       $2 = --quiet (optional, suppress stdout for batch mode)
@@ -960,11 +1009,13 @@ You need these criteria to judge whether a sub-agent has truly completed its wor
 3. Enter WAITING mode - watchdogs will notify you when sub-agents need attention
 4. When notified, review sub-agent work against your predefined completion criteria:
    - Use \`ib look <agent-id>\` to see what the agent reports
+   - Use \`ib status <agent-id>\` to see the agent's commits
    - Use \`ib diff <agent-id>\` to verify the actual changes match your criteria
    - If criteria met: \`ib merge <agent-id>\` or \`ib kill <agent-id>\` (if no changes needed)
    - If criteria NOT met: \`ib send <agent-id> \"message\"\` explaining what's missing and how to fix it
    - If a sub-agent is \`stopped\`, STOP and notify the user immediately
 5. When merging successful agents, commit any changes you made directly (git add && git commit).
+6. BEFORE completing: You MUST merge or kill ALL sub-agents. Use \`ib list\` to verify no children remain in running, waiting, or complete state.
 
 $PR_INSTRUCTIONS"
         fi
@@ -1908,6 +1959,12 @@ EOF
 
     # Confirm if not forced
     if [[ "$FORCE" != true ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib kill $ID --force" >&2
+            exit 1
+        fi
         local confirm
         read -p "Kill agent '$ID' and remove all data? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
@@ -2057,6 +2114,12 @@ EOF
 
     # Confirm if not forced and there are agents to kill
     if [[ "$FORCE" != true && ${#agents_to_kill[@]} -gt 0 ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib nuke --force" >&2
+            exit 1
+        fi
         local confirm
         if [[ -n "$TARGET_ID" ]]; then
             echo "WARNING: This will kill agent '$TARGET_ID' and ${#agents_to_kill[@]} total agent(s) (including descendants) without merging!"
@@ -2488,6 +2551,12 @@ EOF
 
     # Confirm if not forced
     if [[ "$FORCE" != true && "$commit_count" -gt 0 ]]; then
+        # If running as an agent, error instead of blocking on interactive prompt
+        if is_running_as_agent; then
+            echo "Error: Cannot use interactive confirmation in agent mode." >&2
+            echo "Use: ib merge $ID --force" >&2
+            exit 1
+        fi
         local confirm
         read -p "Proceed with merge? [y/N] " confirm
         if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
@@ -2568,13 +2637,27 @@ cmd_hook_status() {
 
     local state=$(get_state "$ID")
 
+    local TMUX_SESSION=$(session_name "$ID")
+
     if [[ "$state" == "unknown" ]]; then
-        local TMUX_SESSION=$(session_name "$ID")
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
         sleep 0.1
         tmux send-keys -t "$TMUX_SESSION" Enter
+    elif [[ "$state" == "complete" ]]; then
+        # Check if this manager has unfinished children that need to be merged/killed
+        local unfinished=$(get_unfinished_children "$ID")
+        if [[ -n "$unfinished" ]]; then
+            # Count children and build message
+            local child_count=$(echo "$unfinished" | wc -w | tr -d ' ')
+            local child_list=$(echo "$unfinished" | tr ' ' ', ')
+            local prompt="You have $child_count unfinished sub-agent(s) that need attention: $child_list. Before you can complete, you must merge or kill each sub-agent using 'ib merge <id>' or 'ib kill <id>'. Use 'ib list' to check their status, 'ib look <id>' to see their output, 'ib status <id>' for their commits, and 'ib diff <id>' to review their changes."
+
+            tmux send-keys -t "$TMUX_SESSION" "$prompt"
+            sleep 0.1
+            tmux send-keys -t "$TMUX_SESSION" Enter
+        fi
     fi
 
     # Always print the state for debugging
