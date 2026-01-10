@@ -3546,12 +3546,21 @@ EOF
         fi
         printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
 
-        # Separator
-        printf "%-${TERM_COLS}s\n" "$(printf '%*s' "$TERM_COLS" '' | tr ' ' '─')"
-
-        # Calculate pane dimensions
+        # Calculate pane dimensions (need this before headers)
         local pane_height=$((TERM_LINES - 10))
         local pane_width=$(( (TERM_COLS - 3) / 2 ))
+
+        # Pane headers
+        local left_header="─── TMUX OUTPUT "
+        local right_header="─── AGENT LOG "
+        # Pad headers with ─ to fill width
+        while [[ ${#left_header} -lt $pane_width ]]; do
+            left_header="${left_header}─"
+        done
+        while [[ ${#right_header} -lt $pane_width ]]; do
+            right_header="${right_header}─"
+        done
+        printf "%-${pane_width}.${pane_width}s─┬─%-${pane_width}.${pane_width}s\n" "$left_header" "$right_header"
 
         # Reset scroll offset when agent changes
         if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
@@ -3624,8 +3633,12 @@ EOF
             printf "%-${pane_width}.${pane_width}s │ %-${pane_width}.${pane_width}s\n" "$left_content" "$right_content"
         done
 
-        # Bottom help line
-        printf "%-${TERM_COLS}s\n" "j/k: select    ;/l: scroll    Ctrl-C: quit"
+        # Bottom help line with scroll indicator
+        local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
+        if [[ $SCROLL_OFFSET -gt 0 ]]; then
+            help_text="[SCROLLED +$SCROLL_OFFSET]  $help_text"
+        fi
+        printf "%-${TERM_COLS}s\n" "$help_text"
 
         rm -f "$tmpfile"
     }
