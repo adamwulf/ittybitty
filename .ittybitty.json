@@ -6,8 +6,8 @@
       "deny": []
     },
     "worker": {
-      "allow": ["Read", "Write", "Edit"],
-      "deny": ["Bash"]
+      "allow": ["Read", "Write", "Edit", "Bash"],
+      "deny": []
     }
   }
 }
