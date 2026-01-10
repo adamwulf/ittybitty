@@ -9,6 +9,7 @@ set -e
 
 ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
 SESSION_PREFIX="ittybitty-"
+TMUX_WIDTH=60  # Width for agent tmux panes (used by watch command)
 
 # Initialize paths - will be set to root repo after get_root_repo is defined
 AGENTS_DIR=""
@@ -766,6 +767,221 @@ auto_accept_workspace_trust() {
 }
 
 # =============================================================================
+# TREE HELPERS (shared by cmd_tree and cmd_watch)
+# =============================================================================
+
+# Build agent data file for tree operations
+# Creates a temp file with format: id|manager|state|age|model|prompt
+# The caller is responsible for cleaning up the temp file
+# Usage: local tmpfile=$(build_agent_data_file)
+#        trap "rm -f '$tmpfile'" RETURN
+build_agent_data_file() {
+    local tmpfile=$(mktemp)
+
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "$tmpfile"
+        return
+    fi
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id=$(basename "$agent_dir")
+        local meta="$agent_dir/meta.json"
+
+        # Read metadata
+        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
+        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
+        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
+        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+
+        # Get state and age
+        local state=$(get_state "$id")
+        local age=$(format_age "$created")
+
+        # Display "unknown" as "waiting" for users
+        if [[ "$state" == "unknown" ]]; then
+            state="waiting"
+        fi
+
+        # Handle null manager
+        if [[ "$manager" == "null" || -z "$manager" ]]; then
+            manager=""
+        fi
+
+        # Handle null model
+        if [[ "$model" == "null" || -z "$model" ]]; then
+            model="-"
+        fi
+
+        # Store as: id|manager|state|age|model|prompt
+        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
+    done
+
+    echo "$tmpfile"
+}
+
+# Get agent IDs in depth-first tree order
+# Args: $1 = tmpfile from build_agent_data_file
+# Outputs: one agent ID per line in tree traversal order
+get_agent_ids_tree_order() {
+    local tmpfile="$1"
+
+    if [[ ! -s "$tmpfile" ]]; then
+        return
+    fi
+
+    # Helper to get children of a manager
+    _tree_get_children() {
+        local manager_id="$1"
+        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+    }
+
+    # Recursive helper to emit agent IDs in tree order
+    _tree_emit() {
+        local id="$1"
+        echo "$id"
+        local children=$(_tree_get_children "$id")
+        for child in $children; do
+            _tree_emit "$child"
+        done
+    }
+
+    # Find root agents (those with no parent OR whose parent doesn't exist)
+    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+    local roots=""
+    while IFS='|' read -r id parent _rest; do
+        if [[ -z "$parent" ]]; then
+            roots="$roots $id"
+        else
+            if ! echo "$all_ids" | grep -q "^${parent}$"; then
+                roots="$roots $id"
+            fi
+        fi
+    done < "$tmpfile"
+    roots="${roots# }"
+
+    for root in $roots; do
+        _tree_emit "$root"
+    done
+}
+
+# Build tree lines with formatting (pipe-delimited for column alignment)
+# Args: $1 = tmpfile from build_agent_data_file
+# Outputs: formatted tree lines, one per line
+# Caller should pipe through: column -t -s '|'
+build_tree_lines() {
+    local tmpfile="$1"
+
+    if [[ ! -s "$tmpfile" ]]; then
+        return
+    fi
+
+    # Helper to get agent info from tmpfile
+    _tree_get_agent_info() {
+        local lookup_id="$1"
+        grep "^${lookup_id}|" "$tmpfile" | head -1
+    }
+
+    # Helper to get children of a manager
+    _tree_get_children_for_print() {
+        local manager_id="$1"
+        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+    }
+
+    # Recursive function to print tree
+    _tree_print_node() {
+        local id="$1"
+        local prefix="$2"
+        local is_last="$3"
+
+        # Get agent info
+        local info=$(_tree_get_agent_info "$id")
+        local state=$(echo "$info" | cut -d'|' -f3)
+        local age=$(echo "$info" | cut -d'|' -f4)
+        local model=$(echo "$info" | cut -d'|' -f5)
+        local prompt=$(echo "$info" | cut -d'|' -f6-)
+
+        # Print this node with aligned columns
+        local connector child_prefix tree_part
+        if [[ -z "$prefix" ]]; then
+            # Root node - no prefix/connector
+            tree_part="$id"
+            child_prefix="."
+        elif [[ "$prefix" == "." ]]; then
+            # First level child
+            connector="├──"
+            child_prefix="│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="    "
+            fi
+            tree_part="$connector $id"
+        else
+            # Deeper level
+            connector="├──"
+            child_prefix="${prefix}│   "
+            if [[ "$is_last" == "true" ]]; then
+                connector="└──"
+                child_prefix="${prefix}    "
+            fi
+            tree_part="$prefix$connector $id"
+        fi
+
+        # Format: tree_part | state | age | model | (orphan note) | prompt
+        echo "${tree_part}|${state}|${age}|${model}||${prompt}"
+
+        # Print children
+        local children=$(_tree_get_children_for_print "$id")
+        if [[ -n "$children" ]]; then
+            local child_array=($children)
+            local child_count=${#child_array[@]}
+            local i=0
+            for child in "${child_array[@]}"; do
+                i=$((i + 1))
+                local child_is_last="false"
+                if [[ $i -eq $child_count ]]; then
+                    child_is_last="true"
+                fi
+                _tree_print_node "$child" "$child_prefix" "$child_is_last"
+            done
+        fi
+    }
+
+    # Find roots
+    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+    local roots=""
+    while IFS='|' read -r id parent _rest; do
+        if [[ -z "$parent" ]]; then
+            roots="$roots $id"
+        else
+            if ! echo "$all_ids" | grep -q "^${parent}$"; then
+                roots="$roots $id"
+            fi
+        fi
+    done < "$tmpfile"
+    roots="${roots# }"
+
+    # Print each root and its tree
+    local root_array=($roots)
+    local root_count=${#root_array[@]}
+    local i=0
+    for root in "${root_array[@]}"; do
+        i=$((i + 1))
+        local is_last="false"
+        if [[ $i -eq $root_count && $root_count -gt 1 ]]; then
+            is_last="true"
+        fi
+        _tree_print_node "$root" "" "$is_last"
+        # Add blank line between trees if multiple roots
+        if [[ $i -lt $root_count ]]; then
+            echo ""
+        fi
+    done
+}
+
+# =============================================================================
 # COMMAND: new-agent
 # =============================================================================
 
@@ -1313,7 +1529,7 @@ EOF
 
     # Start tmux session with startup script (use absolute path)
     local ABS_STARTUP_SCRIPT="$ABS_AGENT_DIR/start.sh"
-    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
+    if ! tmux new-session -d -x "$TMUX_WIDTH" -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_STARTUP_SCRIPT"; then
         echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         echo "Try running: tmux kill-server && tmux start-server" >&2
         rm -rf "$AGENT_DIR"
@@ -2482,7 +2698,7 @@ EOF
     # Start tmux session with resume script
     local ABS_RESUME_SCRIPT="$(cd "$AGENT_DIR" && pwd)/resume.sh"
     local TMUX_SESSION=$(session_name "$ID")
-    if ! tmux new-session -d -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
+    if ! tmux new-session -d -x "$TMUX_WIDTH" -s "$TMUX_SESSION" -c "$WORK_PATH" "$ABS_RESUME_SCRIPT"; then
         echo "Error: could not create tmux session '$TMUX_SESSION'" >&2
         exit 1
     fi
@@ -3171,178 +3387,371 @@ EOF
         exit 0
     fi
 
-    # Build a temporary data file with agent info
-    local tmpfile=$(mktemp)
+    # Build agent data using shared helper
+    local tmpfile=$(build_agent_data_file)
     trap "rm -f '$tmpfile'" EXIT
-
-    for agent_dir in "$AGENTS_DIR"/*/; do
-        [[ -d "$agent_dir" ]] || continue
-        [[ -f "$agent_dir/meta.json" ]] || continue
-
-        local id=$(basename "$agent_dir")
-        local meta="$agent_dir/meta.json"
-
-        # Read metadata
-        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
-        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
-        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
-
-        # Get state and age
-        local state=$(get_state "$id")
-        local age=$(format_age "$created")
-
-        # Display "unknown" as "waiting" for users
-        if [[ "$state" == "unknown" ]]; then
-            state="waiting"
-        fi
-
-        # Handle null manager
-        if [[ "$manager" == "null" || -z "$manager" ]]; then
-            manager=""
-        fi
-
-        # Handle null model
-        if [[ "$model" == "null" || -z "$model" ]]; then
-            model="-"
-        fi
-
-        # Store as: id|manager|state|age|model|prompt
-        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
-    done
 
     if [[ ! -s "$tmpfile" ]]; then
         echo "No agents found."
         exit 0
     fi
 
+    # Build and display tree using shared helper
+    build_tree_lines "$tmpfile" | column -t -s '|'
+}
 
-    # Helper to get agent info
-    get_agent_info() {
-        local lookup_id="$1"
-        grep "^${lookup_id}|" "$tmpfile" | head -1
+# =============================================================================
+# COMMAND: watch (undocumented)
+# =============================================================================
+
+cmd_watch() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib watch
+
+Full-screen dashboard for monitoring all agents.
+
+Controls:
+  j/k     Select next/previous agent
+  ;/l     Scroll panes down/up
+  Ctrl-C  Exit
+
+The display shows:
+  - Agent tree (top 5 lines, scrolls with selection)
+  - Selected agent info (model, prompt)
+  - Split view: tmux output (left) and agent log (right)
+
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # State variables
+    local TERM_LINES TERM_COLS
+    local SELECTED_INDEX=0
+    local PREV_SELECTED_INDEX=-1  # Track for scroll reset on agent change
+    local AGENT_COUNT=0
+    local TREE_SCROLL=0  # Which line of tree to start display from
+    local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
+
+    # Cleanup function for exit
+    watch_cleanup() {
+        stty echo    # Restore terminal echo
+        tput cnorm   # Show cursor
+        tput clear   # Clear screen
+        echo "Exited ib watch"
     }
 
-    # Helper to get children of a manager
-    get_children() {
-        local manager_id="$1"
-        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
-    }
+    # Trap Ctrl-C and other exits
+    trap watch_cleanup EXIT
 
-    # Recursive function to print tree
-    print_tree() {
-        local id="$1"
-        local prefix="$2"
-        local is_last="$3"
-        local is_orphan="$4"  # Optional: manager ID if orphaned
+    # Hide cursor and disable terminal echo
+    tput civis
+    stty -echo
 
-        # Get agent info
-        local info=$(get_agent_info "$id")
-        local manager=$(echo "$info" | cut -d'|' -f2)
-        local state=$(echo "$info" | cut -d'|' -f3)
-        local age=$(echo "$info" | cut -d'|' -f4)
-        local model=$(echo "$info" | cut -d'|' -f5)
-        local prompt=$(echo "$info" | cut -d'|' -f6-)
+    # Main render function
+    watch_render() {
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
 
-        # Check if this is an orphaned root (has parent but parent doesn't exist)
-        local orphan_note=""
-        if [[ -z "$prefix" && -n "$parent" ]]; then
-            # This is a root but has a parent field, so it's orphaned
-            orphan_note=" [orphaned, parent: $parent]"
-        fi
+        # Move cursor to top-left (no flicker vs clear)
+        tput cup 0 0
 
-        # Print this node with aligned columns
-        local connector child_prefix tree_part
-        if [[ -z "$prefix" ]]; then
-            # Root node - no prefix/connector
-            tree_part="$id"
-            # Mark children as "first level" so they use connectors
-            child_prefix="."
-        elif [[ "$prefix" == "." ]]; then
-            # First level child (child of root) - just connector, no prefix before it
-            connector="├──"
-            child_prefix="│   "
-            if [[ "$is_last" == "true" ]]; then
-                connector="└──"
-                child_prefix="    "
-            fi
-            tree_part="$connector $id"
-        else
-            # Deeper level - prefix + connector
-            connector="├──"
-            child_prefix="${prefix}│   "
-            if [[ "$is_last" == "true" ]]; then
-                connector="└──"
-                child_prefix="${prefix}    "
-            fi
-            tree_part="$prefix$connector $id"
-        fi
+        # Build agent data
+        local tmpfile=$(build_agent_data_file)
 
-        # Print with separator for column command to align
-        # Format: tree_part | state | age | model | orphan_note | prompt
-        echo "${tree_part}|${state}|${age}|${model}|${orphan_note}|${prompt}"
+        if [[ ! -s "$tmpfile" ]]; then
+            # No agents - show message
+            AGENT_COUNT=0
+            echo "No agents running."
+            echo ""
+            echo "Waiting for agents... (Ctrl-C to exit)"
 
-        # Print children
-        local children=$(get_children "$id")
-        if [[ -n "$children" ]]; then
-            local child_array=($children)
-            local child_count=${#child_array[@]}
-            local i=0
-            for child in "${child_array[@]}"; do
-                i=$((i + 1))
-                local child_is_last="false"
-                if [[ $i -eq $child_count ]]; then
-                    child_is_last="true"
-                fi
-                print_tree "$child" "$child_prefix" "$child_is_last"
+            # Clear rest of screen
+            local line
+            for ((line=3; line<TERM_LINES; line++)); do
+                printf "%-${TERM_COLS}s\n" ""
             done
+
+            rm -f "$tmpfile"
+            return
         fi
-    }
 
-    # Build list of all agent IDs
-    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+        # Get agent IDs in tree order (for selection tracking)
+        local agent_ids=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && agent_ids+=("$line")
+        done < <(get_agent_ids_tree_order "$tmpfile")
+        AGENT_COUNT=${#agent_ids[@]}
 
-    # Find root agents (those with no parent OR whose parent doesn't exist)
-    local roots=""
-    while IFS='|' read -r id parent _rest; do
-        if [[ -z "$parent" ]]; then
-            # No parent - definitely a root
-            roots="$roots $id"
-        else
-            # Has parent - check if parent exists
-            if ! echo "$all_ids" | grep -q "^${parent}$"; then
-                # Parent doesn't exist - orphaned agent, treat as root
-                roots="$roots $id"
-            fi
+        # Clamp selection to valid range
+        if [[ $SELECTED_INDEX -ge $AGENT_COUNT ]]; then
+            SELECTED_INDEX=$((AGENT_COUNT - 1))
         fi
-    done < "$tmpfile"
+        if [[ $SELECTED_INDEX -lt 0 ]]; then
+            SELECTED_INDEX=0
+        fi
 
-    # Trim leading space
-    roots="${roots# }"
+        # Get the selected agent ID and its data from tmpfile
+        local selected_id="${agent_ids[$SELECTED_INDEX]}"
+        local selected_info
+        selected_info=$(grep "^${selected_id}|" "$tmpfile" | head -1)
+        local selected_state=$(echo "$selected_info" | cut -d'|' -f3)
+        local selected_model=$(echo "$selected_info" | cut -d'|' -f5)
+        local selected_prompt=$(echo "$selected_info" | cut -d'|' -f6-)
 
-    if [[ -z "$roots" ]]; then
-        echo "No root agents found."
-        exit 0
-    fi
+        # Get tree lines
+        local tree_lines=()
+        while IFS= read -r line; do
+            tree_lines+=("$line")
+        done < <(build_tree_lines "$tmpfile" | column -t -s '|')
+        local total_tree_lines=${#tree_lines[@]}
 
-    # Print each root and its tree, pipe through column for alignment
-    {
-        local root_array=($roots)
-        local root_count=${#root_array[@]}
-        local i=0
-        for root in "${root_array[@]}"; do
-            i=$((i + 1))
-            local is_last="false"
-            if [[ $i -eq $root_count && $root_count -gt 1 ]]; then
-                is_last="true"
-            fi
-            print_tree "$root" "" "$is_last"
-            # Add blank line between trees if multiple roots
-            if [[ $i -lt $root_count ]]; then
-                echo ""
+        # Calculate tree scroll to keep selection visible (window of 5)
+        if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
+            TREE_SCROLL=$SELECTED_INDEX
+        elif [[ $SELECTED_INDEX -ge $((TREE_SCROLL + 5)) ]]; then
+            TREE_SCROLL=$((SELECTED_INDEX - 4))
+        fi
+
+        # Display 5 lines of tree with selection highlighting
+        local display_line
+        for ((display_line=0; display_line<5; display_line++)); do
+            local tree_idx=$((TREE_SCROLL + display_line))
+            if [[ $tree_idx -lt $total_tree_lines ]]; then
+                local line="${tree_lines[$tree_idx]}"
+                if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
+                    # Highlight selected line with reverse video
+                    printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
+                else
+                    printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+                fi
+            else
+                printf "%-${TERM_COLS}s\n" ""
             fi
         done
-    } | column -t -s '|'
+
+        # Prompt display (agent ID/state/model already shown in tree)
+        local prompt_max=$((TERM_COLS - 8))
+        local display_prompt="$selected_prompt"
+        if [[ ${#display_prompt} -gt $prompt_max ]]; then
+            display_prompt="${display_prompt:0:$((prompt_max - 3))}..."
+        fi
+        printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
+
+        # Calculate pane dimensions
+        # Left pane uses TMUX_WIDTH, right pane gets the rest
+        local pane_height=$((TERM_LINES - 8))
+        local left_pane_width=$TMUX_WIDTH
+        local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
+
+        # Pane headers (use same separator as content for alignment)
+        local left_header="── TMUX OUTPUT "
+        local right_header="── AGENT LOG "
+        # Pad headers with ─ to fill width
+        while [[ ${#left_header} -lt $left_pane_width ]]; do
+            left_header="${left_header}─"
+        done
+        while [[ ${#right_header} -lt $right_pane_width ]]; do
+            right_header="${right_header}─"
+        done
+        printf "%s │ %s\n" "$left_header" "$right_header"
+
+        # Reset scroll offset when agent changes
+        if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
+            SCROLL_OFFSET=0
+            PREV_SELECTED_INDEX=$SELECTED_INDEX
+        fi
+
+        # ===== PHASE 1: COLLECT & PROCESS DATA =====
+
+        # Capture more lines for scrolling (up to 500 lines of history)
+        local capture_lines=500
+
+        # Get tmux output for selected agent (all lines, for total count)
+        local tmux_session
+        tmux_session=$(session_name "$selected_id")
+        local all_tmux_lines=()
+        if tmux has-session -t "$tmux_session" 2>/dev/null; then
+            while IFS= read -r line; do
+                all_tmux_lines+=("$line")
+            done < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
+        else
+            local output_file="$AGENTS_DIR/$selected_id/output.log"
+            if [[ -f "$output_file" ]]; then
+                while IFS= read -r line; do
+                    all_tmux_lines+=("$line")
+                done < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
+            fi
+        fi
+
+        # Get agent log and wrap it (all lines, for total count)
+        local all_log_lines=()
+        local log_raw_count=0
+        local log_file="$AGENTS_DIR/$selected_id/agent.log"
+        if [[ -f "$log_file" ]]; then
+            while IFS= read -r raw_line; do
+                ((log_raw_count++))
+                while IFS= read -r wrapped_line; do
+                    all_log_lines+=("$wrapped_line")
+                done < <(printf '%s\n' "$raw_line" | fold -w "$right_pane_width")
+            done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
+        fi
+
+        local tmux_total=${#all_tmux_lines[@]}
+        local log_total=${#all_log_lines[@]}
+
+        # Calculate and clamp scroll offset
+        local tmux_max_scroll=$((tmux_total - pane_height))
+        local log_max_scroll=$((log_total - pane_height))
+        [[ $tmux_max_scroll -lt 0 ]] && tmux_max_scroll=0
+        [[ $log_max_scroll -lt 0 ]] && log_max_scroll=0
+        local max_scroll=$tmux_max_scroll
+        [[ $log_max_scroll -lt $max_scroll ]] && max_scroll=$log_max_scroll
+        [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+        [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+        # Extract visible window of tmux lines (strip ANSI, truncate to width)
+        local visible_tmux_lines=()
+        local pane_line
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local tmux_idx=$((tmux_total - pane_height + pane_line - SCROLL_OFFSET))
+            if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
+                # Strip ANSI and truncate in one pipeline
+                local processed
+                processed=$(printf '%s' "${all_tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-"$left_pane_width")
+                visible_tmux_lines+=("$processed")
+            else
+                visible_tmux_lines+=("")
+            fi
+        done
+
+        # Extract visible window of log lines (already wrapped, just slice)
+        local visible_log_lines=()
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local log_idx=$((log_total - pane_height + pane_line - SCROLL_OFFSET))
+            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
+                visible_log_lines+=("${all_log_lines[$log_idx]}")
+            else
+                visible_log_lines+=("")
+            fi
+        done
+
+        # ===== PHASE 2: RENDER (no processing, just print) =====
+
+        local pane_start_row=8
+        for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+            local row=$((pane_start_row + pane_line))
+            printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
+                "$row" "${visible_tmux_lines[$pane_line]}" \
+                "$row" "$((left_pane_width + 1))" \
+                "${visible_log_lines[$pane_line]}"
+        done
+
+        # Move cursor to line after panes
+        printf '\e[%d;1H' "$((pane_start_row + pane_height))"
+
+        # Bottom help line with time on far right
+        local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
+        local current_time
+        current_time=$(date +%H:%M:%S)
+        local right_info="q:${LAST_QUEUE_SIZE}  ${current_time}"
+        local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
+        printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
+
+        rm -f "$tmpfile"
+    }
+
+    # Process a single key
+    watch_process_key() {
+        local key="$1"
+        case "$key" in
+            j)
+                # Move selection down
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
+                fi
+                ;;
+            k)
+                # Move selection up
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
+                fi
+                ;;
+            \;)
+                # Scroll down (show older content) - ; key
+                SCROLL_OFFSET=$((SCROLL_OFFSET + 10))
+                ;;
+            l)
+                # Scroll up (show newer content, toward bottom)
+                SCROLL_OFFSET=$((SCROLL_OFFSET - 10))
+                if [[ $SCROLL_OFFSET -lt 0 ]]; then
+                    SCROLL_OFFSET=0
+                fi
+                ;;
+        esac
+    }
+
+    # Collect all user input during a duration
+    # Usage: keys=$(get_user_input_during_duration <seconds> <keyfile>)
+    # Uses a background reader + sleep for bash 3.x compatibility
+    get_user_input_during_duration() {
+        local duration="$1"
+        local keyfile="$2"
+
+        # Clear key file
+        : > "$keyfile"
+
+        # Start background key reader
+        (
+            while IFS= read -rsn1 k; do
+                printf "%s" "$k" >> "$keyfile"
+            done
+        ) &
+        local reader_pid=$!
+
+        # Wait for specified duration
+        sleep "$duration"
+
+        # Kill reader
+        kill $reader_pid 2>/dev/null
+        wait $reader_pid 2>/dev/null
+
+        # Output collected keys
+        cat "$keyfile" 2>/dev/null
+    }
+
+    # Main loop
+    local LAST_QUEUE_SIZE=0
+    local keyfile=$(mktemp)
+
+    while true; do
+        # Collect input for 0.1 seconds
+        local keys_to_process
+        keys_to_process=$(get_user_input_during_duration 0.1 "$keyfile")
+        LAST_QUEUE_SIZE=${#keys_to_process}
+
+        # Process all accumulated keys
+        local i
+        for ((i=0; i<${#keys_to_process}; i++)); do
+            watch_process_key "${keys_to_process:$i:1}"
+        done
+
+        # Render frame
+        watch_render
+    done
+
+    rm -f "$keyfile"
 }
 
 # =============================================================================
@@ -3364,6 +3773,10 @@ case "${1:-help}" in
     tree)
         shift
         cmd_tree "$@"
+        ;;
+    watch)
+        shift
+        cmd_watch "$@"
         ;;
     status)
         shift
