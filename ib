@@ -3484,8 +3484,10 @@ EOF
         fi
 
         # Get agent IDs in tree order (for selection tracking)
-        local agent_ids
-        mapfile -t agent_ids < <(get_agent_ids_tree_order "$tmpfile")
+        local agent_ids=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && agent_ids+=("$line")
+        done < <(get_agent_ids_tree_order "$tmpfile")
         AGENT_COUNT=${#agent_ids[@]}
 
         # Clamp selection to valid range
@@ -3505,8 +3507,10 @@ EOF
         local selected_prompt=$(echo "$selected_info" | cut -d'|' -f6-)
 
         # Get tree lines
-        local tree_lines
-        mapfile -t tree_lines < <(build_tree_lines "$tmpfile" | column -t -s '|')
+        local tree_lines=()
+        while IFS= read -r line; do
+            tree_lines+=("$line")
+        done < <(build_tree_lines "$tmpfile" | column -t -s '|')
         local total_tree_lines=${#tree_lines[@]}
 
         # Calculate tree scroll to keep selection visible (window of 5)
@@ -3577,12 +3581,16 @@ EOF
         local tmux_lines=()
         if tmux has-session -t "$tmux_session" 2>/dev/null; then
             # Live session - capture history
-            mapfile -t tmux_lines < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
+            while IFS= read -r line; do
+                tmux_lines+=("$line")
+            done < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
         else
             # No session - try output.log
             local output_file="$AGENTS_DIR/$selected_id/output.log"
             if [[ -f "$output_file" ]]; then
-                mapfile -t tmux_lines < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
+                while IFS= read -r line; do
+                    tmux_lines+=("$line")
+                done < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
             fi
         fi
 
@@ -3590,7 +3598,9 @@ EOF
         local log_lines=()
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
-            mapfile -t log_lines < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
+            while IFS= read -r line; do
+                log_lines+=("$line")
+            done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
         fi
 
         local tmux_total=${#tmux_lines[@]}
