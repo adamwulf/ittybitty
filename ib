@@ -3444,16 +3444,18 @@ EOF
 
     # Cleanup function for exit
     watch_cleanup() {
-        tput cnorm  # Show cursor
-        tput clear  # Clear screen
+        stty echo    # Restore terminal echo
+        tput cnorm   # Show cursor
+        tput clear   # Clear screen
         echo "Exited ib watch"
     }
 
     # Trap Ctrl-C and other exits
     trap watch_cleanup EXIT
 
-    # Hide cursor
+    # Hide cursor and disable terminal echo
     tput civis
+    stty -echo
 
     # Main render function
     watch_render() {
@@ -3669,21 +3671,9 @@ EOF
         rm -f "$tmpfile"
     }
 
-    # Read single key with timeout
-    watch_read_key() {
-        local key
-        IFS= read -rsn1 -t 1 key
-        echo "$key"
-    }
-
-    # Main loop
-    while true; do
-        watch_render
-
-        # Read key with 1 second timeout
-        local key
-        key=$(watch_read_key)
-
+    # Process a single key
+    watch_process_key() {
+        local key="$1"
         case "$key" in
             j)
                 # Move selection down
@@ -3709,6 +3699,23 @@ EOF
                 fi
                 ;;
         esac
+    }
+
+    # Main loop
+    while true; do
+        # Drain all queued input first (non-blocking)
+        while IFS= read -rsn1 -t 0 key; do
+            watch_process_key "$key"
+        done
+
+        # Render frame
+        watch_render
+
+        # Wait for next key or timeout (1 second)
+        local key
+        if IFS= read -rsn1 -t 1 key; then
+            watch_process_key "$key"
+        fi
     done
 }
 
