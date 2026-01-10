@@ -3629,14 +3629,45 @@ EOF
             local right_content=""
 
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                # Strip ANSI escape codes for proper width calculation
-                left_content=$(echo "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
-            fi
-            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
-                right_content="${log_lines[$log_idx]}"
+                # Strip ANSI escape codes
+                left_content=$(printf '%s' "${tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g')
+                # Get display width and pad/truncate to pane_width
+                local left_display_width=$(printf '%s' "$left_content" | wc -L)
+                if [[ $left_display_width -gt $pane_width ]]; then
+                    # Truncate - remove chars from end until it fits
+                    while [[ $(printf '%s' "$left_content" | wc -L) -gt $pane_width && -n "$left_content" ]]; do
+                        left_content="${left_content%?}"
+                    done
+                    left_display_width=$(printf '%s' "$left_content" | wc -L)
+                fi
+                # Pad with spaces to reach pane_width
+                local left_padding=$((pane_width - left_display_width))
+                if [[ $left_padding -gt 0 ]]; then
+                    left_content="${left_content}$(printf '%*s' $left_padding '')"
+                fi
+            else
+                left_content=$(printf '%*s' $pane_width '')
             fi
 
-            printf "%-${pane_width}.${pane_width}s │ %-${pane_width}.${pane_width}s\n" "$left_content" "$right_content"
+            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
+                right_content="${log_lines[$log_idx]}"
+                # Get display width and pad/truncate to pane_width
+                local right_display_width=$(printf '%s' "$right_content" | wc -L)
+                if [[ $right_display_width -gt $pane_width ]]; then
+                    while [[ $(printf '%s' "$right_content" | wc -L) -gt $pane_width && -n "$right_content" ]]; do
+                        right_content="${right_content%?}"
+                    done
+                    right_display_width=$(printf '%s' "$right_content" | wc -L)
+                fi
+                local right_padding=$((pane_width - right_display_width))
+                if [[ $right_padding -gt 0 ]]; then
+                    right_content="${right_content}$(printf '%*s' $right_padding '')"
+                fi
+            else
+                right_content=$(printf '%*s' $pane_width '')
+            fi
+
+            printf '%s │ %s\n' "$left_content" "$right_content"
         done
 
         # Bottom help line with scroll indicator (no trailing newline to avoid extra line)
