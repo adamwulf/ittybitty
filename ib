@@ -781,6 +781,10 @@ build_agent_data_file() {
     # Compute now once for all age calculations
     local now=$(date +%s)
 
+    # Get all active tmux sessions in one call (avoid per-agent tmux queries for stopped agents)
+    local active_sessions
+    active_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' '|')
+
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
@@ -805,8 +809,14 @@ build_agent_data_file() {
             fi
         done < "$meta"
 
-        # Get state and age
-        local state=$(get_state "$id")
+        # Get state - check active sessions first to skip tmux capture for stopped agents
+        local state
+        local tmux_session="ittybitty-${id}"
+        if [[ "$active_sessions" == *"$tmux_session"* ]]; then
+            state=$(get_state "$id")
+        else
+            state="stopped"
+        fi
         local age=$(format_age "$created" "$now")
 
         # Display "unknown" as "waiting" for users
