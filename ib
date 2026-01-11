@@ -652,6 +652,27 @@ _fold_text() {
     done <<< "$text"
 }
 
+# Strip ANSI escape codes from a string (pure bash, no subprocess)
+# Args: $1 = string with ANSI codes
+# Result: stored in _STRIP_ANSI_RESULT
+_STRIP_ANSI_RESULT=""
+_strip_ansi() {
+    local input="$1"
+    # Use loop to remove ANSI sequences: ESC [ ... m
+    # Keep removing until no more matches
+    while [[ "$input" == *$'\e['* ]]; do
+        local prefix="${input%%$'\e['*}"
+        local rest="${input#*$'\e['}"
+        # Skip until we hit a letter (end of escape sequence)
+        while [[ -n "$rest" && ! "${rest:0:1}" =~ [a-zA-Z] ]]; do
+            rest="${rest:1}"
+        done
+        rest="${rest:1}"  # Skip the letter
+        input="${prefix}${rest}"
+    done
+    _STRIP_ANSI_RESULT="$input"
+}
+
 # Capture tmux pane content and store in LAST_TMUX_CAPTURE
 # Args: $1 = tmux session name, $2 = number of lines (default 20)
 # Result: stored in LAST_TMUX_CAPTURE global variable (no stdout, no subprocess needed)
@@ -4079,20 +4100,17 @@ EOF
         local visible_tmux_lines=()
         local pane_line
 
-        # Build list of visible tmux lines, then process all at once
+        # Process each visible line: strip ANSI codes, truncate to width
         local tmux_start_idx=$((tmux_total - pane_height - SCROLL_OFFSET))
-        local raw_visible=""
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local tmux_idx=$((tmux_start_idx + pane_line))
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                raw_visible+="${all_tmux_lines[$tmux_idx]}"
+                _strip_ansi "${all_tmux_lines[$tmux_idx]}"
+                visible_tmux_lines+=("${_STRIP_ANSI_RESULT:0:$left_pane_width}")
+            else
+                visible_tmux_lines+=("")
             fi
-            raw_visible+=$'\n'
         done
-        # Process all lines at once through sed|cut
-        while IFS= read -r line; do
-            visible_tmux_lines+=("$line")
-        done < <(printf '%s' "$raw_visible" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-"$left_pane_width")
 
         # Extract visible window of log lines (already wrapped, just slice)
         local visible_log_lines=()
