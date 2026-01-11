@@ -470,10 +470,9 @@ count_agents() {
 }
 
 # Build settings.local.json content for an agent worktree
-# Args: $1 = "manager" or "worker", $2 = root repo path (optional, for additionalDirectories)
+# Args: $1 = "manager" or "worker"
 build_agent_settings() {
     local agent_type="$1"
-    local root_path="${2:-$(pwd)}"
     local base_settings="{}"
 
     # Start with existing settings if available
@@ -509,20 +508,14 @@ build_agent_settings() {
     # Format: "Permission denied: ToolName (key1: val1..., key2: val2...)"
     local hook_cmd="jq -r '\"Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring | if length > 20 then .[0:20] + \"...\" else . end)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
 
-    # Build additionalDirectories to prevent location permission prompts
-    # Include root repo path so agents can access .ittybitty/ for logging
-    local additional_dirs="[\"$root_path\"]"
-
     # Merge everything together and add hooks
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
         --argjson blocked "$blocked_tools" \
         --argjson cfg_allow "$allow_json" \
         --argjson cfg_deny "$deny_json" \
-        --argjson add_dirs "$additional_dirs" \
         --arg perm_hook "$hook_cmd" '
         .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
         .permissions.deny = ((.permissions.deny // []) + $blocked + $cfg_deny | unique) |
-        .permissions.additionalDirectories = ((.permissions.additionalDirectories // []) + $add_dirs | unique) |
         .hooks.Stop = [{
             "hooks": [{
                 "type": "command",
@@ -1734,8 +1727,8 @@ EOF
         fi
 
         if command -v jq &>/dev/null; then
-            # Run build_agent_settings from root repo context, pass root path for additionalDirectories
-            (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type" "$ROOT_REPO_PATH") > "$AGENT_DIR/repo/.claude/settings.local.json"
+            # Run build_agent_settings from root repo context
+            (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type") > "$AGENT_DIR/repo/.claude/settings.local.json"
             # Replace agent ID placeholder in hook configuration
             sed -i '' "s|__AGENT_ID__|$ID|g" "$AGENT_DIR/repo/.claude/settings.local.json"
         else
