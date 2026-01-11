@@ -983,7 +983,7 @@ build_agent_data_file() {
                     key="${BASH_REMATCH[1]}"
                     value="${BASH_REMATCH[2]}"
                     case "$key" in
-                        prompt) prompt="${value:0:40}" ;;
+                        prompt) prompt="${value//\\n/ }" ;;  # Replace \n with space
                         manager) manager="$value" ;;
                         created_epoch) created_epoch="$value" ;;
                         model) model="$value" ;;
@@ -3999,18 +3999,10 @@ EOF
             fi
         done
 
-        # Prompt display (agent ID/state/model already shown in tree)
-        local prompt_max=$((TERM_COLS - 8))
-        local display_prompt="$selected_prompt"
-        if [[ ${#display_prompt} -gt $prompt_max ]]; then
-            display_prompt="${display_prompt:0:$((prompt_max - 3))}..."
-        fi
-        printf "%-${TERM_COLS}s\n" "Prompt: $display_prompt"
-
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
-        # Header rows: tree_display_lines + prompt(1) + pane_header(1) + footer(1) = tree_display_lines + 3
-        local pane_height=$((TERM_LINES - tree_display_lines - 3))
+        # Header rows: tree_display_lines + pane_header(1) + footer(1) = tree_display_lines + 2
+        local pane_height=$((TERM_LINES - tree_display_lines - 2))
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -4138,7 +4130,7 @@ EOF
 
         # ===== PHASE 2: RENDER (no processing, just print) =====
 
-        local pane_start_row=$((tree_display_lines + 3))  # tree + prompt + pane_header
+        local pane_start_row=$((tree_display_lines + 2))  # tree + pane_header
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local row=$((pane_start_row + pane_line))
             printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
