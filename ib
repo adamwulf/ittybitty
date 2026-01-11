@@ -1386,6 +1386,8 @@ build_tree_lines() {
 # Result: sets _FORMATTED_TREE_LINES array with aligned output
 _FORMATTED_TREE_LINES=()
 format_tree_lines() {
+    # Optional arg: terminal width for prompt clipping
+    local term_width="${1:-0}"
     _FORMATTED_TREE_LINES=()
 
     [[ ${#_BUILD_TREE_LINES[@]} -eq 0 ]] && return
@@ -1397,6 +1399,14 @@ format_tree_lines() {
         tree_part="${line%%|*}"
         [[ ${#tree_part} -gt $max_tree_width ]] && max_tree_width=${#tree_part}
     done
+
+    # Calculate fixed column widths: tree + 2 + state(8) + 2 + age(5) + 2 + model(10) + 2 = tree + 31
+    local fixed_width=$((max_tree_width + 31))
+    local max_prompt_width=0
+    if [[ $term_width -gt 0 ]]; then
+        max_prompt_width=$((term_width - fixed_width))
+        [[ $max_prompt_width -lt 10 ]] && max_prompt_width=10
+    fi
 
     # Format each line with aligned columns
     local state age model _empty prompt rest
@@ -1411,6 +1421,11 @@ format_tree_lines() {
         rest="${rest#*|}"
         _empty="${rest%%|*}"
         prompt="${rest#*|}"
+
+        # Clip prompt to terminal width if specified
+        if [[ $max_prompt_width -gt 0 && ${#prompt} -gt $max_prompt_width ]]; then
+            prompt="${prompt:0:$((max_prompt_width - 3))}..."
+        fi
 
         # Format: tree (dynamic) | state (8) | age (5) | model (10) | prompt
         printf -v formatted "%-${max_tree_width}s  %-8s  %-5s  %-10s  %s" \
@@ -3832,9 +3847,13 @@ EOF
         exit 0
     fi
 
+    # Get terminal width for prompt clipping
+    local term_cols
+    term_cols=$(tput cols 2>/dev/null) || term_cols=0
+
     # Build and display tree using shared helper (no subprocess)
     build_tree_lines "$tmpfile"
-    format_tree_lines
+    format_tree_lines "$term_cols"
     local line
     for line in "${_FORMATTED_TREE_LINES[@]}"; do
         echo "$line"
@@ -3962,7 +3981,7 @@ EOF
 
         # Get tree lines (no subprocess - uses global arrays)
         build_tree_lines "$tmpfile"
-        format_tree_lines
+        format_tree_lines "$TERM_COLS"
         local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
         local total_tree_lines=${#tree_lines[@]}
 
