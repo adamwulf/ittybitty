@@ -4118,12 +4118,13 @@ EOF
         local log_total=${#LOG_PARSED_LINES[@]}
 
         # Calculate and clamp scroll offset
+        # Use max of the two so scrolling works if either pane has content
         local tmux_max_scroll=$((tmux_total - pane_height))
         local log_max_scroll=$((log_total - pane_height))
         [[ $tmux_max_scroll -lt 0 ]] && tmux_max_scroll=0
         [[ $log_max_scroll -lt 0 ]] && log_max_scroll=0
         local max_scroll=$tmux_max_scroll
-        [[ $log_max_scroll -lt $max_scroll ]] && max_scroll=$log_max_scroll
+        [[ $log_max_scroll -gt $max_scroll ]] && max_scroll=$log_max_scroll
         [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
         [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
 
