@@ -3633,7 +3633,6 @@ cmd_watchdog() {
                 if [[ "$prev_state" != "waiting" ]]; then
                     echo "[watchdog] Agent state: waiting (counter: $waiting_counter, next notify at: $notify_interval)"
                     log_agent "$AGENT_ID" "[watchdog] State changed to: waiting" --quiet
-                    log_tmux_screen "$AGENT_ID"
                 fi
 
                 # Check if we've reached the notification threshold
@@ -3669,7 +3668,6 @@ cmd_watchdog() {
                 if [[ "$notified_complete" != "true" ]]; then
                     echo "[watchdog] Agent state: complete"
                     log_agent "$AGENT_ID" "[watchdog] State changed to: complete" --quiet
-                    log_tmux_screen "$AGENT_ID"
                     if [[ "$QUIET" == "true" ]]; then
                         echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would notify manager $manager: agent recently completed"
                     else
@@ -3691,7 +3689,6 @@ cmd_watchdog() {
                         echo "[watchdog] Agent state: running"
                     fi
                     log_agent "$AGENT_ID" "[watchdog] State changed to: running" --quiet
-                    log_tmux_screen "$AGENT_ID"
                 fi
                 waiting_counter=0
                 notify_interval=6  # Reset to initial interval when resuming work
@@ -3712,7 +3709,6 @@ cmd_watchdog() {
                 if [[ "$prev_state" != "unknown" ]]; then
                     echo "[watchdog] Agent state: unknown (counter: $waiting_counter, next notify at: $notify_interval)"
                     log_agent "$AGENT_ID" "[watchdog] State changed to: unknown" --quiet
-                    log_tmux_screen "$AGENT_ID"
                 fi
 
                 # Check if we've reached the notification threshold
@@ -3751,8 +3747,6 @@ cmd_watchdog() {
                         echo "[watchdog] Agent state: stopped"
                     fi
                     log_agent "$AGENT_ID" "[watchdog] State changed to: stopped" --quiet
-                    # Note: log_tmux_screen won't capture anything since session is stopped
-                    log_tmux_screen "$AGENT_ID"
                 fi
                 waiting_counter=0
                 notify_interval=6  # Reset to initial interval
