@@ -4000,7 +4000,7 @@ EOF
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
         # Pane headers (use same separator as content for alignment)
-        local left_header="── TMUX OUTPUT "
+        local left_header="── $selected_id "
         local right_header="── AGENT LOG "
         # Pad headers with ─ to fill width
         while [[ ${#left_header} -lt $left_pane_width ]]; do
