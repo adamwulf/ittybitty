@@ -612,6 +612,109 @@ Add to `.ittybitty.json`:
 - `max_messages`: 50 (older messages trimmed)
 - `include_children_count`: true
 
+### Disabling the Status Node Feature
+
+The `status_node.enabled` setting allows users to completely disable the CLAUDE.md status node feature.
+
+#### 1. Configuration Location
+
+The setting lives in `.ittybitty.json` at the project root:
+
+```json
+{
+  "status_node": {
+    "enabled": false
+  }
+}
+```
+
+To disable, set `enabled` to `false`. All other `status_node` settings are ignored when disabled.
+
+#### 2. Effect on Watchdog Startup
+
+When `status_node.enabled` is `false`:
+
+- **`start_status_watchdog()` is a no-op**: The function checks the config first and returns immediately without spawning a watchdog process.
+- **`cmd_new_agent` skips watchdog start**: Even when spawning root agents, no status watchdog is started.
+- **No PID file created**: `.ittybitty/status-watchdog.pid` is never created.
+
+```bash
+start_status_watchdog() {
+    # Check if feature is disabled
+    if [[ "$(read_config_field 'status_node.enabled' 'true')" == "false" ]]; then
+        return 0  # Feature disabled, do nothing
+    fi
+
+    # ... rest of watchdog startup logic ...
+}
+```
+
+#### 3. Handling Existing Status Nodes When Disabled
+
+When the feature is disabled and an existing `<ittybitty-status>` node is present in CLAUDE.md:
+
+**Behavior**: The existing node is **removed** on first agent spawn or explicit cleanup.
+
+**Rationale**: Stale status data is worse than no data. If the feature is disabled, the status node would never be updated, leaving outdated/misleading information.
+
+**Implementation**:
+```bash
+cleanup_stale_status_node() {
+    # Called during agent spawn if feature is disabled
+    if [[ "$(read_config_field 'status_node.enabled' 'true')" == "false" ]]; then
+        if grep -q "<ittybitty-status>" "CLAUDE.md" 2>/dev/null; then
+            # Remove the status node entirely
+            remove_status_node_from_claude_md
+            echo "Removed stale <ittybitty-status> node (feature disabled)"
+        fi
+    fi
+}
+
+remove_status_node_from_claude_md() {
+    local claude_md="CLAUDE.md"
+    [[ -f "$claude_md" ]] || return
+
+    # Remove everything between <ittybitty-status> and </ittybitty-status> inclusive
+    awk '
+        /<ittybitty-status>/ { skip=1; next }
+        /<\/ittybitty-status>/ { skip=0; next }
+        !skip { print }
+    ' "$claude_md" > "$claude_md.tmp"
+    mv "$claude_md.tmp" "$claude_md"
+}
+```
+
+**When cleanup runs**:
+- During `cmd_new_agent` (if feature is disabled)
+- During `cmd_nuke` (always cleans up status node)
+- Optionally via new `ib status-node --clear` command
+
+#### 4. Default Value
+
+**Default**: `true` (enabled)
+
+**Rationale**: The feature provides significant value for users managing background agents. Enabling by default ensures users benefit from agent visibility without additional configuration. Users who find the CLAUDE.md modifications intrusive can explicitly disable.
+
+#### 5. Related Behaviors When Disabled
+
+| Component | Behavior When Disabled |
+|-----------|----------------------|
+| `ib send user-claude` | Still works - messages queue to `.ittybitty/user-messages.json` but are never displayed in CLAUDE.md |
+| `ib acknowledge` | Still works - removes messages from queue file |
+| Status watchdog | Never starts |
+| Existing status node | Removed on next agent spawn |
+| `.ittybitty/user-messages.json` | Still created/used (enables re-enabling without losing messages) |
+
+#### 6. Re-enabling the Feature
+
+When changing from `enabled: false` to `enabled: true`:
+
+1. Status watchdog starts on next root agent spawn
+2. Pending messages in `.ittybitty/user-messages.json` are included in the new status node
+3. New `<ittybitty-status>` node is created in CLAUDE.md
+
+No special migration needed - the feature resumes naturally.
+
 ## Edge Cases & Considerations
 
 ### File Locking
