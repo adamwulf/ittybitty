@@ -897,20 +897,37 @@ build_tree_lines() {
         return
     fi
 
-    # Helper to get agent info from tmpfile
+    # Load all lines into indexed array (bash 3.2 compatible)
+    local _all_lines=()
+    while IFS= read -r line; do
+        _all_lines+=("$line")
+    done < "$tmpfile"
+
+    # Helper to get agent info (linear search, no subprocess)
     _tree_get_agent_info() {
         local lookup_id="$1"
-        grep -m1 "^${lookup_id}|" "$tmpfile"
+        local line
+        for line in "${_all_lines[@]}"; do
+            if [[ "$line" == "${lookup_id}|"* ]]; then
+                echo "$line"
+                return
+            fi
+        done
     }
 
-    # Helper to get children of a manager (returns space-separated IDs)
+    # Helper to get children of a manager (linear search, no subprocess)
     _tree_get_children_for_print() {
         local manager_id="$1"
         local ids=""
-        local line
-        while IFS= read -r line; do
-            ids+="${line%%|*} "
-        done < <(grep "|${manager_id}|" "$tmpfile")
+        local line id rest manager
+        for line in "${_all_lines[@]}"; do
+            id="${line%%|*}"
+            rest="${line#*|}"
+            manager="${rest%%|*}"
+            if [[ "$manager" == "$manager_id" ]]; then
+                ids+="$id "
+            fi
+        done
         echo "${ids% }"
     }
 
@@ -3530,10 +3547,10 @@ EOF
         # Get the selected agent ID and its data from tmpfile
         local selected_id="${agent_ids[$SELECTED_INDEX]}"
         local selected_info
-        selected_info=$(grep "^${selected_id}|" "$tmpfile" | head -1)
-        local selected_state=$(echo "$selected_info" | cut -d'|' -f3)
-        local selected_model=$(echo "$selected_info" | cut -d'|' -f5)
-        local selected_prompt=$(echo "$selected_info" | cut -d'|' -f6-)
+        selected_info=$(grep -m1 "^${selected_id}|" "$tmpfile")
+        # Parse with bash instead of cut subprocesses
+        local _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt
+        IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
 
         # Get tree lines
         local t_tree_start=$(get_ms)
