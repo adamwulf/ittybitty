@@ -4100,25 +4100,24 @@ EOF
         local visible_tmux_lines=()
         local pane_line
 
-        # Process each visible line: strip ANSI codes, truncate to width
+        # Extract visible lines and truncate (ANSI already stripped by background process)
         local tmux_start_idx=$((tmux_total - pane_height - SCROLL_OFFSET))
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local tmux_idx=$((tmux_start_idx + pane_line))
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                _strip_ansi "${all_tmux_lines[$tmux_idx]}"
-                visible_tmux_lines+=("${_STRIP_ANSI_RESULT:0:$left_pane_width}")
+                visible_tmux_lines+=("${all_tmux_lines[$tmux_idx]:0:$left_pane_width}")
             else
                 visible_tmux_lines+=("")
             fi
         done
 
-        # Extract visible window of log lines (already wrapped, just slice)
+        # Extract visible window of log lines (truncate to current width in case of resize)
         local visible_log_lines=()
         local log_start_idx=$((log_total - pane_height - SCROLL_OFFSET))
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local log_idx=$((log_start_idx + pane_line))
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
-                visible_log_lines+=("${LOG_PARSED_LINES[$log_idx]}")
+                visible_log_lines+=("${LOG_PARSED_LINES[$log_idx]:0:$right_pane_width}")
             else
                 visible_log_lines+=("")
             fi
@@ -4222,7 +4221,9 @@ EOF
             for session in $sessions; do
                 if [[ "$session" == ittybitty-* ]]; then
                     local agent_id="${session#ittybitty-}"
-                    tmux capture-pane -t "$session" -p -S -500 > "$tmux_cache_dir/$agent_id.tmp" 2>/dev/null && \
+                    # Capture and strip ANSI codes in background (main loop just truncates)
+                    tmux capture-pane -t "$session" -p -S -500 2>/dev/null | \
+                        sed 's/\x1b\[[0-9;]*m//g' > "$tmux_cache_dir/$agent_id.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
                 fi
             done
