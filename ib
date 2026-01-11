@@ -3932,13 +3932,15 @@ Full-screen dashboard for monitoring all agents.
 
 Controls:
   j/k     Select next/previous agent
+  n/p     Cycle right pane mode (agent log / prompt / denials / tree)
   ;/l     Scroll panes down/up
   Ctrl-C  Exit
 
 The display shows:
   - Agent tree (top 5 lines, scrolls with selection)
   - Selected agent info (model, prompt)
-  - Split view: tmux output (left) and agent log (right)
+  - Split view: tmux output (left) and right pane (cycling modes)
+  - Right pane modes: agent log, initial prompt, denials, full tree view
 
 EOF
                 exit 0
