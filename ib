@@ -3965,9 +3965,11 @@ EOF
             TREE_SCROLL=$((SELECTED_INDEX - 4))
         fi
 
-        # Display 5 lines of tree with selection highlighting
+        # Display min(agent count, 5) lines of tree with selection highlighting
+        local tree_display_lines=$total_tree_lines
+        [[ $tree_display_lines -gt 5 ]] && tree_display_lines=5
         local display_line
-        for ((display_line=0; display_line<5; display_line++)); do
+        for ((display_line=0; display_line<tree_display_lines; display_line++)); do
             local tree_idx=$((TREE_SCROLL + display_line))
             if [[ $tree_idx -lt $total_tree_lines ]]; then
                 local line="${tree_lines[$tree_idx]}"
@@ -3992,7 +3994,8 @@ EOF
 
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
-        local pane_height=$((TERM_LINES - 8))
+        # Header rows: tree_display_lines + prompt(1) + pane_header(1) + footer(1) = tree_display_lines + 3
+        local pane_height=$((TERM_LINES - tree_display_lines - 3))
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -4120,7 +4123,7 @@ EOF
 
         # ===== PHASE 2: RENDER (no processing, just print) =====
 
-        local pane_start_row=8
+        local pane_start_row=$((tree_display_lines + 3))  # tree + prompt + pane_header
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local row=$((pane_start_row + pane_line))
             printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
