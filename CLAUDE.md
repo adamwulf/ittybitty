@@ -326,6 +326,40 @@ When agent spawns child agent (agent-to-agent):
 | `ib log "msg"`        | Write timestamped message to agent's log (auto-detects agent) |
 | `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
 
+### Spawn Options
+
+When creating agents with `ib new-agent`, you can customize behavior with these flags:
+
+| Flag | Description |
+| ---- | ----------- |
+| `--name <name>` | Custom agent name (default: auto-generated ID) |
+| `--manager <id>` | Track manager relationship for hierarchical coordination |
+| `--worker` | Create a worker agent that cannot spawn sub-agents |
+| `--yolo` | **Yolo mode**: Skip all permission prompts for full autonomy |
+| `--model <model>` | Use a specific model (opus, sonnet, haiku) |
+| `--no-worktree` | Work in repo root instead of isolated worktree |
+| `--allow-tools <list>` | Only allow these tools (comma-separated) |
+| `--deny-tools <list>` | Deny these tools (comma-separated) |
+| `--print` | One-shot mode: run and exit, no interaction |
+
+#### Yolo Mode (`--yolo`)
+
+Yolo mode enables full autonomous operation by passing `--dangerously-skip-permissions --permission-mode bypassPermissions` to Claude CLI. This mode:
+
+- **Skips all tool permission prompts** - agent can use any tool without approval
+- **Bypasses workspace trust dialogs** - no need for auto-acceptance
+- **Requires manual confirmation** - Claude CLI shows a one-time "Bypass Permissions" warning that must be accepted interactively
+- **Persists across resume** - yolo setting is stored in `start.sh` and preserved when resuming
+
+**Use with caution**: Only use yolo mode in sandboxed environments or when you fully trust the agent's task.
+
+**Example:**
+```bash
+ib new-agent --yolo "research latest React patterns and update our components"
+```
+
+**Note**: Even with `--yolo`, the agent will show a one-time warning screen asking to confirm bypass permissions mode. This is a safety feature built into Claude CLI and requires manual confirmation (select option 2: "Yes, I accept").
+
 ### Agent States
 
 | State      | Meaning                                                 |
