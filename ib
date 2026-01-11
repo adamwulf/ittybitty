@@ -1390,11 +1390,17 @@ build_tree_lines() {
         local _id _manager state age model prompt
         IFS='|' read -r _id _manager state age model prompt <<< "$_INFO"
 
+        # Truncate agent name to 30 chars if needed
+        local display_id="$id"
+        if [[ ${#id} -gt 30 ]]; then
+            display_id="${id:0:27}..."
+        fi
+
         # Print this node with aligned columns
         local connector child_prefix tree_part
         if [[ -z "$prefix" ]]; then
             # Root node - no prefix/connector
-            tree_part="$id"
+            tree_part="$display_id"
             child_prefix="."
         elif [[ "$prefix" == "." ]]; then
             # First level child
@@ -1404,7 +1410,7 @@ build_tree_lines() {
                 connector="└──"
                 child_prefix="    "
             fi
-            tree_part="$connector $id"
+            tree_part="$connector $display_id"
         else
             # Deeper level
             connector="├──"
@@ -1413,7 +1419,7 @@ build_tree_lines() {
                 connector="└──"
                 child_prefix="${prefix}    "
             fi
-            tree_part="$prefix$connector $id"
+            tree_part="$prefix$connector $display_id"
         fi
 
         # Format: tree_part | state | age | model | (orphan note) | prompt
@@ -2221,8 +2227,13 @@ EOF
         if [[ "$JSON_OUTPUT" == true ]]; then
             agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"manager\":\"$manager\",\"model\":\"$model\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
         else
+            # Truncate agent name to 30 chars if needed
+            local display_id="$id"
+            if [[ ${#id} -gt 30 ]]; then
+                display_id="${id:0:27}..."
+            fi
             # Store pipe-delimited for column alignment
-            agent_lines+=("${id}|${display_state}|${age}|${model}|${manager}|${prompt}")
+            agent_lines+=("${display_id}|${display_state}|${age}|${model}|${manager}|${prompt}")
         fi
     done
 
