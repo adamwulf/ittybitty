@@ -3904,6 +3904,28 @@ EOF
     local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT")
 
+    # Dialog state variables
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent
+    local DIALOG_WIDTH=50  # Fixed dialog width
+
+    # Send dialog state
+    local SEND_TEXT=""
+    local SEND_FOCUS=0   # 0=text, 1=Send button, 2=Cancel button
+
+    # Kill dialog state
+    local KILL_FOCUS=0   # 0=Cancel, 1=Kill
+
+    # Nuke dialog state
+    local NUKE_TEXT=""
+    local NUKE_FOCUS=0   # 0=text, 1=Cancel, 2=Confirm
+
+    # New agent dialog state
+    local NEW_AGENT_NAME=""
+    local NEW_AGENT_MODEL_INDEX=0  # 0=default, 1=opus, 2=sonnet, 3=haiku
+    local NEW_AGENT_MODELS=("default" "opus" "sonnet" "haiku")
+    local NEW_AGENT_PROMPT=""
+    local NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=prompt, 3=Create, 4=Cancel
+
     # Cleanup function for exit
     watch_cleanup() {
         stty echo    # Restore terminal echo
@@ -3923,6 +3945,294 @@ EOF
     get_ms() {
         perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000
     }
+
+    # ==========================================================================
+    # Dialog Helper Functions
+    # ==========================================================================
+
+    # Calculate starting column for centered dialog
+    # Sets: _DIALOG_START_COL
+    dialog_calc_position() {
+        _DIALOG_START_COL=$(( (TERM_COLS - DIALOG_WIDTH) / 2 ))
+        [[ $_DIALOG_START_COL -lt 1 ]] && _DIALOG_START_COL=1
+    }
+
+    # Draw a horizontal line with box-drawing characters
+    # Args: $1=row, $2=left_char, $3=fill_char, $4=right_char
+    dialog_draw_hline() {
+        local row="$1" left="$2" fill="$3" right="$4"
+        local inner_width=$((DIALOG_WIDTH - 2))
+        printf '\e[%d;%dH%s' "$row" "$_DIALOG_START_COL" "$left"
+        local i
+        for ((i=0; i<inner_width; i++)); do
+            printf '%s' "$fill"
+        done
+        printf '%s' "$right"
+    }
+
+    # Draw a content line with box borders
+    # Args: $1=row, $2=content (will be padded/truncated to fit)
+    dialog_draw_line() {
+        local row="$1" content="$2"
+        local inner_width=$((DIALOG_WIDTH - 4))  # 2 for borders, 2 for padding
+        printf '\e[%d;%dH│ %-*.*s │' "$row" "$_DIALOG_START_COL" "$inner_width" "$inner_width" "$content"
+    }
+
+    # Draw a button, optionally highlighted
+    # Args: $1=label, $2=highlighted (0/1), $3=disabled (0/1, optional)
+    # Returns: the button string
+    dialog_format_button() {
+        local label="$1" highlighted="$2" disabled="${3:-0}"
+        if [[ "$disabled" == "1" ]]; then
+            # Dim disabled button
+            printf '\e[2m[%s]\e[0m' "$label"
+        elif [[ "$highlighted" == "1" ]]; then
+            # Reverse video for highlighted
+            printf '\e[7m[%s]\e[0m' "$label"
+        else
+            printf '[%s]' "$label"
+        fi
+    }
+
+    # Draw a text input field
+    # Args: $1=value, $2=width, $3=focused (0/1)
+    # Returns: the input field string
+    dialog_format_input() {
+        local value="$1" width="$2" focused="${3:-0}"
+        local display_value="${value:0:$width}"
+        local padding=$((width - ${#display_value}))
+        if [[ "$focused" == "1" ]]; then
+            # Show cursor indicator when focused
+            printf '\e[7m%s%*s\e[0m' "$display_value" "$padding" ""
+        else
+            printf '[%s%*s]' "$display_value" "$((padding))" ""
+        fi
+    }
+
+    # Clear the dialog area (fill with spaces)
+    dialog_clear() {
+        local start_row="$1" height="$2"
+        local blank_line
+        printf -v blank_line '%*s' "$DIALOG_WIDTH" ''
+        local row
+        for ((row=start_row; row<start_row+height; row++)); do
+            printf '\e[%d;%dH%s' "$row" "$_DIALOG_START_COL" "$blank_line"
+        done
+    }
+
+    # ==========================================================================
+    # End Dialog Helper Functions
+    # ==========================================================================
+
+    # ==========================================================================
+    # Kill Dialog (DIALOG_MODE=2)
+    # ==========================================================================
+
+    watch_dialog_init_kill() {
+        KILL_FOCUS=0  # Default to Cancel
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1  # Force initial render
+    }
+
+    watch_dialog_render_kill() {
+        # Check if a pending escape should close the dialog (no sequence followed)
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty (reduces flicker)
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 7) / 2 ))  # 7 lines tall
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" 7
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "Kill agent '$_WATCH_SELECTED_ID'?"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Description
+        dialog_draw_line "$row" "This will terminate the agent and"
+        ((row++))
+        dialog_draw_line "$row" "discard all uncommitted work."
+        ((row++))
+
+        # Blank line with buttons
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $KILL_FOCUS -eq 0 ]] && echo 1 || echo 0)")
+        local kill_btn=$(dialog_format_button "Kill" "$([[ $KILL_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        # Simple centered button line (visual width: [Cancel] = 8, [Kill] = 6, gap = 4, total = 18)
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local btn_visual_width=18
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$kill_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - 28) / 2 ))" "Tab: switch   Enter: select"
+    }
+
+    watch_dialog_key_kill() {
+        local key="$1"
+        case "$key" in
+            $'\t')  # Tab
+                KILL_FOCUS=$(( (KILL_FOCUS + 1) % 2 ))
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x1e')  # Enter (record separator marker from key reader)
+                if [[ $KILL_FOCUS -eq 1 ]]; then
+                    # Kill confirmed - execute kill command
+                    DIALOG_MODE=0
+                    # Run kill in background and refresh
+                    cmd_kill --force "$_WATCH_SELECTED_ID" >/dev/null 2>&1 &
+                else
+                    # Cancel
+                    DIALOG_MODE=0
+                fi
+                ;;
+            $'\e')  # Escape - but need to check if it's a sequence
+                # Read any following characters (arrow keys send \e[A, \e[B, etc.)
+                # For now, just ignore escape sequences by setting a flag
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2  # Now expecting the direction char
+                else
+                    :  # Ignore standalone [
+                fi
+                ;;
+            'A'|'B'|'C'|'D')  # Arrow key direction (up/down/left/right)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    _DIALOG_ESC_PENDING=0  # Complete sequence, ignore it
+                else
+                    :  # Ignore standalone letter
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Was a real escape (no sequence followed)
+                    DIALOG_MODE=0
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Kill Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # Stub dialogs (to be implemented)
+    # ==========================================================================
+
+    watch_dialog_init_send() {
+        SEND_TEXT=""
+        SEND_FOCUS=0
+    }
+
+    watch_dialog_render_send() {
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 5) / 2 ))
+        dialog_clear "$start_row" 5
+        dialog_draw_hline "$start_row" "┌" "─" "┐"
+        dialog_draw_line "$((start_row + 1))" "Send dialog - TODO"
+        dialog_draw_line "$((start_row + 2))" "Press Escape to close"
+        dialog_draw_line "$((start_row + 3))" ""
+        dialog_draw_hline "$((start_row + 4))" "└" "─" "┘"
+    }
+
+    watch_dialog_key_send() {
+        case "$1" in
+            $'\e') DIALOG_MODE=0 ;;
+            *) ;;  # Ignore other keys
+        esac
+    }
+
+    watch_dialog_init_nuke() {
+        NUKE_TEXT=""
+        NUKE_FOCUS=0
+    }
+
+    watch_dialog_render_nuke() {
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 5) / 2 ))
+        dialog_clear "$start_row" 5
+        dialog_draw_hline "$start_row" "┌" "─" "┐"
+        dialog_draw_line "$((start_row + 1))" "Nuke dialog - TODO"
+        dialog_draw_line "$((start_row + 2))" "Press Escape to close"
+        dialog_draw_line "$((start_row + 3))" ""
+        dialog_draw_hline "$((start_row + 4))" "└" "─" "┘"
+    }
+
+    watch_dialog_key_nuke() {
+        case "$1" in
+            $'\e') DIALOG_MODE=0 ;;
+            *) ;;  # Ignore other keys
+        esac
+    }
+
+    watch_dialog_init_new_agent() {
+        NEW_AGENT_NAME=""
+        NEW_AGENT_MODEL_INDEX=0
+        NEW_AGENT_PROMPT=""
+        NEW_AGENT_FOCUS=0
+    }
+
+    watch_dialog_render_new_agent() {
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 5) / 2 ))
+        dialog_clear "$start_row" 5
+        dialog_draw_hline "$start_row" "┌" "─" "┐"
+        dialog_draw_line "$((start_row + 1))" "New Agent dialog - TODO"
+        dialog_draw_line "$((start_row + 2))" "Press Escape to close"
+        dialog_draw_line "$((start_row + 3))" ""
+        dialog_draw_hline "$((start_row + 4))" "└" "─" "┘"
+    }
+
+    watch_dialog_key_new_agent() {
+        case "$1" in
+            $'\e') DIALOG_MODE=0 ;;
+            *) ;;  # Ignore other keys
+        esac
+    }
+
+    # ==========================================================================
+    # End Stub Dialogs
+    # ==========================================================================
 
     # Render footer with help text, timing, and clock
     # Args: $1=footer_row, $2=frame_start_ms
@@ -4257,6 +4567,19 @@ EOF
     # Process a single key
     watch_process_key() {
         local key="$1"
+
+        # If a dialog is active, route to dialog-specific key handler
+        if [[ $DIALOG_MODE -ne 0 ]]; then
+            case $DIALOG_MODE in
+                1) watch_dialog_key_send "$key" ;;
+                2) watch_dialog_key_kill "$key" ;;
+                3) watch_dialog_key_nuke "$key" ;;
+                4) watch_dialog_key_new_agent "$key" ;;
+            esac
+            return
+        fi
+
+        # Normal mode key handling
         case "$key" in
             j)
                 # Move selection down
@@ -4291,6 +4614,30 @@ EOF
                 RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
+            s)
+                # Open Send dialog
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    watch_dialog_init_send
+                    DIALOG_MODE=1
+                fi
+                ;;
+            x)
+                # Open Kill dialog
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    watch_dialog_init_kill
+                    DIALOG_MODE=2
+                fi
+                ;;
+            !)
+                # Open Nuke dialog
+                watch_dialog_init_nuke
+                DIALOG_MODE=3
+                ;;
+            a)
+                # Open New Agent dialog
+                watch_dialog_init_new_agent
+                DIALOG_MODE=4
+                ;;
         esac
     }
 
@@ -4299,7 +4646,14 @@ EOF
     (
         exec < /dev/tty
         while true; do
-            IFS= read -rsn1 k && printf "%s" "$k" >> "$keyfile"
+            # Read one character; Enter produces empty $k but successful read
+            IFS= read -rsn1 k
+            if [[ -z "$k" ]]; then
+                # Empty means Enter was pressed - use record separator (0x1E) as marker
+                printf '\x1e' >> "$keyfile"
+            else
+                printf "%s" "$k" >> "$keyfile"
+            fi
         done
     ) &
     local reader_pid=$!
@@ -4375,8 +4729,19 @@ EOF
 
     # Main loop
     while true; do
-        # Render frame
-        watch_render
+        # Render frame (dialog or normal)
+        if [[ $DIALOG_MODE -ne 0 ]]; then
+            set +e  # Disable exit-on-error for dialog rendering
+            case $DIALOG_MODE in
+                1) watch_dialog_render_send ;;
+                2) watch_dialog_render_kill ;;
+                3) watch_dialog_render_nuke ;;
+                4) watch_dialog_render_new_agent ;;
+            esac
+            set -e
+        else
+            watch_render
+        fi
 
         # Small delay for input collection
         sleep 0.02
@@ -4389,10 +4754,12 @@ EOF
         fi
 
         # Process all accumulated keys
+        set +e  # Disable exit-on-error for key processing
         local i
         for ((i=0; i<${#keys_to_process}; i++)); do
             watch_process_key "${keys_to_process:$i:1}"
         done
+        set -e
     done
 }
 
