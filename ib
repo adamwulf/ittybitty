@@ -4168,6 +4168,7 @@ EOF
 
         # Extract visible window of right pane lines (truncate to current width in case of resize)
         local visible_right_lines=()
+        local right_start_idx=$((right_total - pane_height - SCROLL_OFFSET))
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local right_idx=$((right_start_idx + pane_line))
             if [[ $right_idx -ge 0 && $right_idx -lt $right_total ]]; then
