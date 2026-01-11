@@ -3886,6 +3886,14 @@ EOF
         TERM_LINES=$(tput lines)
         TERM_COLS=$(tput cols)
 
+        # Validate minimum terminal size
+        if [[ $TERM_LINES -lt 20 || $TERM_COLS -lt 80 ]]; then
+            tput cup 0 0
+            printf "Terminal too small (need 20x80, got %dx%d)\n" "$TERM_LINES" "$TERM_COLS"
+            printf "Please resize your terminal window.\n"
+            return
+        fi
+
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
