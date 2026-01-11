@@ -3901,6 +3901,8 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT")
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -3943,7 +3945,7 @@ EOF
         fi
 
         # Bottom help line with frame timing and clock
-        local help_text="${bg_status}j/k: select    ;/l: scroll    Ctrl-C: quit"
+        local help_text="${bg_status}j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
         local frame_end_ms=$(get_ms)
         local frame_ms=$((frame_end_ms - frame_start_ms))
@@ -4033,7 +4035,7 @@ EOF
 
         # Pane headers with connected box-drawing characters
         local left_header="── $selected_id "
-        local right_header="── AGENT LOG "
+        local right_header="── ${RIGHT_PANE_NAMES[$RIGHT_PANE_MODE]} "
         # Pad headers with ─ to fill width
         while [[ ${#left_header} -lt $left_pane_width ]]; do
             left_header="${left_header}─"
@@ -4080,51 +4082,72 @@ EOF
             done <<< "$tmux_output"
         fi
 
-        # Get agent log (pre-wrapped by background process, cached parse)
-        # Update width file for background process (only when changed to reduce I/O)
-        if [[ -n "$LOG_WIDTH_FILE" && "$right_pane_width" != "$LOG_WIDTH_PREV" ]]; then
-            echo "$right_pane_width" > "$LOG_WIDTH_FILE"
-            LOG_WIDTH_PREV="$right_pane_width"
-        fi
+        # Get right pane content based on mode
+        local right_pane_lines=()
 
-        # Only check file every 7 frames (or immediately on agent change)
-        local log_cache_file="$LOG_CACHE_DIR/$selected_id"
-        if [[ "$LOG_PARSED_AGENT" != "$selected_id" ]] || [[ $((STATE_FRAME_COUNT % 7)) -eq 0 ]]; then
-            if [[ -n "$LOG_CACHE_DIR" && -f "$log_cache_file" ]]; then
-                local log_content
-                log_content=$(<"$log_cache_file") 2>/dev/null || true
-                local content_len=${#log_content}
+        if [[ $RIGHT_PANE_MODE -eq 0 ]]; then
+            # Mode 0: Agent log (pre-wrapped by background process, cached parse)
+            # Update width file for background process (only when changed to reduce I/O)
+            if [[ -n "$LOG_WIDTH_FILE" && "$right_pane_width" != "$LOG_WIDTH_PREV" ]]; then
+                echo "$right_pane_width" > "$LOG_WIDTH_FILE"
+                LOG_WIDTH_PREV="$right_pane_width"
+            fi
 
-                # Reparse if agent changed or content length changed
-                if [[ "$LOG_PARSED_AGENT" != "$selected_id" || "$LOG_PARSED_LEN" != "$content_len" ]]; then
-                    LOG_PARSED_LINES=()
-                    if [[ -n "$log_content" ]]; then
-                        while IFS= read -r line; do
-                            LOG_PARSED_LINES+=("$line")
-                        done <<< "$log_content"
+            # Only check file every 7 frames (or immediately on agent change)
+            local log_cache_file="$LOG_CACHE_DIR/$selected_id"
+            if [[ "$LOG_PARSED_AGENT" != "$selected_id" ]] || [[ $((STATE_FRAME_COUNT % 7)) -eq 0 ]]; then
+                if [[ -n "$LOG_CACHE_DIR" && -f "$log_cache_file" ]]; then
+                    local log_content
+                    log_content=$(<"$log_cache_file") 2>/dev/null || true
+                    local content_len=${#log_content}
+
+                    # Reparse if agent changed or content length changed
+                    if [[ "$LOG_PARSED_AGENT" != "$selected_id" || "$LOG_PARSED_LEN" != "$content_len" ]]; then
+                        LOG_PARSED_LINES=()
+                        if [[ -n "$log_content" ]]; then
+                            while IFS= read -r line; do
+                                LOG_PARSED_LINES+=("$line")
+                            done <<< "$log_content"
+                        fi
+                        LOG_PARSED_AGENT="$selected_id"
+                        LOG_PARSED_LEN=$content_len
                     fi
+                elif [[ "$LOG_PARSED_AGENT" != "$selected_id" ]]; then
+                    # No cache file, clear if agent changed
+                    LOG_PARSED_LINES=()
                     LOG_PARSED_AGENT="$selected_id"
-                    LOG_PARSED_LEN=$content_len
+                    LOG_PARSED_LEN=0
                 fi
-            elif [[ "$LOG_PARSED_AGENT" != "$selected_id" ]]; then
-                # No cache file, clear if agent changed
-                LOG_PARSED_LINES=()
-                LOG_PARSED_AGENT="$selected_id"
-                LOG_PARSED_LEN=0
+            fi
+            right_pane_lines=("${LOG_PARSED_LINES[@]}")
+        else
+            # Mode 1: Initial prompt from prompt.txt
+            local prompt_file="$AGENTS_DIR/$selected_id/prompt.txt"
+            if [[ -f "$prompt_file" ]]; then
+                local prompt_content
+                prompt_content=$(<"$prompt_file") 2>/dev/null || true
+                if [[ -n "$prompt_content" ]]; then
+                    # Wrap prompt to right pane width using fold
+                    local wrapped
+                    wrapped=$(echo "$prompt_content" | fold -s -w "$right_pane_width")
+                    while IFS= read -r line; do
+                        right_pane_lines+=("$line")
+                    done <<< "$wrapped"
+                fi
             fi
         fi
 
         local tmux_total=${#all_tmux_lines[@]}
-        local log_total=${#LOG_PARSED_LINES[@]}
+        local right_total=${#right_pane_lines[@]}
 
         # Calculate and clamp scroll offset
         # Use max of the two so scrolling works if either pane has content
         local tmux_max_scroll=$((tmux_total - pane_height))
-        local log_max_scroll=$((log_total - pane_height))
+        local right_max_scroll=$((right_total - pane_height))
         [[ $tmux_max_scroll -lt 0 ]] && tmux_max_scroll=0
-        [[ $log_max_scroll -lt 0 ]] && log_max_scroll=0
+        [[ $right_max_scroll -lt 0 ]] && right_max_scroll=0
         local max_scroll=$tmux_max_scroll
-        [[ $log_max_scroll -gt $max_scroll ]] && max_scroll=$log_max_scroll
+        [[ $right_max_scroll -gt $max_scroll ]] && max_scroll=$right_max_scroll
         [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
         [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
 
@@ -4143,15 +4166,14 @@ EOF
             fi
         done
 
-        # Extract visible window of log lines (truncate to current width in case of resize)
-        local visible_log_lines=()
-        local log_start_idx=$((log_total - pane_height - SCROLL_OFFSET))
+        # Extract visible window of right pane lines (truncate to current width in case of resize)
+        local visible_right_lines=()
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            local log_idx=$((log_start_idx + pane_line))
-            if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
-                visible_log_lines+=("${LOG_PARSED_LINES[$log_idx]:0:$right_pane_width}")
+            local right_idx=$((right_start_idx + pane_line))
+            if [[ $right_idx -ge 0 && $right_idx -lt $right_total ]]; then
+                visible_right_lines+=("${right_pane_lines[$right_idx]:0:$right_pane_width}")
             else
-                visible_log_lines+=("")
+                visible_right_lines+=("")
             fi
         done
 
@@ -4164,7 +4186,7 @@ EOF
             printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
                 "$row" "${visible_tmux_lines[$pane_line]}" \
                 "$row" "$((left_pane_width + 1))" \
-                "${visible_log_lines[$pane_line]}"
+                "${visible_right_lines[$pane_line]}"
         done
 
         # Bottom separator line with connected box-drawing character
@@ -4257,6 +4279,16 @@ EOF
                 if [[ $SCROLL_OFFSET -lt 0 ]]; then
                     SCROLL_OFFSET=0
                 fi
+                ;;
+            n)
+                # Next right pane mode
+                RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE + 1) % ${#RIGHT_PANE_NAMES[@]} ))
+                SCROLL_OFFSET=0  # Reset scroll on pane change
+                ;;
+            p)
+                # Previous right pane mode
+                RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
+                SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
         esac
     }
