@@ -632,26 +632,24 @@ get_state() {
 
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
-    # - "esc to interrupt" appears when Claude is actively generating
-    # - "ctrl+c to interrupt" appears when Claude is actively generating (alternate form)
-    # - "ctrl+b ctrl+b" appears when a bash command is running
-    # - "⎿  Running…" appears when bash tool is executing
-    if echo "$recent" | grep -qE 'esc to interrupt|ctrl\+c to interrupt|ctrl\+b ctrl\+b|⎿  Running'; then
+    # Using bash pattern matching instead of grep to avoid subprocess spawning
+    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running ]]; then
         echo "running"
         return
     fi
 
     # Check for completion signal (agents say this when done)
     # Use last 15 lines to see past status bar but avoid matching instructions
-    local last_lines=$(echo "$recent" | tail -15)
-    if echo "$last_lines" | grep -qF 'I HAVE COMPLETED THE GOAL'; then
+    local last_lines
+    last_lines=$(echo "$recent" | tail -15)
+    if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
         echo "complete"
         return
     fi
 
     # Check for explicit waiting message (but not in instructions)
     # Look for WAITING as a standalone word, not as part of instruction text
-    if echo "$last_lines" | grep -qE '^\s*WAITING\s*$|⏺.*WAITING'; then
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n')|⏺.*WAITING ]]; then
         echo "waiting"
         return
     fi
@@ -882,13 +880,18 @@ build_tree_lines() {
     # Helper to get agent info from tmpfile
     _tree_get_agent_info() {
         local lookup_id="$1"
-        grep "^${lookup_id}|" "$tmpfile" | head -1
+        grep -m1 "^${lookup_id}|" "$tmpfile"
     }
 
-    # Helper to get children of a manager
+    # Helper to get children of a manager (returns space-separated IDs)
     _tree_get_children_for_print() {
         local manager_id="$1"
-        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+        local ids=""
+        local line
+        while IFS= read -r line; do
+            ids+="${line%%|*} "
+        done < <(grep "|${manager_id}|" "$tmpfile")
+        echo "${ids% }"
     }
 
     # Recursive function to print tree
@@ -897,12 +900,10 @@ build_tree_lines() {
         local prefix="$2"
         local is_last="$3"
 
-        # Get agent info
+        # Get agent info and parse with bash (avoid cut subprocesses)
         local info=$(_tree_get_agent_info "$id")
-        local state=$(echo "$info" | cut -d'|' -f3)
-        local age=$(echo "$info" | cut -d'|' -f4)
-        local model=$(echo "$info" | cut -d'|' -f5)
-        local prompt=$(echo "$info" | cut -d'|' -f6-)
+        local _id _manager state age model prompt
+        IFS='|' read -r _id _manager state age model prompt <<< "$info"
 
         # Print this node with aligned columns
         local connector child_prefix tree_part
