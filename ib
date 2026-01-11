@@ -777,6 +777,12 @@ META_CACHE_DATA=()
 TREE_ORDER_CACHE=()
 TREE_ORDER_KEY=""
 
+# Global cache for agent state (refreshed round-robin, one per frame)
+# STATE_CACHE_IDS[i] = agent_id, STATE_CACHE_DATA[i] = state
+STATE_CACHE_IDS=()
+STATE_CACHE_DATA=()
+STATE_FRAME_COUNT=0
+
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
     local lookup_id="$1"
@@ -955,20 +961,55 @@ build_agent_data_file() {
         local model="${rest%%|*}"
         local prompt="${rest#*|}"
 
-        # Get state only for visible indices
+        # Get state only for visible indices (round-robin refresh)
         local state="-"
         if [[ $idx -ge $visible_start && $idx -le $visible_end ]]; then
+            local visible_offset=$((idx - visible_start))
+
+            # Check state cache first (inline lookup)
+            local state_cache_idx=-1
+            local _sci
+            for ((_sci=0; _sci<${#STATE_CACHE_IDS[@]}; _sci++)); do
+                if [[ "${STATE_CACHE_IDS[$_sci]}" == "$id" ]]; then
+                    state_cache_idx=$_sci
+                    break
+                fi
+            done
+
             local tmux_session="ittybitty-${id}"
             if [[ "$active_sessions" == *"$tmux_session"* ]]; then
-                state=$(get_state "$id")
-                [[ "$state" == "unknown" ]] && state="waiting"
+                # Refresh one agent per frame (round-robin) or if not cached
+                if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
+                    state=$(get_state "$id")
+                    [[ "$state" == "unknown" ]] && state="waiting"
+                    # Update cache
+                    if [[ $state_cache_idx -ge 0 ]]; then
+                        STATE_CACHE_DATA[$state_cache_idx]="$state"
+                    else
+                        STATE_CACHE_IDS+=("$id")
+                        STATE_CACHE_DATA+=("$state")
+                    fi
+                else
+                    # Use cached state
+                    state="${STATE_CACHE_DATA[$state_cache_idx]}"
+                fi
             else
                 state="stopped"
+                # Update cache for stopped agents
+                if [[ $state_cache_idx -ge 0 ]]; then
+                    STATE_CACHE_DATA[$state_cache_idx]="$state"
+                else
+                    STATE_CACHE_IDS+=("$id")
+                    STATE_CACHE_DATA+=("$state")
+                fi
             fi
         fi
 
         echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
     done
+
+    # Increment frame counter for round-robin state refresh
+    ((STATE_FRAME_COUNT++))
 
     # Store result in global - callers read BUILD_AGENT_DATA_RESULT
     BUILD_AGENT_DATA_RESULT="$tmpfile"
