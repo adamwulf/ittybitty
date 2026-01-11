@@ -1092,7 +1092,15 @@ build_agent_data_file() {
             done
 
             local tmux_session="ittybitty-${id}"
-            if [[ "$active_sessions" == *"$tmux_session"* ]]; then
+            # For new agents (not in cache), check tmux directly instead of relying on cached sessions
+            local session_exists=false
+            if [[ $state_cache_idx -lt 0 ]]; then
+                # New agent - check tmux directly to avoid stale session list
+                tmux has-session -t "$tmux_session" 2>/dev/null && session_exists=true
+            elif [[ "$active_sessions" == *"$tmux_session"* ]]; then
+                session_exists=true
+            fi
+            if [[ "$session_exists" == "true" ]]; then
                 # Refresh one agent per frame (round-robin) or if not cached
                 if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
                     state=$(get_state "$id")
