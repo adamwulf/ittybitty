@@ -499,6 +499,10 @@ build_agent_settings() {
     # Git commands are safe in worktrees: agents can't switch branches or push
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
 
+    # Always deny plan mode tools (agents should work directly, not enter planning mode)
+    # Plan mode creates complexity and agents often get stuck trying to exit
+    local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
+
     # Build the PermissionRequest hook command
     # The hook receives JSON via stdin with tool_name, tool_input, etc.
     # Format: "Permission denied: ToolName (key1: val1..., key2: val2...)"
@@ -506,11 +510,12 @@ build_agent_settings() {
 
     # Merge everything together and add hooks
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
+        --argjson blocked "$blocked_tools" \
         --argjson cfg_allow "$allow_json" \
         --argjson cfg_deny "$deny_json" \
         --arg perm_hook "$hook_cmd" '
         .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
-        .permissions.deny = ((.permissions.deny // []) + $cfg_deny | unique) |
+        .permissions.deny = ((.permissions.deny // []) + $blocked + $cfg_deny | unique) |
         .hooks.Stop = [{
             "hooks": [{
                 "type": "command",
