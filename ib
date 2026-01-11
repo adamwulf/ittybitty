@@ -859,7 +859,7 @@ build_agent_data_file() {
     local tmpfile=$(mktemp)
 
     # Timing instrumentation (uses global BUILD_AGENT_TIMING if set)
-    local _t0 _t1 _t2 _t3 _t4 _s1 _s2
+    local _t0 _t1 _t2 _t3 _t4
     [[ -n "$BUILD_AGENT_TIMING" ]] && _t0=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     if [[ ! -d "$AGENTS_DIR" ]]; then
@@ -867,16 +867,12 @@ build_agent_data_file() {
         return
     fi
 
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _s1=$(gdate +%s%3N 2>/dev/null || date +%s000)
-
     # Cache epoch time, refresh every 5 frames
     local now
     if [[ $((STATE_FRAME_COUNT % 5)) -eq 0 || $CACHED_NOW -eq 0 ]]; then
         CACHED_NOW=$(date +%s)
     fi
     now=$CACHED_NOW
-
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _s2=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     # Get active tmux sessions (from background monitor file, or fallback to direct call)
     local active_sessions
@@ -1086,7 +1082,7 @@ build_agent_data_file() {
     # Store timing breakdown if enabled
     if [[ -n "$BUILD_AGENT_TIMING" ]]; then
         _t4=$(gdate +%s%3N 2>/dev/null || date +%s000)
-        BUILD_AGENT_TIMING_RESULT="s[$((_s1-_t0)),$((_s2-_s1)),$((_t1-_s2))]:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
+        BUILD_AGENT_TIMING_RESULT="s:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
     fi
 }
 
@@ -1169,10 +1165,12 @@ get_agent_ids_tree_order() {
 
 # Build tree lines with formatting (pipe-delimited for column alignment)
 # Args: $1 = tmpfile from build_agent_data_file
-# Outputs: formatted tree lines, one per line
-# Caller should pipe through: column -t -s '|'
+# Result: sets _BUILD_TREE_LINES array with raw pipe-delimited lines
+# Use format_tree_lines to convert to formatted output
+_BUILD_TREE_LINES=()
 build_tree_lines() {
     local tmpfile="$1"
+    _BUILD_TREE_LINES=()
 
     if [[ ! -s "$tmpfile" ]]; then
         return
@@ -1180,36 +1178,55 @@ build_tree_lines() {
 
     # Load all lines into indexed array (bash 3.2 compatible)
     local _all_lines=()
+    local _all_ids=()
     while IFS= read -r line; do
         _all_lines+=("$line")
+        _all_ids+=("${line%%|*}")
     done < "$tmpfile"
 
-    # Helper to get agent info (linear search, no subprocess)
+    # Function-local "return" variables (avoids script globals)
+    local _INFO=""
+    local _CHILDREN=""
+
+    # Helper to get agent info - sets _INFO (no subprocess)
     _tree_get_agent_info() {
+        _INFO=""
         local lookup_id="$1"
         local line
         for line in "${_all_lines[@]}"; do
             if [[ "$line" == "${lookup_id}|"* ]]; then
-                echo "$line"
+                _INFO="$line"
                 return
             fi
         done
     }
 
-    # Helper to get children of a manager (linear search, no subprocess)
+    # Helper to get children of a manager - sets _CHILDREN (no subprocess)
     _tree_get_children_for_print() {
+        _CHILDREN=""
         local manager_id="$1"
-        local ids=""
         local line id rest manager
         for line in "${_all_lines[@]}"; do
             id="${line%%|*}"
             rest="${line#*|}"
             manager="${rest%%|*}"
             if [[ "$manager" == "$manager_id" ]]; then
-                ids+="$id "
+                _CHILDREN+="$id "
             fi
         done
-        echo "${ids% }"
+        _CHILDREN="${_CHILDREN% }"
+    }
+
+    # Helper to check if ID exists - returns 0 if found (no subprocess)
+    _tree_id_exists() {
+        local lookup_id="$1"
+        local id
+        for id in "${_all_ids[@]}"; do
+            if [[ "$id" == "$lookup_id" ]]; then
+                return 0
+            fi
+        done
+        return 1
     }
 
     # Recursive function to print tree
@@ -1218,10 +1235,10 @@ build_tree_lines() {
         local prefix="$2"
         local is_last="$3"
 
-        # Get agent info and parse with bash (avoid cut subprocesses)
-        local info=$(_tree_get_agent_info "$id")
+        # Get agent info and parse with bash
+        _tree_get_agent_info "$id"
         local _id _manager state age model prompt
-        IFS='|' read -r _id _manager state age model prompt <<< "$info"
+        IFS='|' read -r _id _manager state age model prompt <<< "$_INFO"
 
         # Print this node with aligned columns
         local connector child_prefix tree_part
@@ -1250,12 +1267,12 @@ build_tree_lines() {
         fi
 
         # Format: tree_part | state | age | model | (orphan note) | prompt
-        echo "${tree_part}|${state}|${age}|${model}||${prompt}"
+        _BUILD_TREE_LINES+=("${tree_part}|${state}|${age}|${model}||${prompt}")
 
         # Print children
-        local children=$(_tree_get_children_for_print "$id")
-        if [[ -n "$children" ]]; then
-            local child_array=($children)
+        _tree_get_children_for_print "$id"
+        if [[ -n "$_CHILDREN" ]]; then
+            local child_array=($_CHILDREN)
             local child_count=${#child_array[@]}
             local i=0
             for child in "${child_array[@]}"; do
@@ -1269,19 +1286,20 @@ build_tree_lines() {
         fi
     }
 
-    # Find roots
-    local all_ids=$(cut -d'|' -f1 "$tmpfile")
+    # Find roots (agents with no parent or orphaned parent)
     local roots=""
-    while IFS='|' read -r id parent _rest; do
+    local id parent _rest
+    for line in "${_all_lines[@]}"; do
+        id="${line%%|*}"
+        _rest="${line#*|}"
+        parent="${_rest%%|*}"
         if [[ -z "$parent" ]]; then
-            roots="$roots $id"
-        else
-            if ! echo "$all_ids" | grep -q "^${parent}$"; then
-                roots="$roots $id"
-            fi
+            roots+="$id "
+        elif ! _tree_id_exists "$parent"; then
+            roots+="$id "
         fi
-    done < "$tmpfile"
-    roots="${roots# }"
+    done
+    roots="${roots% }"
 
     # Print each root and its tree
     local root_array=($roots)
@@ -1294,10 +1312,44 @@ build_tree_lines() {
             is_last="true"
         fi
         _tree_print_node "$root" "" "$is_last"
-        # Add blank line between trees if multiple roots
-        if [[ $i -lt $root_count ]]; then
-            echo ""
-        fi
+    done
+}
+
+# Format tree lines with column alignment (pure bash, no subprocess)
+# Uses _BUILD_TREE_LINES set by build_tree_lines
+# Result: sets _FORMATTED_TREE_LINES array with aligned output
+_FORMATTED_TREE_LINES=()
+format_tree_lines() {
+    _FORMATTED_TREE_LINES=()
+
+    [[ ${#_BUILD_TREE_LINES[@]} -eq 0 ]] && return
+
+    # Find max width of tree column (first column)
+    local max_tree_width=0
+    local line tree_part
+    for line in "${_BUILD_TREE_LINES[@]}"; do
+        tree_part="${line%%|*}"
+        [[ ${#tree_part} -gt $max_tree_width ]] && max_tree_width=${#tree_part}
+    done
+
+    # Format each line with aligned columns
+    local state age model _empty prompt rest
+    for line in "${_BUILD_TREE_LINES[@]}"; do
+        tree_part="${line%%|*}"
+        rest="${line#*|}"
+        state="${rest%%|*}"
+        rest="${rest#*|}"
+        age="${rest%%|*}"
+        rest="${rest#*|}"
+        model="${rest%%|*}"
+        rest="${rest#*|}"
+        _empty="${rest%%|*}"
+        prompt="${rest#*|}"
+
+        # Format: tree (dynamic) | state (8) | age (5) | model (10) | prompt
+        printf -v formatted "%-${max_tree_width}s  %-8s  %-5s  %-10s  %s" \
+            "$tree_part" "$state" "$age" "$model" "$prompt"
+        _FORMATTED_TREE_LINES+=("$formatted")
     done
 }
 
@@ -3720,8 +3772,13 @@ EOF
         exit 0
     fi
 
-    # Build and display tree using shared helper
-    build_tree_lines "$tmpfile" | column -t -s '|'
+    # Build and display tree using shared helper (no subprocess)
+    build_tree_lines "$tmpfile"
+    format_tree_lines
+    local line
+    for line in "${_FORMATTED_TREE_LINES[@]}"; do
+        echo "$line"
+    done
 }
 
 # =============================================================================
@@ -3843,12 +3900,11 @@ EOF
         local _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt
         IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
 
-        # Get tree lines
+        # Get tree lines (no subprocess - uses global arrays)
         local t_tree_start=$(get_ms)
-        local tree_lines=()
-        while IFS= read -r line; do
-            tree_lines+=("$line")
-        done < <(build_tree_lines "$tmpfile" | column -t -s '|')
+        build_tree_lines "$tmpfile"
+        format_tree_lines
+        local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
         local total_tree_lines=${#tree_lines[@]}
         local t_tree=$(get_ms)
 
