@@ -783,6 +783,13 @@ STATE_CACHE_IDS=()
 STATE_CACHE_DATA=()
 STATE_FRAME_COUNT=0
 
+# Cached epoch time (refreshed every 5 frames)
+CACHED_NOW=0
+
+# Cached tmux sessions (refreshed every 3 frames, or read from SESSIONS_FILE if available)
+CACHED_SESSIONS=""
+SESSIONS_FILE=""  # Set by watch to enable async session monitoring
+
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
     local lookup_id="$1"
@@ -812,7 +819,7 @@ build_agent_data_file() {
     local tmpfile=$(mktemp)
 
     # Timing instrumentation (uses global BUILD_AGENT_TIMING if set)
-    local _t0 _t1 _t2 _t3 _t4
+    local _t0 _t1 _t2 _t3 _t4 _s1 _s2
     [[ -n "$BUILD_AGENT_TIMING" ]] && _t0=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     if [[ ! -d "$AGENTS_DIR" ]]; then
@@ -820,9 +827,31 @@ build_agent_data_file() {
         return
     fi
 
-    local now=$(date +%s)
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _s1=$(gdate +%s%3N 2>/dev/null || date +%s000)
+
+    # Cache epoch time, refresh every 5 frames
+    local now
+    if [[ $((STATE_FRAME_COUNT % 5)) -eq 0 || $CACHED_NOW -eq 0 ]]; then
+        CACHED_NOW=$(date +%s)
+    fi
+    now=$CACHED_NOW
+
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _s2=$(gdate +%s%3N 2>/dev/null || date +%s000)
+
+    # Get active tmux sessions (from background monitor file, or fallback to direct call)
     local active_sessions
-    active_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' '|')
+    if [[ -n "$SESSIONS_FILE" && -f "$SESSIONS_FILE" ]]; then
+        # Read from async background monitor (bash read, no subprocess)
+        read -r active_sessions < "$SESSIONS_FILE" 2>/dev/null || true
+    elif [[ $((STATE_FRAME_COUNT % 3)) -eq 0 || -z "$CACHED_SESSIONS" ]]; then
+        # Fallback: call tmux directly, cache every 3 frames
+        local tmux_output
+        tmux_output=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || true
+        CACHED_SESSIONS="${tmux_output//$'\n'/|}"
+        active_sessions="$CACHED_SESSIONS"
+    else
+        active_sessions="$CACHED_SESSIONS"
+    fi
 
     [[ -n "$BUILD_AGENT_TIMING" ]] && _t1=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
@@ -1017,7 +1046,7 @@ build_agent_data_file() {
     # Store timing breakdown if enabled
     if [[ -n "$BUILD_AGENT_TIMING" ]]; then
         _t4=$(gdate +%s%3N 2>/dev/null || date +%s000)
-        BUILD_AGENT_TIMING_RESULT="setup:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
+        BUILD_AGENT_TIMING_RESULT="s[$((_s1-_t0)),$((_s2-_s1)),$((_t1-_s2))]:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
     fi
 }
 
@@ -4000,10 +4029,23 @@ EOF
     ) &
     local reader_pid=$!
 
-    # Cleanup reader on exit
+    # Start background session monitor (refreshes tmux session list async)
+    local sessionfile=$(mktemp)
+    SESSIONS_FILE="$sessionfile"  # Global for build_agent_data_file to read
+    (
+        while true; do
+            tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' '|' > "$sessionfile"
+            sleep 0.2
+        done
+    ) &
+    local session_monitor_pid=$!
+
+    # Cleanup reader and session monitor on exit
     watch_cleanup_reader() {
         kill $reader_pid 2>/dev/null
-        rm -f "$keyfile"
+        kill $session_monitor_pid 2>/dev/null
+        rm -f "$keyfile" "$sessionfile"
+        SESSIONS_FILE=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
