@@ -881,6 +881,7 @@ TMUX_CACHE_DIR=""  # Set by watch for async tmux pane capture
 LOG_CACHE_DIR=""      # Directory with pre-wrapped log files
 LOG_WIDTH_FILE=""     # File containing wrap width for background process
 LOG_WIDTH_PREV=0      # Previous width (only write file when changed)
+HEARTBEAT_FILE=""     # Background process heartbeat for health monitoring
 
 # Parsed log cache (avoid re-parsing file into array every frame)
 LOG_PARSED_AGENT=""   # Which agent's log is cached
@@ -4150,8 +4151,19 @@ EOF
         # Move cursor to line after panes
         printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
+        # Check background process health (heartbeat should be < 2 seconds old)
+        local bg_status=""
+        if [[ -n "$HEARTBEAT_FILE" && -f "$HEARTBEAT_FILE" ]]; then
+            local hb_time now_time
+            read -r hb_time < "$HEARTBEAT_FILE" 2>/dev/null || hb_time=0
+            now_time=$(date +%s)
+            if [[ $((now_time - hb_time)) -gt 2 ]]; then
+                bg_status="[BG STALE] "
+            fi
+        fi
+
         # Bottom help line with frame timing and clock
-        local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
+        local help_text="${bg_status}j/k: select    ;/l: scroll    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
         local t_frame_end=$(get_ms)
         local frame_ms=$((t_frame_end - t_frame_start))
@@ -4209,14 +4221,19 @@ EOF
     local tmux_cache_dir=$(mktemp -d)
     local log_cache_dir=$(mktemp -d)
     local log_width_file=$(mktemp)
+    local heartbeat_file=$(mktemp)
     echo "80" > "$log_width_file"  # Default width
     SESSIONS_FILE="$sessionfile"  # Global for build_agent_data_file to read
     TMUX_CACHE_DIR="$tmux_cache_dir"  # Global for reading cached tmux output
     LOG_CACHE_DIR="$log_cache_dir"  # Global for reading cached wrapped logs
     LOG_WIDTH_FILE="$log_width_file"  # Global for main loop to update wrap width
+    HEARTBEAT_FILE="$heartbeat_file"  # Global for health monitoring
     (
         local agents_dir="$PWD/.ittybitty/agents"
+        local hb_file="$heartbeat_file"
         while true; do
+            # Update heartbeat timestamp
+            date +%s > "$hb_file"
             # Get session list
             local sessions
             sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || true
@@ -4257,12 +4274,13 @@ EOF
     watch_cleanup_reader() {
         kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
-        rm -f "$keyfile" "$sessionfile" "$log_width_file"
+        rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file"
         rm -rf "$tmux_cache_dir" "$log_cache_dir"
         SESSIONS_FILE=""
         TMUX_CACHE_DIR=""
         LOG_CACHE_DIR=""
         LOG_WIDTH_FILE=""
+        HEARTBEAT_FILE=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
