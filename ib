@@ -4698,19 +4698,68 @@ EOF
         trap "rm -f '$tmpfile'" RETURN
 
         if [[ ! -s "$tmpfile" ]]; then
-            # No agents - show message
+            # No agents - show proper screen with message
             AGENT_COUNT=0
-            echo "No agents running."
-            echo ""
-            echo "Waiting for agents... (Ctrl-C to exit)"
+            _WATCH_SELECTED_ID=""
 
-            # Clear rest of screen
+            # Only redraw when dirty (reduces flicker)
+            if [[ "${_NO_AGENTS_DIRTY:-1}" != "1" ]]; then
+                # Just update footer for timing
+                local pane_height=$((TERM_LINES - 5 - 3))
+                local footer_row=$((5 + 1 + pane_height + 1))
+                watch_render_footer "$footer_row" "$t_frame_start"
+                return
+            fi
+            _NO_AGENTS_DIRTY=0
+
+            # Set terminal title
+            printf '\e]0;ib watch: no agents\a'
+
+            # Tree area: show "No agents running" message (5 lines reserved for tree)
+            printf '\e[1;1H'
+            printf '\e[2m%-*s\e[0m\n' "$TERM_COLS" "No agents running. Press 'a' to create one."
             local line
-            for ((line=3; line<TERM_LINES; line++)); do
-                printf "%-${TERM_COLS}s\n" ""
+            for ((line=2; line<=5; line++)); do
+                printf '%-*s\n' "$TERM_COLS" ""
             done
+
+            # Calculate pane dimensions
+            local pane_height=$((TERM_LINES - 5 - 3))  # tree lines + header + separator + footer
+            local left_pane_width=$TMUX_WIDTH
+            local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
+
+            # Pane header with ─ padding (matching normal render)
+            local left_header="── (no agent) "
+            local right_header="── AGENT LOG "
+            while [[ ${#left_header} -lt $left_pane_width ]]; do
+                left_header="${left_header}─"
+            done
+            while [[ ${#right_header} -lt $right_pane_width ]]; do
+                right_header="${right_header}─"
+            done
+            printf '%s─┬─%s\n' "$left_header" "$right_header"
+
+            # Blank panes
+            local pane_line
+            for ((pane_line=0; pane_line<pane_height; pane_line++)); do
+                printf '%-*s │ %-*s\n' "$left_pane_width" "" "$right_pane_width" ""
+            done
+
+            # Bottom separator with ─ characters
+            local left_sep="" right_sep=""
+            local i
+            for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
+            for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
+            printf '%s─┴─%s' "$left_sep" "$right_sep"
+
+            # Footer
+            local footer_row=$((5 + 1 + pane_height + 1))
+            watch_render_footer "$footer_row" "$t_frame_start"
+
             return  # tmpfile cleanup handled by RETURN trap
         fi
+        # Agents exist - clear the no-agents dirty flag for next time
+        _NO_AGENTS_DIRTY=1
 
         # Render tree and get selected agent
         watch_render_tree "$tmpfile"
