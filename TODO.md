@@ -7,6 +7,13 @@
 - [ ] Tree view has incorrect alignment when managers have workers
   - Indentation or spacing is off in hierarchical display
 
+## Features & Enhancements
+
+- [ ] Add tree mode with pane cycling
+  - Full-height bot tree pane that takes up entire tree+pane section
+  - Cycle through panes without showing left/right panes
+  - Tree view would be visible at all times during cycling
+
 ## Security & Permissions
 
 - [ ] Prevent non-yolo agents from spawning agents in yolo mode
