@@ -760,8 +760,8 @@ wait_for_claude_start() {
         # Capture ALL history from tmux and check the top 50 lines
         local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
 
-        # Check for Claude logo - indicates Claude launched (no permissions needed)
-        if echo "$top_output" | grep -q "Claude Code v"; then
+        # Check for Claude logo OR [USER TASK] (prompt may scroll logo off screen)
+        if echo "$top_output" | grep -q "Claude Code v" || echo "$top_output" | grep -q "\[USER TASK\]"; then
             CLAUDE_STARTED_WITH="logo"
             return 0
         fi
@@ -788,10 +788,10 @@ wait_for_claude_logo() {
         sleep 0.5
         waited=$((waited + 1))
 
-        # Capture ALL history and check the top for logo
+        # Capture ALL history and check the top for logo OR [USER TASK]
         local top_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null | head -50)
 
-        if echo "$top_output" | grep -q "Claude Code v"; then
+        if echo "$top_output" | grep -q "Claude Code v" || echo "$top_output" | grep -q "\[USER TASK\]"; then
             return 0
         fi
     done
@@ -4416,16 +4416,20 @@ EOF
             bg_status="bg:${hb_age}s  "
         fi
 
-        # Bottom help line with frame timing and clock
+        # Row 1: Navigation keys
         local help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
+        printf "%-*s\n" "$TERM_COLS" "$help_text"
+
+        # Row 2: Action keys + timing
+        local action_text="s: send    x: kill    !: nuke    a: new agent"
         local frame_end_ms=$(get_ms)
         local frame_ms=$((frame_end_ms - frame_start_ms))
         local current_time
         current_time=$(date +%H:%M:%S)
         printf -v right_info "%sframe:%3dms  %s" "$bg_status" "$frame_ms" "$current_time"
-        local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
-        printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
+        local padding=$((TERM_COLS - ${#action_text} - ${#right_info}))
+        printf "%s%*s%s" "$action_text" "$padding" "" "$right_info"
     }
 
     # Render tree with selection highlighting
@@ -4501,7 +4505,7 @@ EOF
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
         # Rows: tree + pane_header(1) + pane_separator(1) + footer(1) = tree + 3
-        local pane_height=$((TERM_LINES - tree_display_lines - 3))
+        local pane_height=$((TERM_LINES - tree_display_lines - 4))  # header + separator + 2 footer lines
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -4705,7 +4709,7 @@ EOF
             # Only redraw when dirty (reduces flicker)
             if [[ "${_NO_AGENTS_DIRTY:-1}" != "1" ]]; then
                 # Just update footer for timing
-                local pane_height=$((TERM_LINES - 5 - 3))
+                local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer
                 local footer_row=$((5 + 1 + pane_height + 1))
                 watch_render_footer "$footer_row" "$t_frame_start"
                 return
@@ -4724,7 +4728,7 @@ EOF
             done
 
             # Calculate pane dimensions
-            local pane_height=$((TERM_LINES - 5 - 3))  # tree lines + header + separator + footer
+            local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer  # tree lines + header + separator + footer
             local left_pane_width=$TMUX_WIDTH
             local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
 
