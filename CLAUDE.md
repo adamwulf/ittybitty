@@ -61,6 +61,24 @@ Each spawned agent automatically gets Claude Code hooks configured in their `set
 |------|---------|
 | `Stop` | Calls `ib hook-status <id>` when agent stops to update state tracking |
 | `PermissionRequest` | Logs denied tool requests to agent.log and auto-denies them |
+| `PreToolUse` | Enforces path isolation - blocks access outside agent's worktree |
+
+### PreToolUse Hook (Path Isolation)
+
+The `PreToolUse` hook runs before Read, Write, and Edit tools execute. It enforces that agents can only access files within their own worktree:
+
+**Allowed paths:**
+- Agent's worktree: `.ittybitty/agents/<id>/repo/*`
+- Agent's log: `.ittybitty/agents/<id>/agent.log`
+
+**Blocked paths:**
+- Other agents' directories: `.ittybitty/agents/<other-id>/*`
+- Main repository files (outside the worktree)
+
+When a path is blocked, the hook:
+1. Logs the attempt to `agent.log`
+2. Returns exit code 2 to block the tool
+3. Claude receives an error message explaining the restriction
 
 ### PermissionRequest Hook
 
