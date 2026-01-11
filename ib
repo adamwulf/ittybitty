@@ -3957,12 +3957,8 @@ EOF
             SELECTED_INDEX=0
         fi
 
-        # Get the selected agent ID and its data (line N = tree index N)
+        # Get the selected agent ID
         local selected_id="${agent_ids[$SELECTED_INDEX]}"
-        local selected_info="${all_lines[$SELECTED_INDEX]}"
-        # Parse with bash instead of cut subprocesses
-        local _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt
-        IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
 
         # Set terminal title to selected agent name
         printf '\e]0;ib watch: %s\a' "$selected_id"
