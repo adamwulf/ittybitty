@@ -3921,6 +3921,8 @@ EOF
         # Called directly (not in subshell) to preserve meta.json cache
         build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
         local tmpfile="$BUILD_AGENT_DATA_RESULT"
+        # Ensure tmpfile cleanup on any exit path
+        trap "rm -f '$tmpfile'" RETURN
 
         if [[ ! -s "$tmpfile" ]]; then
             # No agents - show message
@@ -3934,9 +3936,7 @@ EOF
             for ((line=3; line<TERM_LINES; line++)); do
                 printf "%-${TERM_COLS}s\n" ""
             done
-
-            rm -f "$tmpfile"
-            return
+            return  # tmpfile cleanup handled by RETURN trap
         fi
 
         # Read agent IDs directly from tmpfile (already in tree order!)
@@ -4172,8 +4172,7 @@ EOF
         printf -v right_info "frame:%3dms  %s" "$frame_ms" "$current_time"
         local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
-
-        rm -f "$tmpfile"
+        # tmpfile cleanup handled by RETURN trap
     }
 
     # Process a single key
