@@ -1022,9 +1022,20 @@ build_agent_data_file() {
 
 
     # === Compute tree order (with caching) ===
-    # Build cache key from agent IDs (detects any add/remove, not just count)
-    # Using joined string - filesystem glob order is consistent within a session
-    local id_key="${all_ids[*]}"
+    # Build cache key from agent IDs using count + hash sum (order-independent)
+    # This avoids false cache misses from filesystem glob order changes
+    local id_hash=0
+    local _id
+    for _id in "${all_ids[@]}"; do
+        # Simple hash: sum of first 4 char ASCII values
+        local _c1 _c2 _c3 _c4
+        printf -v _c1 '%d' "'${_id:0:1}" 2>/dev/null || _c1=0
+        printf -v _c2 '%d' "'${_id:1:1}" 2>/dev/null || _c2=0
+        printf -v _c3 '%d' "'${_id:2:1}" 2>/dev/null || _c3=0
+        printf -v _c4 '%d' "'${_id:3:1}" 2>/dev/null || _c4=0
+        ((id_hash += _c1 + _c2 + _c3 + _c4))
+    done
+    local id_key="${#all_ids[@]}:$id_hash"
 
     local tree_ids=()
     if [[ "$id_key" == "$TREE_ORDER_KEY" && ${#TREE_ORDER_CACHE[@]} -gt 0 ]]; then
