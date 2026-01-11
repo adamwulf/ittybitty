@@ -3702,43 +3702,39 @@ EOF
         esac
     }
 
-    # Collect all user input during a duration
-    # Usage: keys=$(get_user_input_during_duration <seconds> <keyfile>)
-    # Uses a background reader + sleep for bash 3.x compatibility
-    get_user_input_during_duration() {
-        local duration="$1"
-        local keyfile="$2"
+    # Start persistent background key reader
+    local keyfile=$(mktemp)
+    (
+        exec < /dev/tty
+        while true; do
+            IFS= read -rsn1 k && printf "%s" "$k" >> "$keyfile"
+        done
+    ) &
+    local reader_pid=$!
 
-        # Clear key file
-        : > "$keyfile"
-
-        # Start background key reader
-        (
-            while IFS= read -rsn1 k; do
-                printf "%s" "$k" >> "$keyfile"
-            done
-        ) &
-        local reader_pid=$!
-
-        # Wait for specified duration
-        sleep "$duration"
-
-        # Kill reader
+    # Cleanup reader on exit
+    watch_cleanup_reader() {
         kill $reader_pid 2>/dev/null
-        wait $reader_pid 2>/dev/null
-
-        # Output collected keys
-        cat "$keyfile" 2>/dev/null
+        rm -f "$keyfile"
     }
+    trap 'watch_cleanup_reader; watch_cleanup' EXIT
 
     # Main loop
     local LAST_QUEUE_SIZE=0
-    local keyfile=$(mktemp)
 
     while true; do
-        # Collect input for 0.1 seconds
-        local keys_to_process
-        keys_to_process=$(get_user_input_during_duration 0.1 "$keyfile")
+        # Render frame
+        watch_render
+
+        # Small delay for input collection
+        sleep 0.02
+
+        # Collect and clear accumulated keys
+        local keys_to_process=""
+        if [[ -s "$keyfile" ]]; then
+            keys_to_process=$(cat "$keyfile")
+            : > "$keyfile"  # Clear for next frame
+        fi
         LAST_QUEUE_SIZE=${#keys_to_process}
 
         # Process all accumulated keys
@@ -3746,12 +3742,7 @@ EOF
         for ((i=0; i<${#keys_to_process}; i++)); do
             watch_process_key "${keys_to_process:$i:1}"
         done
-
-        # Render frame
-        watch_render
     done
-
-    rm -f "$keyfile"
 }
 
 # =============================================================================
