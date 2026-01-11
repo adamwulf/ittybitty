@@ -139,13 +139,15 @@ is_running_as_agent() {
     return 1
 }
 
-# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Get children of a manager agent with optional state filtering
 # Args: $1 = manager agent ID
-# Returns: space-separated list of unfinished child IDs (empty if none)
-# Children in running, waiting, or complete state all need attention before manager can complete
-get_unfinished_children() {
-    local MANAGER_ID="$1"
-    local unfinished_children=""
+#       $2 = filter (optional): all|unfinished|running|waiting|complete (default: all)
+# Returns: space-separated list of child IDs matching filter
+# Note: "unfinished" includes running, waiting, and complete states
+get_children() {
+    local manager_id="$1"
+    local filter="${2:-all}"
+    local children=""
 
     # Iterate through all agent directories
     for agent_dir in "$AGENTS_DIR"/*/; do
@@ -158,21 +160,75 @@ get_unfinished_children() {
 
         # Check if this agent's manager matches
         local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
-        if [[ "$manager" == "$MANAGER_ID" ]]; then
-            # Check if this child is in an unfinished state (running, waiting, or complete)
-            # All of these need to be merged or killed before manager can complete
-            local state=$(get_state "$child_id")
-            if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
-                if [[ -n "$unfinished_children" ]]; then
-                    unfinished_children="$unfinished_children $child_id"
+        if [[ "$manager" == "$manager_id" ]]; then
+            # Apply state filter
+            if [[ "$filter" == "all" ]]; then
+                # Include all children regardless of state
+                if [[ -n "$children" ]]; then
+                    children="$children $child_id"
                 else
-                    unfinished_children="$child_id"
+                    children="$child_id"
+                fi
+            else
+                # Check state for filtering
+                local state=$(get_state "$child_id")
+
+                if [[ "$filter" == "unfinished" ]]; then
+                    # Unfinished = running, waiting, or complete
+                    if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                        if [[ -n "$children" ]]; then
+                            children="$children $child_id"
+                        else
+                            children="$child_id"
+                        fi
+                    fi
+                elif [[ "$state" == "$filter" ]]; then
+                    # Exact state match
+                    if [[ -n "$children" ]]; then
+                        children="$children $child_id"
+                    else
+                        children="$child_id"
+                    fi
                 fi
             fi
         fi
     done
 
-    echo "$unfinished_children"
+    echo "$children"
+}
+
+# Get all descendants of a manager agent recursively (children, grandchildren, etc.)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of all descendant IDs in depth-first order
+# Note: Includes the manager itself as the first element
+get_descendants_recursive() {
+    local manager_id="$1"
+    echo "$manager_id"  # Include the manager itself
+
+    # Find all direct children
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id="${agent_dir%/}"; id="${id##*/}"
+        local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
+        if [[ "$manager" == "null" ]]; then
+            manager=""
+        fi
+
+        if [[ "$manager" == "$manager_id" ]]; then
+            # Recursively get this child's descendants
+            get_descendants_recursive "$id"
+        fi
+    done
+}
+
+# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of unfinished child IDs (empty if none)
+# Children in running, waiting, or complete state all need attention before manager can complete
+get_unfinished_children() {
+    get_children "$1" "unfinished"
 }
 
 # Teardown an agent: kill processes, remove worktree, archive, cleanup
@@ -2808,16 +2864,9 @@ EOF
         local AGENT_DIR="$AGENTS_DIR/$TARGET_ID"
         local is_worker=$(jq -r '.worker // false' "$AGENT_DIR/meta.json" 2>/dev/null)
 
-        # Count children
-        local child_count=0
-        for agent_dir in "$AGENTS_DIR"/*/; do
-            [[ -d "$agent_dir" ]] || continue
-            [[ -f "$agent_dir/meta.json" ]] || continue
-            local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
-            if [[ "$manager" == "$TARGET_ID" ]]; then
-                ((child_count++))
-            fi
-        done
+        # Count children using get_children helper
+        local children_list=$(get_children "$TARGET_ID" "all")
+        local child_count=$(echo "$children_list" | wc -w | tr -d ' ')
 
         # Reject if this is a worker with no children
         if [[ "$is_worker" == "true" && $child_count -eq 0 ]]; then
@@ -2828,31 +2877,8 @@ EOF
             exit 1
         fi
 
-        # Build list of all descendants recursively
-        get_descendants() {
-            local manager_id="$1"
-            echo "$manager_id"  # Include the manager itself
-
-            # Find all direct children
-            for agent_dir in "$AGENTS_DIR"/*/; do
-                [[ -d "$agent_dir" ]] || continue
-                [[ -f "$agent_dir/meta.json" ]] || continue
-
-                local id="${agent_dir%/}"; id="${id##*/}"
-                local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
-                if [[ "$manager" == "null" ]]; then
-                    manager=""
-                fi
-
-                if [[ "$manager" == "$manager_id" ]]; then
-                    # Recursively get this child's descendants
-                    get_descendants "$id"
-                fi
-            done
-        }
-
-        # Get all descendants
-        agents_to_kill=($(get_descendants "$TARGET_ID"))
+        # Get all descendants using helper function
+        agents_to_kill=($(get_descendants_recursive "$TARGET_ID"))
         local agent_count=${#agents_to_kill[@]}
 
         if [[ $agent_count -eq 0 ]]; then
