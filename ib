@@ -601,16 +601,13 @@ LAST_TMUX_CAPTURE=""
 # Capture tmux pane content and store in LAST_TMUX_CAPTURE
 # Args: $1 = tmux session name, $2 = number of lines (default 20)
 # Returns: captured content via stdout, also sets LAST_TMUX_CAPTURE
+# Note: Returns empty string if session doesn't exist (no separate has-session check)
 capture_tmux() {
     local session="$1"
     local lines="${2:-20}"
 
-    LAST_TMUX_CAPTURE=""
-
-    if tmux has-session -t "$session" 2>/dev/null; then
-        LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null)
-    fi
-
+    # Just try to capture - returns empty if session doesn't exist
+    LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null)
     echo "$LAST_TMUX_CAPTURE"
 }
 
@@ -621,14 +618,14 @@ get_state() {
     local id="$1"
     local tmux_session=$(session_name "$id")
 
-    if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
-        LAST_TMUX_CAPTURE=""
+    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
+    # This returns empty if session doesn't exist - no separate has-session needed
+    local recent=$(capture_tmux "$tmux_session" 20)
+
+    if [[ -z "$recent" ]]; then
         echo "stopped"
         return
     fi
-
-    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
-    local recent=$(capture_tmux "$tmux_session" 20)
 
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
@@ -3698,7 +3695,7 @@ EOF
         local d_log=$((t_log - t_log_start))
         local d_extract=$((t_extract - t_extract_start))
         local d_print=$((t_print - t_print_start))
-        local right_info="a:${d_agent} t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print} q:${LAST_QUEUE_SIZE} ${current_time}"
+        local right_info="a:${d_agent} t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print} ${current_time}"
         local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
 
