@@ -159,7 +159,7 @@ get_children() {
         [[ -f "$meta_file" ]] || continue
 
         # Check if this agent's manager matches
-        local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
+        local manager=$(read_meta_field "$meta_file" "manager" "")
         if [[ "$manager" == "$manager_id" ]]; then
             # Apply state filter
             if [[ "$filter" == "all" ]]; then
@@ -316,7 +316,7 @@ kill_agent_process() {
 
     # Strategy 2: Fallback to meta.json PID
     if [[ -z "$PID" && -f "$AGENT_DIR/meta.json" ]]; then
-        PID=$(jq -r '.claude_pid // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        PID=$(read_meta_field "$AGENT_DIR/meta.json" "claude_pid" "")
         [[ "$PID" == "null" || -z "$PID" ]] && PID=""
     fi
 
@@ -962,6 +962,18 @@ _meta_cache_lookup() {
         fi
     done
     echo "-1"
+}
+
+# Read a field from meta.json with default value
+# Usage: read_meta_field <meta_file> <field_name> [default_value]
+# Examples:
+#   manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
+#   worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
+read_meta_field() {
+    local meta_file="$1"
+    local field="$2"
+    local default="${3:-}"
+    jq -r ".$field // \"$default\"" "$meta_file" 2>/dev/null
 }
 
 # Build agent data file for tree operations
@@ -1613,7 +1625,7 @@ EOF
             # Find the agent directory and read meta.json
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                MANAGER=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                MANAGER=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -1632,7 +1644,7 @@ EOF
 
         # Check if the manager is a worker agent
         local MANAGER_DIR="$AGENTS_DIR/$MANAGER"
-        local is_worker=$(jq -r '.worker // false' "$MANAGER_DIR/meta.json" 2>/dev/null)
+        local is_worker=$(read_meta_field "$MANAGER_DIR/meta.json" "worker" "false")
         if [[ "$is_worker" == "true" ]]; then
             echo "Error: '$MANAGER' is a worker agent and cannot manage sub-agents" >&2
             echo "" >&2
@@ -2163,10 +2175,10 @@ EOF
         local meta="$agent_dir/meta.json"
 
         # Read metadata
-        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
-        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
-        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+        local prompt=$(read_meta_field "$meta" "prompt" "" | head -1 | cut -c1-40)
+        local manager=$(read_meta_field "$meta" "manager" "")
+        local created=$(read_meta_field "$meta" "created" "")
+        local model=$(read_meta_field "$meta" "model" "")
         if [[ "$model" == "null" || -z "$model" ]]; then
             model="-"
         fi
@@ -2367,7 +2379,7 @@ EOF
             # Find the agent directory and read meta.json
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                FROM_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                FROM_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -2862,7 +2874,7 @@ EOF
 
         # Check if this is a worker agent (has no children)
         local AGENT_DIR="$AGENTS_DIR/$TARGET_ID"
-        local is_worker=$(jq -r '.worker // false' "$AGENT_DIR/meta.json" 2>/dev/null)
+        local is_worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
 
         # Count children using get_children helper
         local children_list=$(get_children "$TARGET_ID" "all")
@@ -3109,7 +3121,7 @@ EOF
         exit 1
     fi
 
-    local SESSION_UUID=$(jq -r '.session_id // ""' "$META_FILE" 2>/dev/null)
+    local SESSION_UUID=$(read_meta_field "$META_FILE" "session_id" "")
     if [[ -z "$SESSION_UUID" || "$SESSION_UUID" == "null" ]]; then
         echo "Error: no session_id found in meta.json" >&2
         echo "This agent was created before resume support was added." >&2
@@ -3117,7 +3129,7 @@ EOF
     fi
 
     # Read model from meta.json if set
-    local MODEL=$(jq -r '.model // ""' "$META_FILE" 2>/dev/null)
+    local MODEL=$(read_meta_field "$META_FILE" "model" "")
     if [[ "$MODEL" == "null" ]]; then
         MODEL=""
     fi
@@ -3480,7 +3492,7 @@ cmd_hook_status() {
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local manager=""
     if [[ -f "$AGENT_DIR/meta.json" ]]; then
-        manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
         [[ "$manager" == "null" ]] && manager=""
     fi
 
@@ -3589,13 +3601,13 @@ EOF
             # Extract agent ID from path
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                AGENT_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         elif [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
             # Legacy path format
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                AGENT_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -3663,7 +3675,7 @@ cmd_watchdog() {
     fi
 
     # Load manager from meta.json
-    local manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+    local manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
 
     # Check if agent has a manager (skip check in quiet mode)
     if [[ "$QUIET" != "true" ]]; then
