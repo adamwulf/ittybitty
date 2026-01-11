@@ -3917,6 +3917,43 @@ EOF
     tput civis
     stty -echo
 
+    # Helper to get current time in milliseconds
+    get_ms() {
+        perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000
+    }
+
+    # Render footer with help text, timing, and clock
+    # Args: $1=footer_row, $2=frame_start_ms
+    watch_render_footer() {
+        local footer_row="$1"
+        local frame_start_ms="$2"
+
+        # Move cursor to footer row
+        printf '\e[%d;1H' "$footer_row"
+
+        # Check background process health (heartbeat should be < 2 seconds old)
+        local bg_status=""
+        if [[ -n "$HEARTBEAT_FILE" && -f "$HEARTBEAT_FILE" ]]; then
+            local hb_time now_time
+            read -r hb_time < "$HEARTBEAT_FILE" 2>/dev/null || hb_time=0
+            now_time=$(date +%s)
+            if [[ $((now_time - hb_time)) -gt 2 ]]; then
+                bg_status="[BG STALE] "
+            fi
+        fi
+
+        # Bottom help line with frame timing and clock
+        local help_text="${bg_status}j/k: select    ;/l: scroll    Ctrl-C: quit"
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
+        local frame_end_ms=$(get_ms)
+        local frame_ms=$((frame_end_ms - frame_start_ms))
+        local current_time
+        current_time=$(date +%H:%M:%S)
+        printf -v right_info "frame:%3dms  %s" "$frame_ms" "$current_time"
+        local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
+        printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
+    }
+
     # Main render function
     watch_render() {
         local t_frame_start=$(get_ms)
@@ -4150,32 +4187,10 @@ EOF
                 "$row" "$((left_pane_width + 1))" \
                 "${visible_log_lines[$pane_line]}"
         done
-        local t_print=$(get_ms)
 
-        # Move cursor to line after panes
-        printf '\e[%d;1H' "$((pane_start_row + pane_height))"
-
-        # Check background process health (heartbeat should be < 2 seconds old)
-        local bg_status=""
-        if [[ -n "$HEARTBEAT_FILE" && -f "$HEARTBEAT_FILE" ]]; then
-            local hb_time now_time
-            read -r hb_time < "$HEARTBEAT_FILE" 2>/dev/null || hb_time=0
-            now_time=$(date +%s)
-            if [[ $((now_time - hb_time)) -gt 2 ]]; then
-                bg_status="[BG STALE] "
-            fi
-        fi
-
-        # Bottom help line with frame timing and clock
-        local help_text="${bg_status}j/k: select    ;/l: scroll    Ctrl-C: quit"
-        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
-        local t_frame_end=$(get_ms)
-        local frame_ms=$((t_frame_end - t_frame_start))
-        local current_time
-        current_time=$(date +%H:%M:%S)
-        printf -v right_info "frame:%3dms  %s" "$frame_ms" "$current_time"
-        local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
-        printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
+        # Render footer
+        local footer_row=$((pane_start_row + pane_height))
+        watch_render_footer "$footer_row" "$t_frame_start"
         # tmpfile cleanup handled by RETURN trap
     }
 
@@ -4287,11 +4302,6 @@ EOF
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
-
-    # Helper to get current time in milliseconds
-    get_ms() {
-        perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000
-    }
 
     # Main loop
     while true; do
