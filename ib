@@ -4020,6 +4020,36 @@ EOF
         done
     }
 
+    # Delete word backwards from text (option+delete behavior)
+    # Sets _DIALOG_TEXT_RESULT with the result
+    # Args: $1=text
+    dialog_delete_word() {
+        local text="$1"
+        # First delete non-whitespace from end (the word)
+        while [[ -n "$text" && ! "${text: -1}" =~ [[:space:]] ]]; do
+            text="${text%?}"
+        done
+        # Then delete whitespace from end (space before word)
+        while [[ -n "$text" && "${text: -1}" =~ [[:space:]] ]]; do
+            text="${text%?}"
+        done
+        _DIALOG_TEXT_RESULT="$text"
+    }
+
+    # Delete to start of line (Ctrl+U behavior)
+    # Sets _DIALOG_TEXT_RESULT with the result
+    # Args: $1=text
+    dialog_delete_line() {
+        local text="$1"
+        if [[ "$text" == *$'\n'* ]]; then
+            # Delete back to last newline (keep the newline)
+            _DIALOG_TEXT_RESULT="${text%$'\n'*}"$'\n'
+        else
+            # No newline, delete everything
+            _DIALOG_TEXT_RESULT=""
+        fi
+    }
+
     # ==========================================================================
     # End Dialog Helper Functions
     # ==========================================================================
@@ -4365,9 +4395,24 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
+            $'\x15')  # Ctrl+U - delete to start of line
+                if [[ $SEND_FOCUS -eq 0 && -n "$SEND_TEXT" ]]; then
+                    dialog_delete_line "$SEND_TEXT"
+                    SEND_TEXT="$_DIALOG_TEXT_RESULT"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
                 if [[ $SEND_FOCUS -eq 0 && -n "$SEND_TEXT" ]]; then
-                    SEND_TEXT="${SEND_TEXT%?}"
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$SEND_TEXT"
+                        SEND_TEXT="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        # Regular backspace - delete one char
+                        SEND_TEXT="${SEND_TEXT%?}"
+                    fi
                     _DIALOG_DIRTY=1
                 fi
                 ;;
@@ -4549,9 +4594,22 @@ EOF
                     fi
                 fi
                 ;;
+            $'\x15')  # Ctrl+U - delete all (single line input)
+                if [[ $NUKE_FOCUS -eq 0 && -n "$NUKE_TEXT" ]]; then
+                    NUKE_TEXT=""
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
                 if [[ $NUKE_FOCUS -eq 0 && -n "$NUKE_TEXT" ]]; then
-                    NUKE_TEXT="${NUKE_TEXT%?}"
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word (clears all for this small input)
+                        NUKE_TEXT=""
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        # Regular backspace - delete one char
+                        NUKE_TEXT="${NUKE_TEXT%?}"
+                    fi
                     _DIALOG_DIRTY=1
                 fi
                 ;;
@@ -4921,12 +4979,37 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            $'\x7f'|$'\b')  # Backspace (DEL or BS)
+            $'\x15')  # Ctrl+U - delete to start of line
                 if [[ $NEW_AGENT_FOCUS -eq 0 && -n "$NEW_AGENT_NAME" ]]; then
-                    NEW_AGENT_NAME="${NEW_AGENT_NAME%?}"
+                    # Single line - clear all
+                    NEW_AGENT_NAME=""
                     _DIALOG_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 2 && -n "$NEW_AGENT_PROMPT" ]]; then
-                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT%?}"
+                    dialog_delete_line "$NEW_AGENT_PROMPT"
+                    NEW_AGENT_PROMPT="$_DIALOG_TEXT_RESULT"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\x7f'|$'\b')  # Backspace (DEL or BS)
+                if [[ $NEW_AGENT_FOCUS -eq 0 && -n "$NEW_AGENT_NAME" ]]; then
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$NEW_AGENT_NAME"
+                        NEW_AGENT_NAME="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME%?}"
+                    fi
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 2 && -n "$NEW_AGENT_PROMPT" ]]; then
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$NEW_AGENT_PROMPT"
+                        NEW_AGENT_PROMPT="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT%?}"
+                    fi
                     _DIALOG_DIRTY=1
                 fi
                 ;;
