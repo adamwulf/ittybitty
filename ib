@@ -914,10 +914,6 @@ build_agent_data_file() {
     local visible_end="${2:-999999}"
     local tmpfile=$(mktemp)
 
-    # Timing instrumentation (uses global BUILD_AGENT_TIMING if set)
-    local _t0 _t1 _t2 _t3 _t4
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _t0=$(gdate +%s%3N 2>/dev/null || date +%s000)
-
     if [[ ! -d "$AGENTS_DIR" ]]; then
         echo "$tmpfile"
         return
@@ -945,7 +941,6 @@ build_agent_data_file() {
         active_sessions="$CACHED_SESSIONS"
     fi
 
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _t1=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     # === PASS 1: Get agent data from cache or disk ===
     local all_ids=()
@@ -1024,7 +1019,6 @@ build_agent_data_file() {
         all_data+=("$manager|$age|$model|$prompt")
     done
 
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _t2=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     # === Compute tree order (with caching) ===
     # Build cache key from agent IDs (detects any add/remove, not just count)
@@ -1057,7 +1051,6 @@ build_agent_data_file() {
         TREE_ORDER_KEY="$id_key"
     fi
 
-    [[ -n "$BUILD_AGENT_TIMING" ]] && _t3=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     # === PASS 2: Write tmpfile in TREE ORDER ===
     local idx
@@ -1134,12 +1127,6 @@ build_agent_data_file() {
 
     # Store result in global - callers read BUILD_AGENT_DATA_RESULT
     BUILD_AGENT_DATA_RESULT="$tmpfile"
-
-    # Store timing breakdown if enabled
-    if [[ -n "$BUILD_AGENT_TIMING" ]]; then
-        _t4=$(gdate +%s%3N 2>/dev/null || date +%s000)
-        BUILD_AGENT_TIMING_RESULT="s:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
-    fi
 }
 
 # Get agent IDs in depth-first tree order
@@ -3896,7 +3883,7 @@ EOF
 
     # Main render function
     watch_render() {
-        local t0=$(get_ms)
+        local t_frame_start=$(get_ms)
 
         # Get terminal size
         TERM_LINES=$(tput lines)
@@ -3905,14 +3892,10 @@ EOF
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
-        local t1=$(get_ms)
         # Build agent data (only get state for visible tree indices)
         # Called directly (not in subshell) to preserve meta.json cache
-        BUILD_AGENT_TIMING=1
         build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
         local tmpfile="$BUILD_AGENT_DATA_RESULT"
-        unset BUILD_AGENT_TIMING
-        local t_agent_data=$(get_ms)
 
         if [[ ! -s "$tmpfile" ]]; then
             # No agents - show message
@@ -3957,12 +3940,10 @@ EOF
         IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
 
         # Get tree lines (no subprocess - uses global arrays)
-        local t_tree_start=$(get_ms)
         build_tree_lines "$tmpfile"
         format_tree_lines
         local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
         local total_tree_lines=${#tree_lines[@]}
-        local t_tree=$(get_ms)
 
         # Calculate tree scroll to keep selection visible (window of 5)
         if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
@@ -4026,7 +4007,6 @@ EOF
         local capture_lines=500
 
         # Get tmux output for selected agent (all lines, for total count)
-        local t_tmux_start=$(get_ms)
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
@@ -4045,11 +4025,8 @@ EOF
                 all_tmux_lines+=("$line")
             done <<< "$tmux_output"
         fi
-        local t_tmux=$(get_ms)
 
         # Get agent log (pre-wrapped by background process, cached parse)
-        local t_log_start=$(get_ms)
-
         # Update width file for background process
         [[ -n "$LOG_WIDTH_FILE" ]] && echo "$right_pane_width" > "$LOG_WIDTH_FILE"
 
@@ -4080,8 +4057,6 @@ EOF
             fi
         fi
 
-        local t_log=$(get_ms)
-
         local tmux_total=${#all_tmux_lines[@]}
         local log_total=${#LOG_PARSED_LINES[@]}
 
@@ -4095,8 +4070,7 @@ EOF
         [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
         [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
 
-        # Extract visible window of tmux lines (strip ANSI, truncate to width)
-        local t_extract_start=$(get_ms)
+        # Extract visible window of tmux lines (truncate to width)
         local visible_tmux_lines=()
         local pane_line
 
@@ -4122,11 +4096,9 @@ EOF
                 visible_log_lines+=("")
             fi
         done
-        local t_extract=$(get_ms)
 
         # ===== PHASE 2: RENDER (no processing, just print) =====
 
-        local t_print_start=$(get_ms)
         local pane_start_row=8
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local row=$((pane_start_row + pane_line))
@@ -4140,19 +4112,14 @@ EOF
         # Move cursor to line after panes
         printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
-        # Bottom help line with timing breakdown
+        # Bottom help line with frame timing and clock
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
+        local t_frame_end=$(get_ms)
+        local frame_ms=$((t_frame_end - t_frame_start))
         local current_time
         current_time=$(date +%H:%M:%S)
-        # Timing breakdown: agent data, tree, tmux capture, log wrap, extract, print
-        local d_agent=$((t_agent_data - t1))
-        local d_tree=$((t_tree - t_tree_start))
-        local d_tmux=$((t_tmux - t_tmux_start))
-        local d_log=$((t_log - t_log_start))
-        local d_extract=$((t_extract - t_extract_start))
-        local d_print=$((t_print - t_print_start))
-        local right_info="a:${d_agent} [${BUILD_AGENT_TIMING_RESULT}] t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print}"
+        printf -v right_info "frame:%3dms  %s" "$frame_ms" "$current_time"
         local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
 
