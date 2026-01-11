@@ -771,6 +771,12 @@ auto_accept_workspace_trust() {
 META_CACHE_IDS=()
 META_CACHE_DATA=()
 
+# Global cache for tree order (invalidated when agent set changes)
+# TREE_ORDER_CACHE = array of agent IDs in tree order
+# TREE_ORDER_KEY = sorted "|"-joined string of all agent IDs (for cache invalidation)
+TREE_ORDER_CACHE=()
+TREE_ORDER_KEY=""
+
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
     local lookup_id="$1"
@@ -893,23 +899,36 @@ build_agent_data_file() {
 
     [[ -n "$BUILD_AGENT_TIMING" ]] && _t2=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
-    # === Compute tree order from cached data ===
-    # Build minimal id|manager| tmpfile for tree computation
-    # Note: trailing | is required for grep pattern "|manager_id|" to match
-    local tree_tmp=$(mktemp)
-    local i
-    for ((i=0; i<${#all_ids[@]}; i++)); do
-        local id="${all_ids[$i]}"
-        local data="${all_data[$i]}"
-        local manager="${data%%|*}"
-        echo "$id|$manager|" >> "$tree_tmp"
-    done
+    # === Compute tree order (with caching) ===
+    # Build cache key from agent IDs (detects any add/remove, not just count)
+    # Using joined string - filesystem glob order is consistent within a session
+    local id_key="${all_ids[*]}"
 
     local tree_ids=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && tree_ids+=("$line")
-    done < <(get_agent_ids_tree_order "$tree_tmp")
-    rm -f "$tree_tmp"
+    if [[ "$id_key" == "$TREE_ORDER_KEY" && ${#TREE_ORDER_CACHE[@]} -gt 0 ]]; then
+        # Cache hit - use cached tree order
+        tree_ids=("${TREE_ORDER_CACHE[@]}")
+    else
+        # Cache miss - compute tree order
+        # Build minimal id|manager| tmpfile for tree computation
+        local tree_tmp=$(mktemp)
+        local i
+        for ((i=0; i<${#all_ids[@]}; i++)); do
+            local id="${all_ids[$i]}"
+            local data="${all_data[$i]}"
+            local manager="${data%%|*}"
+            echo "$id|$manager|" >> "$tree_tmp"
+        done
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && tree_ids+=("$line")
+        done < <(get_agent_ids_tree_order "$tree_tmp")
+        rm -f "$tree_tmp"
+
+        # Update cache
+        TREE_ORDER_CACHE=("${tree_ids[@]}")
+        TREE_ORDER_KEY="$id_key"
+    fi
 
     [[ -n "$BUILD_AGENT_TIMING" ]] && _t3=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
@@ -3667,7 +3686,7 @@ EOF
         # Build agent data (only get state for visible tree indices)
         # Called directly (not in subshell) to preserve meta.json cache
         BUILD_AGENT_TIMING=1
-        build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 5))"
+        build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
         local tmpfile="$BUILD_AGENT_DATA_RESULT"
         unset BUILD_AGENT_TIMING
         local t_agent_data=$(get_ms)
