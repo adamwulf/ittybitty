@@ -607,7 +607,8 @@ capture_tmux() {
     local lines="${2:-20}"
 
     # Just try to capture - returns empty if session doesn't exist
-    LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null)
+    # Note: || true prevents set -e from exiting when session doesn't exist
+    LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
     echo "$LAST_TMUX_CAPTURE"
 }
 
@@ -765,102 +766,205 @@ auto_accept_workspace_trust() {
 # TREE HELPERS (shared by cmd_tree and cmd_watch)
 # =============================================================================
 
+# Global cache for meta.json data (never changes after agent creation)
+# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt"
+META_CACHE_IDS=()
+META_CACHE_DATA=()
+
+# Helper to lookup cached meta data (returns index or -1)
+_meta_cache_lookup() {
+    local lookup_id="$1"
+    local i
+    for ((i=0; i<${#META_CACHE_IDS[@]}; i++)); do
+        if [[ "${META_CACHE_IDS[$i]}" == "$lookup_id" ]]; then
+            echo "$i"
+            return
+        fi
+    done
+    echo "-1"
+}
+
 # Build agent data file for tree operations
 # Creates a temp file with format: id|manager|state|age|model|prompt
+# OUTPUT IS IN TREE ORDER (line N = tree index N)
+# Result is stored in BUILD_AGENT_DATA_RESULT global variable
 # The caller is responsible for cleaning up the temp file
-# Usage: local tmpfile=$(build_agent_data_file)
+# Optional: pass visible_start and visible_end to only capture state for visible tree indices
+# Usage: build_agent_data_file                    # all agents get state
+#        build_agent_data_file 0 5                # only indices 0-5 get state
+#        local tmpfile="$BUILD_AGENT_DATA_RESULT"
 #        trap "rm -f '$tmpfile'" RETURN
 build_agent_data_file() {
+    local visible_start="${1:-0}"
+    local visible_end="${2:-999999}"
     local tmpfile=$(mktemp)
+
+    # Timing instrumentation (uses global BUILD_AGENT_TIMING if set)
+    local _t0 _t1 _t2 _t3 _t4
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _t0=$(gdate +%s%3N 2>/dev/null || date +%s000)
 
     if [[ ! -d "$AGENTS_DIR" ]]; then
         echo "$tmpfile"
         return
     fi
 
-    # Compute now once for all age calculations
     local now=$(date +%s)
-
-    # Get all active tmux sessions in one call (avoid per-agent tmux queries for stopped agents)
     local active_sessions
     active_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' '|')
+
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _t1=$(gdate +%s%3N 2>/dev/null || date +%s000)
+
+    # === PASS 1: Get agent data from cache or disk ===
+    local all_ids=()
+    local all_data=()  # Each element: "manager|age|model|prompt"
 
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id=$(basename "$agent_dir")
-        local meta="$agent_dir/meta.json"
+        local manager="" created_epoch="" model="" prompt=""
 
-        # Parse meta.json with pure bash (no jq subprocess)
-        local prompt="" manager="" created="" created_epoch="" model=""
-        local line key value
-        while IFS= read -r line; do
-            # Extract key and value from "key": "value" or "key": value
-            if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
-                key="${BASH_REMATCH[1]}"
-                value="${BASH_REMATCH[2]}"
-                case "$key" in
-                    prompt) prompt="${value:0:40}" ;;
-                    manager) manager="$value" ;;
-                    created) created="$value" ;;
-                    created_epoch) created_epoch="$value" ;;
-                    model) model="$value" ;;
-                esac
+        # Check cache first (inline lookup to avoid subprocess)
+        local cache_idx=-1
+        local _ci
+        for ((_ci=0; _ci<${#META_CACHE_IDS[@]}; _ci++)); do
+            if [[ "${META_CACHE_IDS[$_ci]}" == "$id" ]]; then
+                cache_idx=$_ci
+                break
             fi
-        done < "$meta"
+        done
 
-        # Get state - check active sessions first to skip tmux capture for stopped agents
-        local state
-        local tmux_session="ittybitty-${id}"
-        if [[ "$active_sessions" == *"$tmux_session"* ]]; then
-            state=$(get_state "$id")
+        if [[ "$cache_idx" -ge 0 ]]; then
+            # Use cached data: manager|created_epoch|model|prompt
+            local cached="${META_CACHE_DATA[$cache_idx]}"
+            manager="${cached%%|*}"
+            local rest="${cached#*|}"
+            created_epoch="${rest%%|*}"
+            rest="${rest#*|}"
+            model="${rest%%|*}"
+            prompt="${rest#*|}"
         else
-            state="stopped"
+            # Read from disk and cache
+            local meta="$agent_dir/meta.json"
+            local line key value
+            while IFS= read -r line; do
+                if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
+                    key="${BASH_REMATCH[1]}"
+                    value="${BASH_REMATCH[2]}"
+                    case "$key" in
+                        prompt) prompt="${value:0:40}" ;;
+                        manager) manager="$value" ;;
+                        created_epoch) created_epoch="$value" ;;
+                        model) model="$value" ;;
+                    esac
+                fi
+            done < "$meta"
+
+            # Handle nulls before caching
+            [[ "$manager" == "null" ]] && manager=""
+            [[ "$model" == "null" || -z "$model" ]] && model="-"
+
+            # Add to cache
+            META_CACHE_IDS+=("$id")
+            META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt")
         fi
 
-        # Calculate age - use epoch directly if available, otherwise parse ISO timestamp
+        # Calculate age (must be fresh each time)
         local age
         if [[ -n "$created_epoch" ]]; then
             local diff=$((now - created_epoch))
-            if [[ $diff -lt 60 ]]; then
-                age="${diff}s"
-            elif [[ $diff -lt 3600 ]]; then
-                age="$((diff / 60))m"
-            elif [[ $diff -lt 86400 ]]; then
-                age="$((diff / 3600))h"
-            else
-                age="$((diff / 86400))d"
+            if [[ $diff -lt 60 ]]; then age="${diff}s"
+            elif [[ $diff -lt 3600 ]]; then age="$((diff / 60))m"
+            elif [[ $diff -lt 86400 ]]; then age="$((diff / 3600))h"
+            else age="$((diff / 86400))d"
             fi
         else
-            age=$(format_age "$created" "$now")
+            age="?"
         fi
 
-        # Display "unknown" as "waiting" for users
-        if [[ "$state" == "unknown" ]]; then
-            state="waiting"
+        # Handle empty manager
+        [[ -z "$manager" ]] && manager=""
+
+        # Build data for this frame
+        all_ids+=("$id")
+        all_data+=("$manager|$age|$model|$prompt")
+    done
+
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _t2=$(gdate +%s%3N 2>/dev/null || date +%s000)
+
+    # === Compute tree order from cached data ===
+    # Build minimal id|manager| tmpfile for tree computation
+    # Note: trailing | is required for grep pattern "|manager_id|" to match
+    local tree_tmp=$(mktemp)
+    local i
+    for ((i=0; i<${#all_ids[@]}; i++)); do
+        local id="${all_ids[$i]}"
+        local data="${all_data[$i]}"
+        local manager="${data%%|*}"
+        echo "$id|$manager|" >> "$tree_tmp"
+    done
+
+    local tree_ids=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && tree_ids+=("$line")
+    done < <(get_agent_ids_tree_order "$tree_tmp")
+    rm -f "$tree_tmp"
+
+    [[ -n "$BUILD_AGENT_TIMING" ]] && _t3=$(gdate +%s%3N 2>/dev/null || date +%s000)
+
+    # === PASS 2: Write tmpfile in TREE ORDER ===
+    local idx
+    for ((idx=0; idx<${#tree_ids[@]}; idx++)); do
+        local id="${tree_ids[$idx]}"
+
+        # Find cached data for this ID (linear search - fine for ~10 agents)
+        local data=""
+        local j
+        for ((j=0; j<${#all_ids[@]}; j++)); do
+            if [[ "${all_ids[$j]}" == "$id" ]]; then
+                data="${all_data[$j]}"
+                break
+            fi
+        done
+
+        # Parse cached data: manager|age|model|prompt
+        local manager="${data%%|*}"
+        local rest="${data#*|}"
+        local age="${rest%%|*}"
+        rest="${rest#*|}"
+        local model="${rest%%|*}"
+        local prompt="${rest#*|}"
+
+        # Get state only for visible indices
+        local state="-"
+        if [[ $idx -ge $visible_start && $idx -le $visible_end ]]; then
+            local tmux_session="ittybitty-${id}"
+            if [[ "$active_sessions" == *"$tmux_session"* ]]; then
+                state=$(get_state "$id")
+                [[ "$state" == "unknown" ]] && state="waiting"
+            else
+                state="stopped"
+            fi
         fi
 
-        # Handle null manager
-        if [[ "$manager" == "null" || -z "$manager" ]]; then
-            manager=""
-        fi
-
-        # Handle null model
-        if [[ "$model" == "null" || -z "$model" ]]; then
-            model="-"
-        fi
-
-        # Store as: id|manager|state|age|model|prompt
         echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
     done
 
-    echo "$tmpfile"
+    # Store result in global - callers read BUILD_AGENT_DATA_RESULT
+    BUILD_AGENT_DATA_RESULT="$tmpfile"
+
+    # Store timing breakdown if enabled
+    if [[ -n "$BUILD_AGENT_TIMING" ]]; then
+        _t4=$(gdate +%s%3N 2>/dev/null || date +%s000)
+        BUILD_AGENT_TIMING_RESULT="setup:$((_t1-_t0)) p1:$((_t2-_t1)) tree:$((_t3-_t2)) p2:$((_t4-_t3))"
+    fi
 }
 
 # Get agent IDs in depth-first tree order
-# Args: $1 = tmpfile from build_agent_data_file
+# Args: $1 = tmpfile with id|manager| format
 # Outputs: one agent ID per line in tree traversal order
+# Note: Pure bash implementation - no grep/cut subprocesses
 get_agent_ids_tree_order() {
     local tmpfile="$1"
 
@@ -868,38 +972,69 @@ get_agent_ids_tree_order() {
         return
     fi
 
-    # Helper to get children of a manager
-    _tree_get_children() {
-        local manager_id="$1"
-        grep "|${manager_id}|" "$tmpfile" | cut -d'|' -f1
+    # Read all data into arrays (one pass)
+    local _order_ids=()
+    local _order_managers=()
+    local _id _manager _rest
+    while IFS='|' read -r _id _manager _rest; do
+        _order_ids+=("$_id")
+        _order_managers+=("$_manager")
+    done < "$tmpfile"
+
+    local _count=${#_order_ids[@]}
+
+    # Helper to check if an ID exists (returns 0=found, 1=not found)
+    _order_id_exists() {
+        local lookup="$1"
+        local _i
+        for ((_i=0; _i<_count; _i++)); do
+            if [[ "${_order_ids[$_i]}" == "$lookup" ]]; then
+                return 0
+            fi
+        done
+        return 1
     }
 
-    # Recursive helper to emit agent IDs in tree order
-    _tree_emit() {
-        local id="$1"
-        echo "$id"
-        local children=$(_tree_get_children "$id")
-        for child in $children; do
-            _tree_emit "$child"
+    # Helper to get children - sets _ORDER_CHILDREN array
+    _order_get_children() {
+        local manager_id="$1"
+        _ORDER_CHILDREN=()
+        local _i
+        for ((_i=0; _i<_count; _i++)); do
+            if [[ "${_order_managers[$_i]}" == "$manager_id" ]]; then
+                _ORDER_CHILDREN+=("${_order_ids[$_i]}")
+            fi
         done
     }
 
-    # Find root agents (those with no parent OR whose parent doesn't exist)
-    local all_ids=$(cut -d'|' -f1 "$tmpfile")
-    local roots=""
-    while IFS='|' read -r id parent _rest; do
-        if [[ -z "$parent" ]]; then
-            roots="$roots $id"
-        else
-            if ! echo "$all_ids" | grep -q "^${parent}$"; then
-                roots="$roots $id"
-            fi
-        fi
-    done < "$tmpfile"
-    roots="${roots# }"
+    # Recursive helper to emit agent IDs in tree order
+    _order_emit() {
+        local id="$1"
+        echo "$id"
+        _order_get_children "$id"
+        local _child
+        for _child in "${_ORDER_CHILDREN[@]}"; do
+            _order_emit "$_child"
+        done
+    }
 
-    for root in $roots; do
-        _tree_emit "$root"
+    # Find root agents (no parent OR parent doesn't exist in file)
+    local _roots=()
+    local _i
+    for ((_i=0; _i<_count; _i++)); do
+        local _id="${_order_ids[$_i]}"
+        local _manager="${_order_managers[$_i]}"
+        if [[ -z "$_manager" ]]; then
+            _roots+=("$_id")
+        elif ! _order_id_exists "$_manager"; then
+            _roots+=("$_id")
+        fi
+    done
+
+    # Emit all trees
+    local _root
+    for _root in "${_roots[@]}"; do
+        _order_emit "$_root"
     done
 }
 
@@ -3445,7 +3580,10 @@ EOF
     fi
 
     # Build agent data using shared helper
-    local tmpfile=$(build_agent_data_file)
+    set +e
+    build_agent_data_file
+    set -e
+    local tmpfile="$BUILD_AGENT_DATA_RESULT"
     trap "rm -f '$tmpfile'" EXIT
 
     if [[ ! -s "$tmpfile" ]]; then
@@ -3526,8 +3664,12 @@ EOF
         tput cup 0 0
 
         local t1=$(get_ms)
-        # Build agent data
-        local tmpfile=$(build_agent_data_file)
+        # Build agent data (only get state for visible tree indices)
+        # Called directly (not in subshell) to preserve meta.json cache
+        BUILD_AGENT_TIMING=1
+        build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 5))"
+        local tmpfile="$BUILD_AGENT_DATA_RESULT"
+        unset BUILD_AGENT_TIMING
         local t_agent_data=$(get_ms)
 
         if [[ ! -s "$tmpfile" ]]; then
@@ -3547,11 +3689,14 @@ EOF
             return
         fi
 
-        # Get agent IDs in tree order (for selection tracking)
+        # Read agent IDs directly from tmpfile (already in tree order!)
         local agent_ids=()
+        local all_lines=()
         while IFS= read -r line; do
-            [[ -n "$line" ]] && agent_ids+=("$line")
-        done < <(get_agent_ids_tree_order "$tmpfile")
+            local id="${line%%|*}"
+            agent_ids+=("$id")
+            all_lines+=("$line")
+        done < "$tmpfile"
         AGENT_COUNT=${#agent_ids[@]}
 
         # Clamp selection to valid range
@@ -3562,10 +3707,9 @@ EOF
             SELECTED_INDEX=0
         fi
 
-        # Get the selected agent ID and its data from tmpfile
+        # Get the selected agent ID and its data (line N = tree index N)
         local selected_id="${agent_ids[$SELECTED_INDEX]}"
-        local selected_info
-        selected_info=$(grep -m1 "^${selected_id}|" "$tmpfile")
+        local selected_info="${all_lines[$SELECTED_INDEX]}"
         # Parse with bash instead of cut subprocesses
         local _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt
         IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
@@ -3646,8 +3790,9 @@ EOF
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
         # Try capture directly - falls back to output.log if session doesn't exist
+        # Note: || true prevents set -e from exiting when session doesn't exist
         local tmux_output
-        tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
+        tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
         if [[ -n "$tmux_output" ]]; then
             while IFS= read -r line; do
                 all_tmux_lines+=("$line")
@@ -3748,7 +3893,7 @@ EOF
         local d_log=$((t_log - t_log_start))
         local d_extract=$((t_extract - t_extract_start))
         local d_print=$((t_print - t_print_start))
-        local right_info="a:${d_agent} t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print} ${current_time}"
+        local right_info="a:${d_agent} [${BUILD_AGENT_TIMING_RESULT}] t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print}"
         local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
 
