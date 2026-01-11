@@ -1424,7 +1424,7 @@ format_tree_lines() {
 
         # Clip prompt to terminal width if specified
         if [[ $max_prompt_width -gt 0 && ${#prompt} -gt $max_prompt_width ]]; then
-            prompt="${prompt:0:$((max_prompt_width - 3))}..."
+            prompt="${prompt:0:$((max_prompt_width - 1))}…"
         fi
 
         # Format: tree (dynamic) | state (8) | age (5) | model (10) | prompt
