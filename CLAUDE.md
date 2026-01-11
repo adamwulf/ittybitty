@@ -76,7 +76,20 @@ This provides visibility into what tools agents are attempting to use without sh
 
 Each tool input parameter is truncated to 20 characters with `...` appended for readability.
 
-**Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
+### Two Types of Permission Prompts
+
+Claude Code has two distinct permission systems:
+
+| Type | Example | PermissionRequest Hook | Solution |
+|------|---------|----------------------|----------|
+| **Tool permissions** | "Allow WebSearch?" | ✓ Hook fires, auto-denies | Configure in `allow` list |
+| **Location permissions** | "Allow access to /tmp/?" | ✗ Hook bypassed | Use `additionalDirectories` or `--yolo` |
+
+**Tool permission prompts** ask whether an agent can use a specific tool (Bash, WebSearch, etc.). The PermissionRequest hook handles these by auto-denying tools not in the allow list.
+
+**Location permission prompts** ask whether an allowed tool can access a specific directory. These bypass the PermissionRequest hook entirely. To prevent these:
+- The agent's settings include `additionalDirectories` with the root repo path
+- For external directories (like `/tmp/`), use `--yolo` mode or manually approve
 
 To review denied permissions for an agent:
 ```bash
