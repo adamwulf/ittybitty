@@ -3956,6 +3956,7 @@ EOF
     # State variables
     local TERM_LINES TERM_COLS
     local SELECTED_INDEX=0
+    local SELECTED_NAME=""  # Track selected agent by name for stability when list changes
     local PREV_SELECTED_INDEX=-1  # Track for scroll reset on agent change
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
@@ -5164,7 +5165,7 @@ EOF
     # Render tree with selection highlighting
     # Args: $1=tmpfile
     # Sets: _WATCH_SELECTED_ID, _WATCH_TREE_DISPLAY_LINES
-    # Modifies: SELECTED_INDEX, TREE_SCROLL, AGENT_COUNT
+    # Modifies: SELECTED_INDEX, SELECTED_NAME, TREE_SCROLL, AGENT_COUNT
     watch_render_tree() {
         local tmpfile="$1"
 
@@ -5176,6 +5177,24 @@ EOF
         done < "$tmpfile"
         AGENT_COUNT=${#agent_ids[@]}
 
+        # Reconcile SELECTED_NAME with SELECTED_INDEX
+        # If we have a name, try to find it in the list to handle insertions/deletions
+        if [[ -n "$SELECTED_NAME" && $AGENT_COUNT -gt 0 ]]; then
+            local found_idx=-1
+            local i
+            for ((i=0; i<AGENT_COUNT; i++)); do
+                if [[ "${agent_ids[$i]}" == "$SELECTED_NAME" ]]; then
+                    found_idx=$i
+                    break
+                fi
+            done
+            if [[ $found_idx -ge 0 ]]; then
+                # Found the agent - update index to match
+                SELECTED_INDEX=$found_idx
+            fi
+            # If not found, keep using SELECTED_INDEX (will clamp below and update SELECTED_NAME)
+        fi
+
         # Clamp selection to valid range
         if [[ $SELECTED_INDEX -ge $AGENT_COUNT ]]; then
             SELECTED_INDEX=$((AGENT_COUNT - 1))
@@ -5184,8 +5203,9 @@ EOF
             SELECTED_INDEX=0
         fi
 
-        # Get the selected agent ID
+        # Get the selected agent ID and update SELECTED_NAME
         _WATCH_SELECTED_ID="${agent_ids[$SELECTED_INDEX]}"
+        SELECTED_NAME="$_WATCH_SELECTED_ID"
 
         # Set terminal title to selected agent name
         printf '\e]0;ib watch: %s\a' "$_WATCH_SELECTED_ID"
@@ -5697,12 +5717,14 @@ EOF
                 # Move selection down
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
+                    SELECTED_NAME=""  # Clear so render will update from new index
                 fi
                 ;;
             k)
                 # Move selection up
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
+                    SELECTED_NAME=""  # Clear so render will update from new index
                 fi
                 ;;
             \;)
