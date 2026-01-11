@@ -1,0 +1,65 @@
+WORKER 1: Meta.json Reading Consolidation
+
+TASK: Extract all jq -r '.field // default' patterns into reusable read_meta_field() helper
+
+COMPLETION CRITERIA:
+1. Create function near line 900 (with other meta helpers):
+
+read_meta_field() {
+    local meta_file="$1"
+    local field="$2"
+    local default="${3:-}"
+    local result
+    result=$(jq -r ".$field // \"$default\"" "$meta_file" 2>/dev/null)
+    # Handle null as empty string
+    if [[ "$result" == "null" ]]; then
+        echo "$default"
+    else
+        echo "$result"
+    fi
+}
+
+2. Replace ALL 20+ jq calls - find with: grep -n 'jq -r' ib
+
+Key locations:
+- Line 160: .manager // ""
+- Line 263: .claude_pid // ""
+- Lines 375-390: config fields (.permissions.*, .createPullRequests, .maxAgents, .model)
+- Line 1560: .id // ""
+- Line 1579: .worker // false
+- Lines 2110-2113: .prompt, .manager, .created, .model
+- Line 2314: .id // ""
+- Line 2809: .worker // false
+- Lines 2816, 2842: .manager // ""
+- Lines 3086: .session_id // ""
+- Lines 3094: .model // ""
+- Line 3457: .manager // ""
+- Lines 3566, 3572: .id // ""
+- Line 3640: .manager // ""
+- Line 4657: .model // "" from config
+
+3. Handle both string and boolean defaults
+4. Test thoroughly after each change
+
+EXAMPLE TRANSFORMATIONS:
+
+Before:
+  local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
+
+After:
+  local manager=$(read_meta_field "$meta_file" "manager" "")
+
+Before:
+  local is_worker=$(jq -r '.worker // false' "$AGENT_DIR/meta.json" 2>/dev/null)
+
+After:
+  local is_worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
+
+TEST PLAN:
+1. ib new-agent --name test "echo hello"
+2. ib list (verify metadata shows correctly)
+3. ib status test (verify prompt, manager display)
+4. ib kill test --force
+5. Verify no behavior changes
+
+WHEN DONE: Say "I HAVE COMPLETED THE GOAL"

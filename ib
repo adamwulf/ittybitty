@@ -3915,6 +3915,12 @@ EOF
     local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent
     local DIALOG_WIDTH=50  # Fixed dialog width
 
+    # Frame rate control
+    local TARGET_FPS=10
+    local TARGET_FRAME_MS=$((1000 / TARGET_FPS))  # 100ms per frame for 10fps
+    local LAST_FRAME_MS=0
+    local SLEEP_ADJUST_MS=60  # Adaptive sleep time, starts at 60ms
+
     # Send dialog state
     local SEND_TEXT=""
     local SEND_FOCUS=0   # 0=text, 1=Send button, 2=Cancel button
@@ -5085,11 +5091,20 @@ EOF
             # Normal mode: show action keys
             action_text="s: send    x: kill    !: nuke    a: new agent"
         fi
-        local frame_end_ms=$(get_ms)
-        local frame_ms=$((frame_end_ms - frame_start_ms))
+        # Use LAST_FRAME_MS from previous complete frame (includes sleep)
+        local frame_ms=$LAST_FRAME_MS
+        if [[ $frame_ms -eq 0 ]]; then
+            # First frame, calculate render time only
+            local frame_end_ms=$(get_ms)
+            frame_ms=$((frame_end_ms - frame_start_ms))
+        fi
+        local fps=0
+        if [[ $frame_ms -gt 0 ]]; then
+            fps=$((1000 / frame_ms))
+        fi
         local current_time
         current_time=$(date +%H:%M:%S)
-        printf -v right_info "%sframe:%3dms  %s" "$bg_status" "$frame_ms" "$current_time"
+        printf -v right_info "%sframe:%3dms  fps:%2d  %s" "$bg_status" "$frame_ms" "$fps" "$current_time"
         local padding=$((TERM_COLS - ${#action_text} - ${#right_info}))
         printf "%s%*s%s" "$action_text" "$padding" "" "$right_info"
     }
@@ -5774,6 +5789,8 @@ EOF
 
     # Main loop
     while true; do
+        local frame_start_ms=$(get_ms)
+
         # Render frame (dialog or normal)
         if [[ $DIALOG_MODE -ne 0 ]]; then
             set +e  # Disable exit-on-error for dialog rendering
@@ -5788,8 +5805,22 @@ EOF
             watch_render
         fi
 
-        # Small delay for input collection
-        sleep 0.02
+        # Sleep using adaptive sleep time (skip if negative)
+        if [[ $SLEEP_ADJUST_MS -gt 0 ]]; then
+            sleep $(awk "BEGIN {printf \"%.3f\", $SLEEP_ADJUST_MS / 1000}")
+        fi
+
+        # Calculate total frame time including sleep
+        local frame_end_ms=$(get_ms)
+        LAST_FRAME_MS=$((frame_end_ms - frame_start_ms))
+
+        # Feedback loop: adjust sleep based on whether we hit target
+        # If frame was too slow (>100ms), reduce sleep
+        # If frame was too fast (<100ms), increase sleep
+        # Use 0.3 gain factor for gradual adjustment
+        local frame_error=$((LAST_FRAME_MS - TARGET_FRAME_MS))
+        local adjustment=$((frame_error * 3 / 10))  # 30% of error
+        SLEEP_ADJUST_MS=$((SLEEP_ADJUST_MS - adjustment))  # Subtract to correct
 
         # Collect and clear accumulated keys
         local keys_to_process=""
