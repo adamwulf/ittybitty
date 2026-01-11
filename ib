@@ -880,6 +880,7 @@ TMUX_CACHE_DIR=""  # Set by watch for async tmux pane capture
 # Background log cache (set by watch, used by main loop)
 LOG_CACHE_DIR=""      # Directory with pre-wrapped log files
 LOG_WIDTH_FILE=""     # File containing wrap width for background process
+LOG_WIDTH_PREV=0      # Previous width (only write file when changed)
 
 # Parsed log cache (avoid re-parsing file into array every frame)
 LOG_PARSED_AGENT=""   # Which agent's log is cached
@@ -4021,8 +4022,11 @@ EOF
         fi
 
         # Get agent log (pre-wrapped by background process, cached parse)
-        # Update width file for background process
-        [[ -n "$LOG_WIDTH_FILE" ]] && echo "$right_pane_width" > "$LOG_WIDTH_FILE"
+        # Update width file for background process (only when changed to reduce I/O)
+        if [[ -n "$LOG_WIDTH_FILE" && "$right_pane_width" != "$LOG_WIDTH_PREV" ]]; then
+            echo "$right_pane_width" > "$LOG_WIDTH_FILE"
+            LOG_WIDTH_PREV="$right_pane_width"
+        fi
 
         # Only check file every 7 frames (or immediately on agent change)
         local log_cache_file="$LOG_CACHE_DIR/$selected_id"
