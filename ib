@@ -120,7 +120,8 @@ log_tmux_screen() {
     local tmux_content="$LAST_TMUX_CAPTURE"
     if [[ -z "$tmux_content" ]]; then
         local TMUX_SESSION=$(session_name "$ID")
-        tmux_content=$(capture_tmux "$TMUX_SESSION" 20)
+        capture_tmux "$TMUX_SESSION" 20
+        tmux_content="$LAST_TMUX_CAPTURE"
     fi
 
     log_multi_line "$ID" "tmux" "$tmux_content"
@@ -598,10 +599,37 @@ format_age() {
 # Set by capture_tmux, used by log_tmux_screen
 LAST_TMUX_CAPTURE=""
 
+# Pure bash tail - read last N lines from a file (no subprocess)
+# Args: $1 = file path, $2 = number of lines (default 20)
+# Result: stored in _TAIL_RESULT global variable
+_TAIL_RESULT=""
+_tail_file() {
+    local file="$1"
+    local lines="${2:-20}"
+
+    _TAIL_RESULT=""
+    [[ ! -f "$file" ]] && return
+
+    local all_lines=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        all_lines+=("$line")
+    done < "$file"
+
+    local count=${#all_lines[@]}
+    local start=$((count - lines))
+    [[ $start -lt 0 ]] && start=0
+
+    local i
+    for ((i=start; i<count; i++)); do
+        [[ -n "$_TAIL_RESULT" ]] && _TAIL_RESULT+=$'\n'
+        _TAIL_RESULT+="${all_lines[$i]}"
+    done
+}
+
 # Capture tmux pane content and store in LAST_TMUX_CAPTURE
 # Args: $1 = tmux session name, $2 = number of lines (default 20)
-# Returns: captured content via stdout, also sets LAST_TMUX_CAPTURE
-# Note: Returns empty string if session doesn't exist (no separate has-session check)
+# Result: stored in LAST_TMUX_CAPTURE global variable (no stdout, no subprocess needed)
+# Note: Sets empty string if session doesn't exist
 capture_tmux() {
     local session="$1"
     local lines="${2:-20}"
@@ -611,9 +639,8 @@ capture_tmux() {
         local agent_id="${session#ittybitty-}"
         local cache_file="$TMUX_CACHE_DIR/$agent_id"
         if [[ -f "$cache_file" ]]; then
-            # Read from cache, take last N lines
-            LAST_TMUX_CAPTURE=$(tail -n "$lines" "$cache_file" 2>/dev/null) || true
-            echo "$LAST_TMUX_CAPTURE"
+            _tail_file "$cache_file" "$lines"
+            LAST_TMUX_CAPTURE="$_TAIL_RESULT"
             return
         fi
     fi
@@ -621,7 +648,6 @@ capture_tmux() {
     # Fallback: capture directly from tmux
     # Note: || true prevents set -e from exiting when session doesn't exist
     LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
-    echo "$LAST_TMUX_CAPTURE"
 }
 
 # Detect agent state from tmux
@@ -633,7 +659,8 @@ get_state() {
 
     # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
     # This returns empty if session doesn't exist - no separate has-session needed
-    local recent=$(capture_tmux "$tmux_session" 20)
+    capture_tmux "$tmux_session" 20
+    local recent="$LAST_TMUX_CAPTURE"
 
     if [[ -z "$recent" ]]; then
         echo "stopped"
@@ -3891,12 +3918,12 @@ EOF
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
-        # Try background cache first, then direct capture, then output.log
+        # Try background cache first, then direct capture
         local tmux_output=""
         local cache_file="$TMUX_CACHE_DIR/$selected_id"
         if [[ -n "$TMUX_CACHE_DIR" && -f "$cache_file" ]]; then
-            # Read from background cache (fast)
-            tmux_output=$(cat "$cache_file" 2>/dev/null) || true
+            # Read from background cache using bash builtin (no subprocess)
+            tmux_output=$(<"$cache_file") 2>/dev/null || true
         else
             # Fallback: capture directly from tmux
             tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
@@ -4053,11 +4080,12 @@ EOF
             sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || true
             printf '%s' "${sessions//$'\n'/|}" > "$sessionfile"
 
-            # Capture pane output for each ittybitty session
+            # Capture pane output for each ittybitty session (atomic write to avoid race)
             for session in $sessions; do
                 if [[ "$session" == ittybitty-* ]]; then
                     local agent_id="${session#ittybitty-}"
-                    tmux capture-pane -t "$session" -p -S -500 > "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                    tmux capture-pane -t "$session" -p -S -500 > "$tmux_cache_dir/$agent_id.tmp" 2>/dev/null && \
+                        mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
                 fi
             done
 
