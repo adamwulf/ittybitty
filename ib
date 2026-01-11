@@ -139,13 +139,15 @@ is_running_as_agent() {
     return 1
 }
 
-# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Get children of a manager agent with optional state filtering
 # Args: $1 = manager agent ID
-# Returns: space-separated list of unfinished child IDs (empty if none)
-# Children in running, waiting, or complete state all need attention before manager can complete
-get_unfinished_children() {
-    local MANAGER_ID="$1"
-    local unfinished_children=""
+#       $2 = filter (optional): all|unfinished|running|waiting|complete (default: all)
+# Returns: space-separated list of child IDs matching filter
+# Note: "unfinished" includes running, waiting, and complete states
+get_children() {
+    local manager_id="$1"
+    local filter="${2:-all}"
+    local children=""
 
     # Iterate through all agent directories
     for agent_dir in "$AGENTS_DIR"/*/; do
@@ -157,22 +159,76 @@ get_unfinished_children() {
         [[ -f "$meta_file" ]] || continue
 
         # Check if this agent's manager matches
-        local manager=$(jq -r '.manager // ""' "$meta_file" 2>/dev/null)
-        if [[ "$manager" == "$MANAGER_ID" ]]; then
-            # Check if this child is in an unfinished state (running, waiting, or complete)
-            # All of these need to be merged or killed before manager can complete
-            local state=$(get_state "$child_id")
-            if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
-                if [[ -n "$unfinished_children" ]]; then
-                    unfinished_children="$unfinished_children $child_id"
+        local manager=$(read_meta_field "$meta_file" "manager" "")
+        if [[ "$manager" == "$manager_id" ]]; then
+            # Apply state filter
+            if [[ "$filter" == "all" ]]; then
+                # Include all children regardless of state
+                if [[ -n "$children" ]]; then
+                    children="$children $child_id"
                 else
-                    unfinished_children="$child_id"
+                    children="$child_id"
+                fi
+            else
+                # Check state for filtering
+                local state=$(get_state "$child_id")
+
+                if [[ "$filter" == "unfinished" ]]; then
+                    # Unfinished = running, waiting, or complete
+                    if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                        if [[ -n "$children" ]]; then
+                            children="$children $child_id"
+                        else
+                            children="$child_id"
+                        fi
+                    fi
+                elif [[ "$state" == "$filter" ]]; then
+                    # Exact state match
+                    if [[ -n "$children" ]]; then
+                        children="$children $child_id"
+                    else
+                        children="$child_id"
+                    fi
                 fi
             fi
         fi
     done
 
-    echo "$unfinished_children"
+    echo "$children"
+}
+
+# Get all descendants of a manager agent recursively (children, grandchildren, etc.)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of all descendant IDs in depth-first order
+# Note: Includes the manager itself as the first element
+get_descendants_recursive() {
+    local manager_id="$1"
+    echo "$manager_id"  # Include the manager itself
+
+    # Find all direct children
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id="${agent_dir%/}"; id="${id##*/}"
+        local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
+        if [[ "$manager" == "null" ]]; then
+            manager=""
+        fi
+
+        if [[ "$manager" == "$manager_id" ]]; then
+            # Recursively get this child's descendants
+            get_descendants_recursive "$id"
+        fi
+    done
+}
+
+# Get unfinished children of a manager agent (children that haven't been merged/killed)
+# Args: $1 = manager agent ID
+# Returns: space-separated list of unfinished child IDs (empty if none)
+# Children in running, waiting, or complete state all need attention before manager can complete
+get_unfinished_children() {
+    get_children "$1" "unfinished"
 }
 
 # Teardown an agent: kill processes, remove worktree, archive, cleanup
@@ -260,7 +316,7 @@ kill_agent_process() {
 
     # Strategy 2: Fallback to meta.json PID
     if [[ -z "$PID" && -f "$AGENT_DIR/meta.json" ]]; then
-        PID=$(jq -r '.claude_pid // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        PID=$(read_meta_field "$AGENT_DIR/meta.json" "claude_pid" "")
         [[ "$PID" == "null" || -z "$PID" ]] && PID=""
     fi
 
@@ -910,6 +966,18 @@ _meta_cache_lookup() {
         fi
     done
     echo "-1"
+}
+
+# Read a field from meta.json with default value
+# Usage: read_meta_field <meta_file> <field_name> [default_value]
+# Examples:
+#   manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
+#   worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
+read_meta_field() {
+    local meta_file="$1"
+    local field="$2"
+    local default="${3:-}"
+    jq -r ".$field // \"$default\"" "$meta_file" 2>/dev/null
 }
 
 # Build agent data file for tree operations
@@ -1563,7 +1631,7 @@ EOF
             # Find the agent directory and read meta.json
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                MANAGER=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                MANAGER=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -1582,7 +1650,7 @@ EOF
 
         # Check if the manager is a worker agent
         local MANAGER_DIR="$AGENTS_DIR/$MANAGER"
-        local is_worker=$(jq -r '.worker // false' "$MANAGER_DIR/meta.json" 2>/dev/null)
+        local is_worker=$(read_meta_field "$MANAGER_DIR/meta.json" "worker" "false")
         if [[ "$is_worker" == "true" ]]; then
             echo "Error: '$MANAGER' is a worker agent and cannot manage sub-agents" >&2
             echo "" >&2
@@ -2113,10 +2181,10 @@ EOF
         local meta="$agent_dir/meta.json"
 
         # Read metadata
-        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
-        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
-        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+        local prompt=$(read_meta_field "$meta" "prompt" "" | head -1 | cut -c1-40)
+        local manager=$(read_meta_field "$meta" "manager" "")
+        local created=$(read_meta_field "$meta" "created" "")
+        local model=$(read_meta_field "$meta" "model" "")
         if [[ "$model" == "null" || -z "$model" ]]; then
             model="-"
         fi
@@ -2317,7 +2385,7 @@ EOF
             # Find the agent directory and read meta.json
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                FROM_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                FROM_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -2812,18 +2880,11 @@ EOF
 
         # Check if this is a worker agent (has no children)
         local AGENT_DIR="$AGENTS_DIR/$TARGET_ID"
-        local is_worker=$(jq -r '.worker // false' "$AGENT_DIR/meta.json" 2>/dev/null)
+        local is_worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
 
-        # Count children
-        local child_count=0
-        for agent_dir in "$AGENTS_DIR"/*/; do
-            [[ -d "$agent_dir" ]] || continue
-            [[ -f "$agent_dir/meta.json" ]] || continue
-            local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
-            if [[ "$manager" == "$TARGET_ID" ]]; then
-                ((child_count++))
-            fi
-        done
+        # Count children using get_children helper
+        local children_list=$(get_children "$TARGET_ID" "all")
+        local child_count=$(echo "$children_list" | wc -w | tr -d ' ')
 
         # Reject if this is a worker with no children
         if [[ "$is_worker" == "true" && $child_count -eq 0 ]]; then
@@ -2834,31 +2895,8 @@ EOF
             exit 1
         fi
 
-        # Build list of all descendants recursively
-        get_descendants() {
-            local manager_id="$1"
-            echo "$manager_id"  # Include the manager itself
-
-            # Find all direct children
-            for agent_dir in "$AGENTS_DIR"/*/; do
-                [[ -d "$agent_dir" ]] || continue
-                [[ -f "$agent_dir/meta.json" ]] || continue
-
-                local id="${agent_dir%/}"; id="${id##*/}"
-                local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
-                if [[ "$manager" == "null" ]]; then
-                    manager=""
-                fi
-
-                if [[ "$manager" == "$manager_id" ]]; then
-                    # Recursively get this child's descendants
-                    get_descendants "$id"
-                fi
-            done
-        }
-
-        # Get all descendants
-        agents_to_kill=($(get_descendants "$TARGET_ID"))
+        # Get all descendants using helper function
+        agents_to_kill=($(get_descendants_recursive "$TARGET_ID"))
         local agent_count=${#agents_to_kill[@]}
 
         if [[ $agent_count -eq 0 ]]; then
@@ -3089,7 +3127,7 @@ EOF
         exit 1
     fi
 
-    local SESSION_UUID=$(jq -r '.session_id // ""' "$META_FILE" 2>/dev/null)
+    local SESSION_UUID=$(read_meta_field "$META_FILE" "session_id" "")
     if [[ -z "$SESSION_UUID" || "$SESSION_UUID" == "null" ]]; then
         echo "Error: no session_id found in meta.json" >&2
         echo "This agent was created before resume support was added." >&2
@@ -3097,7 +3135,7 @@ EOF
     fi
 
     # Read model from meta.json if set
-    local MODEL=$(jq -r '.model // ""' "$META_FILE" 2>/dev/null)
+    local MODEL=$(read_meta_field "$META_FILE" "model" "")
     if [[ "$MODEL" == "null" ]]; then
         MODEL=""
     fi
@@ -3460,7 +3498,7 @@ cmd_hook_status() {
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local manager=""
     if [[ -f "$AGENT_DIR/meta.json" ]]; then
-        manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+        manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
         [[ "$manager" == "null" ]] && manager=""
     fi
 
@@ -3569,13 +3607,13 @@ EOF
             # Extract agent ID from path
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                AGENT_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         elif [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
             # Legacy path format
             local agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
             if [[ -f "$agent_dir/meta.json" ]]; then
-                AGENT_ID=$(jq -r '.id // ""' "$agent_dir/meta.json" 2>/dev/null)
+                AGENT_ID=$(read_meta_field "$agent_dir/meta.json" "id" "")
             fi
         fi
     fi
@@ -3643,7 +3681,7 @@ cmd_watchdog() {
     fi
 
     # Load manager from meta.json
-    local manager=$(jq -r '.manager // ""' "$AGENT_DIR/meta.json" 2>/dev/null)
+    local manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
 
     # Check if agent has a manager (skip check in quiet mode)
     if [[ "$QUIET" != "true" ]]; then
