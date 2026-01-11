@@ -482,7 +482,7 @@ resolve_agent_id() {
     # Look for partial matches in agent directories
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
-        local id=$(basename "$agent_dir")
+        local id="${agent_dir%/}"; id="${id##*/}"
         if [[ "$id" == *"$partial"* ]]; then
             matches+=("$id")
         fi
@@ -828,7 +828,7 @@ build_agent_data_file() {
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
 
-        local id=$(basename "$agent_dir")
+        local id="${agent_dir%/}"; id="${id##*/}"
         local manager="" created_epoch="" model="" prompt=""
 
         # Check cache first (inline lookup to avoid subprocess)
@@ -1853,7 +1853,7 @@ EOF
             continue
         fi
 
-        local id=$(basename "$agent_dir")
+        local id="${agent_dir%/}"; id="${id##*/}"
         local meta="$agent_dir/meta.json"
 
         # Read metadata
@@ -2588,7 +2588,7 @@ EOF
                 [[ -d "$agent_dir" ]] || continue
                 [[ -f "$agent_dir/meta.json" ]] || continue
 
-                local id=$(basename "$agent_dir")
+                local id="${agent_dir%/}"; id="${id##*/}"
                 local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
                 if [[ "$manager" == "null" ]]; then
                     manager=""
