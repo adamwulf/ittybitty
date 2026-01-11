@@ -577,7 +577,7 @@ init_paths() {
 # Format age from ISO timestamp
 format_age() {
     local created="$1"
-    local now=$(date +%s)
+    local now="${2:-$(date +%s)}"  # Accept optional now param to avoid repeated date calls
     # Strip timezone suffix (use % not %% to get shortest match from end)
     local timestamp="${created%[-+]*}"
     local then=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$timestamp" +%s 2>/dev/null || echo "$now")
@@ -783,6 +783,9 @@ build_agent_data_file() {
         return
     fi
 
+    # Compute now once for all age calculations
+    local now=$(date +%s)
+
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
@@ -796,7 +799,7 @@ build_agent_data_file() {
 
         # Get state and age
         local state=$(get_state "$id")
-        local age=$(format_age "$created")
+        local age=$(format_age "$created" "$now")
 
         # Display "unknown" as "waiting" for users
         if [[ "$state" == "unknown" ]]; then
