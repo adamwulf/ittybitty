@@ -5961,6 +5961,34 @@ cmd_config() {
                 exit 1
             fi
 
+            # Validate type for known configuration keys
+            case "$KEY" in
+                maxAgents|fps)
+                    if ! [[ "$VALUE" =~ ^[0-9]+$ ]]; then
+                        echo "Error: '$KEY' must be a number, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+                createPullRequests)
+                    if [[ "$VALUE" != "true" && "$VALUE" != "false" ]]; then
+                        echo "Error: '$KEY' must be true or false, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+                model)
+                    if [[ "$VALUE" != "sonnet" && "$VALUE" != "opus" && "$VALUE" != "haiku" ]]; then
+                        echo "Error: '$KEY' must be one of: sonnet, opus, haiku" >&2
+                        exit 1
+                    fi
+                    ;;
+                permissions.*.allow|permissions.*.deny)
+                    if ! [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
+                        echo "Error: '$KEY' must be a JSON array, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+            esac
+
             # Determine if value is a number, boolean, array, or string
             local json_value
             if [[ "$VALUE" =~ ^[0-9]+$ ]]; then
