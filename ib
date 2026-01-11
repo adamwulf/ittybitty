@@ -1124,7 +1124,9 @@ build_agent_data_file() {
     done
 
     # Increment frame counter for round-robin state refresh
+    # Reset after ~24 hours at 30fps to prevent overflow (2592000 = 24*60*60*30)
     ((STATE_FRAME_COUNT++))
+    [[ $STATE_FRAME_COUNT -gt 2592000 ]] && STATE_FRAME_COUNT=0
 
     # Store result in global - callers read BUILD_AGENT_DATA_RESULT
     BUILD_AGENT_DATA_RESULT="$tmpfile"
