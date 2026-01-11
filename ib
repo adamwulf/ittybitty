@@ -918,7 +918,7 @@ auto_accept_workspace_trust() {
 # =============================================================================
 
 # Global cache for meta.json data (never changes after agent creation)
-# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt"
+# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
 META_CACHE_IDS=()
 META_CACHE_DATA=()
 
@@ -1037,7 +1037,7 @@ build_agent_data_file() {
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id="${agent_dir%/}"; id="${id##*/}"
-        local manager="" created_epoch="" model="" prompt=""
+        local manager="" created_epoch="" model="" prompt="" worker="false"
 
         # Check cache first (inline lookup to avoid subprocess)
         local cache_idx=-1
@@ -1050,14 +1050,16 @@ build_agent_data_file() {
         done
 
         if [[ "$cache_idx" -ge 0 ]]; then
-            # Use cached data: manager|created_epoch|model|prompt
+            # Use cached data: manager|created_epoch|model|prompt|worker
             local cached="${META_CACHE_DATA[$cache_idx]}"
             manager="${cached%%|*}"
             local rest="${cached#*|}"
             created_epoch="${rest%%|*}"
             rest="${rest#*|}"
             model="${rest%%|*}"
-            prompt="${rest#*|}"
+            rest="${rest#*|}"
+            prompt="${rest%%|*}"
+            worker="${rest#*|}"
         else
             # Read from disk and cache
             local meta="$agent_dir/meta.json"
@@ -1071,6 +1073,7 @@ build_agent_data_file() {
                         manager) manager="$value" ;;
                         created_epoch) created_epoch="$value" ;;
                         model) model="$value" ;;
+                        worker) worker="$value" ;;
                     esac
                 fi
             done < "$meta"
@@ -1078,10 +1081,11 @@ build_agent_data_file() {
             # Handle nulls before caching
             [[ "$manager" == "null" ]] && manager=""
             [[ "$model" == "null" || -z "$model" ]] && model="-"
+            [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
 
             # Add to cache
             META_CACHE_IDS+=("$id")
-            META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt")
+            META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
         fi
 
         # Calculate age (must be fresh each time)
@@ -1102,7 +1106,7 @@ build_agent_data_file() {
 
         # Build data for this frame
         all_ids+=("$id")
-        all_data+=("$manager|$age|$model|$prompt")
+        all_data+=("$manager|$age|$model|$prompt|$worker")
     done
 
 
@@ -1164,13 +1168,15 @@ build_agent_data_file() {
             fi
         done
 
-        # Parse cached data: manager|age|model|prompt
+        # Parse cached data: manager|age|model|prompt|worker
         local manager="${data%%|*}"
         local rest="${data#*|}"
         local age="${rest%%|*}"
         rest="${rest#*|}"
         local model="${rest%%|*}"
-        local prompt="${rest#*|}"
+        rest="${rest#*|}"
+        local prompt="${rest%%|*}"
+        local worker="${rest#*|}"
 
         # Get state only for visible indices (round-robin refresh)
         local state="-"
@@ -1224,7 +1230,7 @@ build_agent_data_file() {
             fi
         fi
 
-        echo "$id|$manager|$state|$age|$model|$prompt" >> "$tmpfile"
+        echo "$id|$manager|$state|$age|$model|$prompt|$worker" >> "$tmpfile"
     done
 
     # Increment frame counter for round-robin state refresh
@@ -1387,8 +1393,17 @@ build_tree_lines() {
 
         # Get agent info and parse with bash
         _tree_get_agent_info "$id"
-        local _id _manager state age model prompt
-        IFS='|' read -r _id _manager state age model prompt <<< "$_INFO"
+        local _id _manager state age model prompt worker
+        IFS='|' read -r _id _manager state age model prompt worker <<< "$_INFO"
+
+        # Check if this agent is orphaned (worker with missing manager)
+        local is_orphan=""
+        if [[ "$worker" == "true" && -n "$_manager" && ! -z "$_manager" ]]; then
+            # This is a worker with a manager - check if manager exists
+            if ! _tree_id_exists "$_manager"; then
+                is_orphan="orphan"
+            fi
+        fi
 
         # Print this node with aligned columns
         local connector child_prefix tree_part
@@ -1416,8 +1431,8 @@ build_tree_lines() {
             tree_part="$prefix$connector $id"
         fi
 
-        # Format: tree_part | state | age | model | (orphan note) | prompt
-        _BUILD_TREE_LINES+=("${tree_part}|${state}|${age}|${model}||${prompt}")
+        # Format: tree_part | state | age | model | orphan | prompt
+        _BUILD_TREE_LINES+=("${tree_part}|${state}|${age}|${model}|${is_orphan}|${prompt}")
 
         # Print children
         _tree_get_children_for_print "$id"
@@ -1493,7 +1508,7 @@ format_tree_lines() {
     fi
 
     # Format each line with aligned columns
-    local state age model _empty prompt rest
+    local state age model orphan_status prompt rest
     for line in "${_BUILD_TREE_LINES[@]}"; do
         tree_part="${line%%|*}"
         rest="${line#*|}"
@@ -1503,8 +1518,13 @@ format_tree_lines() {
         rest="${rest#*|}"
         model="${rest%%|*}"
         rest="${rest#*|}"
-        _empty="${rest%%|*}"
+        orphan_status="${rest%%|*}"
         prompt="${rest#*|}"
+
+        # Add warning prefix if orphaned
+        if [[ "$orphan_status" == "orphan" ]]; then
+            tree_part="⚠️ ${tree_part}"
+        fi
 
         # Clip prompt to terminal width if specified
         if [[ $max_prompt_width -gt 0 && ${#prompt} -gt $max_prompt_width ]]; then
@@ -5231,10 +5251,29 @@ EOF
         local selected_id="$1"
         local tree_display_lines="$2"
 
+        # Check if selected agent is orphaned (worker with missing manager)
+        local is_orphaned=false
+        local agent_meta="$AGENTS_DIR/$selected_id/meta.json"
+        if [[ -f "$agent_meta" ]]; then
+            local agent_worker=$(read_meta_field "$agent_meta" "worker" "false")
+            local agent_manager=$(read_meta_field "$agent_meta" "manager" "")
+            if [[ "$agent_worker" == "true" && -n "$agent_manager" ]]; then
+                # This is a worker with a manager - check if manager exists
+                if [[ ! -d "$AGENTS_DIR/$agent_manager" ]]; then
+                    is_orphaned=true
+                fi
+            fi
+        fi
+
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
         # Rows: tree + pane_header(1) + pane_separator(1) + footer(1) = tree + 3
-        local pane_height=$((TERM_LINES - tree_display_lines - 4))  # header + separator + 2 footer lines
+        # If orphaned, add warning pane (2 lines)
+        local warning_pane_height=0
+        if [[ "$is_orphaned" == "true" ]]; then
+            warning_pane_height=2
+        fi
+        local pane_height=$((TERM_LINES - tree_display_lines - 4 - warning_pane_height))  # header + separator + 2 footer lines + warning
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -5320,6 +5359,19 @@ EOF
             right_header="${right_header}─"
         done
         printf "%s─┬─%s\n" "$left_header" "$right_header"
+
+        # ===== ORPHAN WARNING PANE =====
+        if [[ "$is_orphaned" == "true" ]]; then
+            # Get manager ID from meta
+            local manager_id=$(read_meta_field "$agent_meta" "manager" "unknown")
+            local warning_msg="⚠️  WARNING: This worker agent is orphaned. Manager '$manager_id' no longer exists."
+            # Print warning pane (2 lines: message + separator)
+            printf '\e[33m%-*s\e[0m\n' "$TERM_COLS" "$warning_msg"
+            local warning_sep=""
+            local i
+            for ((i=0; i<TERM_COLS; i++)); do warning_sep="${warning_sep}─"; done
+            printf '%s\n' "$warning_sep"
+        fi
 
         # Reset scroll offset when agent changes
         if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
