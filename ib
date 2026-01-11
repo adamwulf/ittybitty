@@ -3952,6 +3952,9 @@ EOF
         local _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt
         IFS='|' read -r _sel_id _sel_manager selected_state _sel_age selected_model selected_prompt <<< "$selected_info"
 
+        # Set terminal title to selected agent name
+        printf '\e]0;ib watch: %s\a' "$selected_id"
+
         # Get tree lines (no subprocess - uses global arrays)
         build_tree_lines "$tmpfile"
         format_tree_lines
