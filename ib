@@ -626,6 +626,32 @@ _tail_file() {
     done
 }
 
+# Pure bash fold - wrap text to specified width (no subprocess)
+# Args: $1 = text to wrap, $2 = width
+# Result: stored in _FOLD_LINES array
+_FOLD_LINES=()
+_fold_text() {
+    local text="$1"
+    local width="${2:-80}"
+
+    _FOLD_LINES=()
+    [[ -z "$text" ]] && return
+
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ ${#line} -le $width ]]; then
+            _FOLD_LINES+=("$line")
+        else
+            # Wrap long line
+            while [[ ${#line} -gt $width ]]; do
+                _FOLD_LINES+=("${line:0:$width}")
+                line="${line:$width}"
+            done
+            [[ -n "$line" ]] && _FOLD_LINES+=("$line")
+        fi
+    done <<< "$text"
+}
+
 # Capture tmux pane content and store in LAST_TMUX_CAPTURE
 # Args: $1 = tmux session name, $2 = number of lines (default 20)
 # Result: stored in LAST_TMUX_CAPTURE global variable (no stdout, no subprocess needed)
@@ -829,6 +855,15 @@ CACHED_NOW=0
 CACHED_SESSIONS=""
 SESSIONS_FILE=""  # Set by watch to enable async session monitoring
 TMUX_CACHE_DIR=""  # Set by watch for async tmux pane capture
+
+# Background log cache (set by watch, used by main loop)
+LOG_CACHE_DIR=""      # Directory with pre-wrapped log files
+LOG_WIDTH_FILE=""     # File containing wrap width for background process
+
+# Parsed log cache (avoid re-parsing file into array every frame)
+LOG_PARSED_AGENT=""   # Which agent's log is cached
+LOG_PARSED_LEN=0      # Byte count of cached content
+LOG_PARSED_LINES=()   # Parsed array of lines
 
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
@@ -3991,20 +4026,43 @@ EOF
         fi
         local t_tmux=$(get_ms)
 
-        # Get agent log and wrap it
+        # Get agent log (pre-wrapped by background process, cached parse)
         local t_log_start=$(get_ms)
-        local all_log_lines=()
-        local log_file="$AGENTS_DIR/$selected_id/agent.log"
-        if [[ -f "$log_file" ]]; then
-            # Read and wrap in a single pipeline
-            while IFS= read -r wrapped_line; do
-                all_log_lines+=("$wrapped_line")
-            done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null | fold -w "$right_pane_width")
+
+        # Update width file for background process
+        [[ -n "$LOG_WIDTH_FILE" ]] && echo "$right_pane_width" > "$LOG_WIDTH_FILE"
+
+        # Only check file every 7 frames (or immediately on agent change)
+        local log_cache_file="$LOG_CACHE_DIR/$selected_id"
+        if [[ "$LOG_PARSED_AGENT" != "$selected_id" ]] || [[ $((STATE_FRAME_COUNT % 7)) -eq 0 ]]; then
+            if [[ -n "$LOG_CACHE_DIR" && -f "$log_cache_file" ]]; then
+                local log_content
+                log_content=$(<"$log_cache_file") 2>/dev/null || true
+                local content_len=${#log_content}
+
+                # Reparse if agent changed or content length changed
+                if [[ "$LOG_PARSED_AGENT" != "$selected_id" || "$LOG_PARSED_LEN" != "$content_len" ]]; then
+                    LOG_PARSED_LINES=()
+                    if [[ -n "$log_content" ]]; then
+                        while IFS= read -r line; do
+                            LOG_PARSED_LINES+=("$line")
+                        done <<< "$log_content"
+                    fi
+                    LOG_PARSED_AGENT="$selected_id"
+                    LOG_PARSED_LEN=$content_len
+                fi
+            elif [[ "$LOG_PARSED_AGENT" != "$selected_id" ]]; then
+                # No cache file, clear if agent changed
+                LOG_PARSED_LINES=()
+                LOG_PARSED_AGENT="$selected_id"
+                LOG_PARSED_LEN=0
+            fi
         fi
+
         local t_log=$(get_ms)
 
         local tmux_total=${#all_tmux_lines[@]}
-        local log_total=${#all_log_lines[@]}
+        local log_total=${#LOG_PARSED_LINES[@]}
 
         # Calculate and clamp scroll offset
         local tmux_max_scroll=$((tmux_total - pane_height))
@@ -4042,7 +4100,7 @@ EOF
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local log_idx=$((log_start_idx + pane_line))
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
-                visible_log_lines+=("${all_log_lines[$log_idx]}")
+                visible_log_lines+=("${LOG_PARSED_LINES[$log_idx]}")
             else
                 visible_log_lines+=("")
             fi
@@ -4127,9 +4185,15 @@ EOF
     # Start background session monitor (refreshes tmux session list AND captures pane output)
     local sessionfile=$(mktemp)
     local tmux_cache_dir=$(mktemp -d)
+    local log_cache_dir=$(mktemp -d)
+    local log_width_file=$(mktemp)
+    echo "80" > "$log_width_file"  # Default width
     SESSIONS_FILE="$sessionfile"  # Global for build_agent_data_file to read
     TMUX_CACHE_DIR="$tmux_cache_dir"  # Global for reading cached tmux output
+    LOG_CACHE_DIR="$log_cache_dir"  # Global for reading cached wrapped logs
+    LOG_WIDTH_FILE="$log_width_file"  # Global for main loop to update wrap width
     (
+        local agents_dir="$PWD/.ittybitty/agents"
         while true; do
             # Get session list
             local sessions
@@ -4145,6 +4209,21 @@ EOF
                 fi
             done
 
+            # Cache wrapped log files for each agent
+            local wrap_width
+            read -r wrap_width < "$log_width_file" 2>/dev/null || wrap_width=80
+            for agent_dir in "$agents_dir"/*/; do
+                [[ -d "$agent_dir" ]] || continue
+                local agent_id="${agent_dir%/}"
+                agent_id="${agent_id##*/}"
+                local log_file="$agent_dir/agent.log"
+                if [[ -f "$log_file" ]]; then
+                    # Read last 200 lines, wrap to width, write to cache
+                    tail -n 200 "$log_file" 2>/dev/null | fold -w "$wrap_width" > "$log_cache_dir/$agent_id.tmp" && \
+                        mv "$log_cache_dir/$agent_id.tmp" "$log_cache_dir/$agent_id" 2>/dev/null || true
+                fi
+            done
+
             sleep 0.15
         done
     ) &
@@ -4154,10 +4233,12 @@ EOF
     watch_cleanup_reader() {
         kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
-        rm -f "$keyfile" "$sessionfile"
-        rm -rf "$tmux_cache_dir"
+        rm -f "$keyfile" "$sessionfile" "$log_width_file"
+        rm -rf "$tmux_cache_dir" "$log_cache_dir"
         SESSIONS_FILE=""
         TMUX_CACHE_DIR=""
+        LOG_CACHE_DIR=""
+        LOG_WIDTH_FILE=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
