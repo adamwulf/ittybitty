@@ -3459,6 +3459,8 @@ EOF
 
     # Main render function
     watch_render() {
+        local t0=$(get_ms)
+
         # Get terminal size
         TERM_LINES=$(tput lines)
         TERM_COLS=$(tput cols)
@@ -3466,8 +3468,10 @@ EOF
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
+        local t1=$(get_ms)
         # Build agent data
         local tmpfile=$(build_agent_data_file)
+        local t_agent_data=$(get_ms)
 
         if [[ ! -s "$tmpfile" ]]; then
             # No agents - show message
@@ -3510,11 +3514,13 @@ EOF
         local selected_prompt=$(echo "$selected_info" | cut -d'|' -f6-)
 
         # Get tree lines
+        local t_tree_start=$(get_ms)
         local tree_lines=()
         while IFS= read -r line; do
             tree_lines+=("$line")
         done < <(build_tree_lines "$tmpfile" | column -t -s '|')
         local total_tree_lines=${#tree_lines[@]}
+        local t_tree=$(get_ms)
 
         # Calculate tree scroll to keep selection visible (window of 5)
         if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
@@ -3578,6 +3584,7 @@ EOF
         local capture_lines=500
 
         # Get tmux output for selected agent (all lines, for total count)
+        local t_tmux_start=$(get_ms)
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
@@ -3593,19 +3600,27 @@ EOF
                 done < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
             fi
         fi
+        local t_tmux=$(get_ms)
 
         # Get agent log and wrap it (all lines, for total count)
+        local t_log_start=$(get_ms)
         local all_log_lines=()
         local log_raw_count=0
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
-            while IFS= read -r raw_line; do
-                ((log_raw_count++))
+            # Read all lines at once, then wrap in a single fold call
+            local log_content
+            log_content=$(tail -n "$capture_lines" "$log_file" 2>/dev/null)
+            if [[ -n "$log_content" ]]; then
+                # Count raw lines
+                log_raw_count=$(printf '%s\n' "$log_content" | wc -l)
+                # Wrap all lines at once with fold
                 while IFS= read -r wrapped_line; do
                     all_log_lines+=("$wrapped_line")
-                done < <(printf '%s\n' "$raw_line" | fold -w "$right_pane_width")
-            done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null)
+                done < <(printf '%s\n' "$log_content" | fold -w "$right_pane_width")
+            fi
         fi
+        local t_log=$(get_ms)
 
         local tmux_total=${#all_tmux_lines[@]}
         local log_total=${#all_log_lines[@]}
@@ -3621,33 +3636,41 @@ EOF
         [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
 
         # Extract visible window of tmux lines (strip ANSI, truncate to width)
+        local t_extract_start=$(get_ms)
         local visible_tmux_lines=()
         local pane_line
+
+        # Build list of visible tmux lines, then process all at once
+        local tmux_start_idx=$((tmux_total - pane_height - SCROLL_OFFSET))
+        local raw_visible=""
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            local tmux_idx=$((tmux_total - pane_height + pane_line - SCROLL_OFFSET))
+            local tmux_idx=$((tmux_start_idx + pane_line))
             if [[ $tmux_idx -ge 0 && $tmux_idx -lt $tmux_total ]]; then
-                # Strip ANSI and truncate in one pipeline
-                local processed
-                processed=$(printf '%s' "${all_tmux_lines[$tmux_idx]}" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-"$left_pane_width")
-                visible_tmux_lines+=("$processed")
-            else
-                visible_tmux_lines+=("")
+                raw_visible+="${all_tmux_lines[$tmux_idx]}"
             fi
+            raw_visible+=$'\n'
         done
+        # Process all lines at once through sed|cut
+        while IFS= read -r line; do
+            visible_tmux_lines+=("$line")
+        done < <(printf '%s' "$raw_visible" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-"$left_pane_width")
 
         # Extract visible window of log lines (already wrapped, just slice)
         local visible_log_lines=()
+        local log_start_idx=$((log_total - pane_height - SCROLL_OFFSET))
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-            local log_idx=$((log_total - pane_height + pane_line - SCROLL_OFFSET))
+            local log_idx=$((log_start_idx + pane_line))
             if [[ $log_idx -ge 0 && $log_idx -lt $log_total ]]; then
                 visible_log_lines+=("${all_log_lines[$log_idx]}")
             else
                 visible_log_lines+=("")
             fi
         done
+        local t_extract=$(get_ms)
 
         # ===== PHASE 2: RENDER (no processing, just print) =====
 
+        local t_print_start=$(get_ms)
         local pane_start_row=8
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local row=$((pane_start_row + pane_line))
@@ -3656,16 +3679,24 @@ EOF
                 "$row" "$((left_pane_width + 1))" \
                 "${visible_log_lines[$pane_line]}"
         done
+        local t_print=$(get_ms)
 
         # Move cursor to line after panes
         printf '\e[%d;1H' "$((pane_start_row + pane_height))"
 
-        # Bottom help line with time on far right
+        # Bottom help line with timing breakdown
         local help_text="j/k: select    ;/l: scroll    Ctrl-C: quit"
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
         local current_time
         current_time=$(date +%H:%M:%S)
-        local right_info="q:${LAST_QUEUE_SIZE}  ${current_time}"
+        # Timing breakdown: agent data, tree, tmux capture, log wrap, extract, print
+        local d_agent=$((t_agent_data - t1))
+        local d_tree=$((t_tree - t_tree_start))
+        local d_tmux=$((t_tmux - t_tmux_start))
+        local d_log=$((t_log - t_log_start))
+        local d_extract=$((t_extract - t_extract_start))
+        local d_print=$((t_print - t_print_start))
+        local right_info="a:${d_agent} t:${d_tree} x:${d_tmux} l:${d_log} e:${d_extract} p:${d_print} q:${LAST_QUEUE_SIZE} ${current_time}"
         local padding=$((TERM_COLS - ${#help_text} - ${#right_info}))
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
 
@@ -3719,17 +3750,31 @@ EOF
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
 
+    # Helper to get current time in milliseconds
+    get_ms() {
+        perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000
+    }
+
     # Main loop
     local LAST_QUEUE_SIZE=0
+    local RENDER_MS=0
+    local INPUT_MS=0
+    local FRAME_MS=0
 
     while true; do
+        local frame_start=$(get_ms)
+
         # Render frame
+        local render_start=$(get_ms)
         watch_render
+        local render_end=$(get_ms)
+        RENDER_MS=$((render_end - render_start))
 
         # Small delay for input collection
         sleep 0.02
 
         # Collect and clear accumulated keys
+        local input_start=$(get_ms)
         local keys_to_process=""
         if [[ -s "$keyfile" ]]; then
             keys_to_process=$(cat "$keyfile")
@@ -3742,6 +3787,11 @@ EOF
         for ((i=0; i<${#keys_to_process}; i++)); do
             watch_process_key "${keys_to_process:$i:1}"
         done
+        local input_end=$(get_ms)
+        INPUT_MS=$((input_end - input_start))
+
+        local frame_end=$(get_ms)
+        FRAME_MS=$((frame_end - frame_start))
     done
 }
 
