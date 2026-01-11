@@ -3954,6 +3954,68 @@ EOF
         printf "%s%*s%s" "$help_text" "$padding" "" "$right_info"
     }
 
+    # Render tree with selection highlighting
+    # Args: $1=tmpfile
+    # Sets: _WATCH_SELECTED_ID, _WATCH_TREE_DISPLAY_LINES
+    # Modifies: SELECTED_INDEX, TREE_SCROLL, AGENT_COUNT
+    watch_render_tree() {
+        local tmpfile="$1"
+
+        # Read agent IDs directly from tmpfile (already in tree order!)
+        local agent_ids=()
+        local line
+        while IFS= read -r line; do
+            agent_ids+=("${line%%|*}")
+        done < "$tmpfile"
+        AGENT_COUNT=${#agent_ids[@]}
+
+        # Clamp selection to valid range
+        if [[ $SELECTED_INDEX -ge $AGENT_COUNT ]]; then
+            SELECTED_INDEX=$((AGENT_COUNT - 1))
+        fi
+        if [[ $SELECTED_INDEX -lt 0 ]]; then
+            SELECTED_INDEX=0
+        fi
+
+        # Get the selected agent ID
+        _WATCH_SELECTED_ID="${agent_ids[$SELECTED_INDEX]}"
+
+        # Set terminal title to selected agent name
+        printf '\e]0;ib watch: %s\a' "$_WATCH_SELECTED_ID"
+
+        # Get tree lines (no subprocess - uses global arrays)
+        build_tree_lines "$tmpfile"
+        format_tree_lines "$TERM_COLS"
+        local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
+        local total_tree_lines=${#tree_lines[@]}
+
+        # Calculate tree scroll to keep selection visible (window of 5)
+        if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
+            TREE_SCROLL=$SELECTED_INDEX
+        elif [[ $SELECTED_INDEX -ge $((TREE_SCROLL + 5)) ]]; then
+            TREE_SCROLL=$((SELECTED_INDEX - 4))
+        fi
+
+        # Display min(agent count, 5) lines of tree with selection highlighting
+        _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
+        [[ $_WATCH_TREE_DISPLAY_LINES -gt 5 ]] && _WATCH_TREE_DISPLAY_LINES=5
+        local display_line
+        for ((display_line=0; display_line<_WATCH_TREE_DISPLAY_LINES; display_line++)); do
+            local tree_idx=$((TREE_SCROLL + display_line))
+            if [[ $tree_idx -lt $total_tree_lines ]]; then
+                line="${tree_lines[$tree_idx]}"
+                if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
+                    # Highlight selected line with reverse video
+                    printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
+                else
+                    printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+                fi
+            else
+                printf "%-${TERM_COLS}s\n" ""
+            fi
+        done
+    }
+
     # Main render function
     watch_render() {
         local t_frame_start=$(get_ms)
@@ -3995,58 +4057,10 @@ EOF
             return  # tmpfile cleanup handled by RETURN trap
         fi
 
-        # Read agent IDs directly from tmpfile (already in tree order!)
-        local agent_ids=()
-        while IFS= read -r line; do
-            agent_ids+=("${line%%|*}")
-        done < "$tmpfile"
-        AGENT_COUNT=${#agent_ids[@]}
-
-        # Clamp selection to valid range
-        if [[ $SELECTED_INDEX -ge $AGENT_COUNT ]]; then
-            SELECTED_INDEX=$((AGENT_COUNT - 1))
-        fi
-        if [[ $SELECTED_INDEX -lt 0 ]]; then
-            SELECTED_INDEX=0
-        fi
-
-        # Get the selected agent ID
-        local selected_id="${agent_ids[$SELECTED_INDEX]}"
-
-        # Set terminal title to selected agent name
-        printf '\e]0;ib watch: %s\a' "$selected_id"
-
-        # Get tree lines (no subprocess - uses global arrays)
-        build_tree_lines "$tmpfile"
-        format_tree_lines "$TERM_COLS"
-        local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
-        local total_tree_lines=${#tree_lines[@]}
-
-        # Calculate tree scroll to keep selection visible (window of 5)
-        if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
-            TREE_SCROLL=$SELECTED_INDEX
-        elif [[ $SELECTED_INDEX -ge $((TREE_SCROLL + 5)) ]]; then
-            TREE_SCROLL=$((SELECTED_INDEX - 4))
-        fi
-
-        # Display min(agent count, 5) lines of tree with selection highlighting
-        local tree_display_lines=$total_tree_lines
-        [[ $tree_display_lines -gt 5 ]] && tree_display_lines=5
-        local display_line
-        for ((display_line=0; display_line<tree_display_lines; display_line++)); do
-            local tree_idx=$((TREE_SCROLL + display_line))
-            if [[ $tree_idx -lt $total_tree_lines ]]; then
-                local line="${tree_lines[$tree_idx]}"
-                if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
-                    # Highlight selected line with reverse video
-                    printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
-                else
-                    printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
-                fi
-            else
-                printf "%-${TERM_COLS}s\n" ""
-            fi
-        done
+        # Render tree and get selected agent
+        watch_render_tree "$tmpfile"
+        local selected_id="$_WATCH_SELECTED_ID"
+        local tree_display_lines="$_WATCH_TREE_DISPLAY_LINES"
 
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
