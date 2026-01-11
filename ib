@@ -5999,6 +5999,172 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: config
+# =============================================================================
+
+cmd_config() {
+    local SUBCOMMAND="${1:-}"
+    shift || true
+
+    case "$SUBCOMMAND" in
+        get)
+            # ib config get <key>
+            local KEY="${1:-}"
+            if [[ -z "$KEY" ]]; then
+                echo "Error: Key required" >&2
+                echo "Usage: ib config get <key>" >&2
+                exit 1
+            fi
+
+            local config_file=".ittybitty.json"
+            if [[ ! -f "$config_file" ]]; then
+                echo "Error: .ittybitty.json not found" >&2
+                exit 1
+            fi
+
+            if ! command -v jq &>/dev/null; then
+                echo "Error: jq is required for config commands" >&2
+                exit 1
+            fi
+
+            # Use jq to get the value at the specified key path
+            local value
+            value=$(jq -r ".$KEY // empty" "$config_file" 2>/dev/null)
+
+            if [[ -z "$value" ]]; then
+                echo "Error: Key '$KEY' not found in $config_file" >&2
+                exit 1
+            fi
+
+            echo "$value"
+            ;;
+
+        set)
+            # ib config set <key> <value>
+            local KEY="${1:-}"
+            local VALUE="${2:-}"
+
+            if [[ -z "$KEY" ]]; then
+                echo "Error: Key required" >&2
+                echo "Usage: ib config set <key> <value>" >&2
+                exit 1
+            fi
+
+            if [[ -z "$VALUE" ]]; then
+                echo "Error: Value required" >&2
+                echo "Usage: ib config set <key> <value>" >&2
+                exit 1
+            fi
+
+            local config_file=".ittybitty.json"
+
+            # Create default config if it doesn't exist
+            if [[ ! -f "$config_file" ]]; then
+                echo "{}" > "$config_file"
+            fi
+
+            if ! command -v jq &>/dev/null; then
+                echo "Error: jq is required for config commands" >&2
+                exit 1
+            fi
+
+            # Validate type for known configuration keys
+            case "$KEY" in
+                maxAgents|fps)
+                    if ! [[ "$VALUE" =~ ^[0-9]+$ ]]; then
+                        echo "Error: '$KEY' must be a number, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+                createPullRequests)
+                    if [[ "$VALUE" != "true" && "$VALUE" != "false" ]]; then
+                        echo "Error: '$KEY' must be true or false, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+                model)
+                    if [[ "$VALUE" != "sonnet" && "$VALUE" != "opus" && "$VALUE" != "haiku" ]]; then
+                        echo "Error: '$KEY' must be one of: sonnet, opus, haiku" >&2
+                        exit 1
+                    fi
+                    ;;
+                permissions.*.allow|permissions.*.deny)
+                    if ! [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
+                        echo "Error: '$KEY' must be a JSON array, got '$VALUE'" >&2
+                        exit 1
+                    fi
+                    ;;
+            esac
+
+            # Determine if value is a number, boolean, array, or string
+            local json_value
+            if [[ "$VALUE" =~ ^[0-9]+$ ]]; then
+                # Integer
+                json_value="$VALUE"
+            elif [[ "$VALUE" == "true" || "$VALUE" == "false" ]]; then
+                # Boolean
+                json_value="$VALUE"
+            elif [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
+                # Array (assume it's valid JSON)
+                json_value="$VALUE"
+            elif [[ "$VALUE" == "{"* && "$VALUE" == *"}" ]]; then
+                # Object (assume it's valid JSON)
+                json_value="$VALUE"
+            else
+                # String - needs quoting
+                json_value="\"$VALUE\""
+            fi
+
+            # Use jq to set the value at the specified key path
+            local tmpfile=$(mktemp)
+            if jq ".$KEY = $json_value" "$config_file" > "$tmpfile" 2>/dev/null; then
+                mv "$tmpfile" "$config_file"
+                echo "Set $KEY = $VALUE"
+            else
+                rm -f "$tmpfile"
+                echo "Error: Failed to set key '$KEY' to value '$VALUE'" >&2
+                exit 1
+            fi
+            ;;
+
+        -h|--help|help|"")
+            cat <<EOF
+Usage: ib config <subcommand> [options]
+
+Subcommands:
+  get <key>         Get a configuration value from .ittybitty.json
+  set <key> <value> Set a configuration value in .ittybitty.json
+
+Examples:
+  ib config get model
+  ib config get permissions.manager.allow
+  ib config set model "sonnet"
+  ib config set maxAgents 20
+  ib config set fps 15
+  ib config set permissions.worker.allow '["Read", "Write"]'
+
+Key Paths:
+  Use dot notation to access nested keys (e.g., permissions.manager.allow)
+
+Value Types:
+  - Numbers: Integers are stored as numbers (e.g., 10)
+  - Booleans: true/false are stored as booleans
+  - Strings: Other values are stored as quoted strings
+  - Arrays/Objects: JSON arrays/objects (must be valid JSON)
+EOF
+            exit 0
+            ;;
+
+        *)
+            echo "Error: Unknown subcommand '$SUBCOMMAND'" >&2
+            echo "Usage: ib config {get|set} [options]" >&2
+            echo "Run 'ib config --help' for more information" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
 # MAIN DISPATCH
 # =============================================================================
 
@@ -6066,6 +6232,10 @@ case "${1:-help}" in
         shift
         cmd_watchdog "$@"
         ;;
+    config)
+        shift
+        cmd_config "$@"
+        ;;
     help|--help|-h)
         SHOW_UNDOCUMENTED=false
         if [[ "$2" == "--undocumented" || "$2" == "-u" ]]; then
@@ -6089,6 +6259,7 @@ Commands:
   kill        Close an agent without merging
   resume      Restart a stopped agent's session
   watchdog    Monitor an agent and notify manager when it needs attention
+  config      Get or set configuration values in .ittybitty.json
 
 Aliases:
   new         Alias for new-agent
