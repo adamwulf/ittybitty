@@ -3941,11 +3941,8 @@ EOF
 
         # Read agent IDs directly from tmpfile (already in tree order!)
         local agent_ids=()
-        local all_lines=()
         while IFS= read -r line; do
-            local id="${line%%|*}"
-            agent_ids+=("$id")
-            all_lines+=("$line")
+            agent_ids+=("${line%%|*}")
         done < "$tmpfile"
         AGENT_COUNT=${#agent_ids[@]}
 
