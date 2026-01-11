@@ -4021,7 +4021,7 @@ EOF
     local NEW_AGENT_MODEL_INDEX=0  # 0=default, 1=opus, 2=sonnet, 3=haiku
     local NEW_AGENT_MODELS=("default" "opus" "sonnet" "haiku")
     local NEW_AGENT_PROMPT=""
-    local NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=prompt, 3=Cancel, 4=Create
+    local NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=worker, 3=prompt, 4=Cancel, 5=Create
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -4737,7 +4737,8 @@ EOF
     watch_dialog_init_new_agent() {
         NEW_AGENT_NAME=""
         NEW_AGENT_PROMPT=""
-        NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=prompt, 3=Create, 4=Cancel
+        NEW_AGENT_WORKER=0  # 0=unchecked, 1=checked
+        NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=worker, 3=prompt, 4=Cancel, 5=Create
         _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
 
@@ -4776,7 +4777,7 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=15  # Total dialog height
+        local dialog_height=16  # Total dialog height (increased from 15 for worker checkbox)
         local prompt_area_height=3  # Lines in the prompt area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
@@ -4821,6 +4822,19 @@ EOF
             printf '%-17s ▼' "$model_name"
         fi
         remaining=$((DIALOG_WIDTH - 30))
+        printf '%*s│' "$remaining" ""
+        ((row++))
+
+        # Worker checkbox
+        local worker_focused=$([[ $NEW_AGENT_FOCUS -eq 2 ]] && echo 1 || echo 0)
+        local checkbox_mark=$([[ $NEW_AGENT_WORKER -eq 1 ]] && echo "X" || echo " ")
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $worker_focused == "1" ]]; then
+            printf '\e[7m[%s] Worker\e[0m' "$checkbox_mark"
+        else
+            printf '[%s] Worker' "$checkbox_mark"
+        fi
+        remaining=$((DIALOG_WIDTH - 13))
         printf '%*s│' "$remaining" ""
         ((row++))
 
@@ -4903,8 +4917,8 @@ EOF
 
         # Buttons - Create disabled if name or prompt empty
         local create_disabled=$([[ -z "$NEW_AGENT_NAME" || -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)")
-        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)" "$create_disabled")
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
+        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
         local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
         local right_pad=$((inner_width - btn_visual_width - left_pad))
@@ -4929,33 +4943,41 @@ EOF
         case "$key" in
             $'\t')  # Tab - forward
                 if [[ $can_create == "1" ]]; then
-                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 5 ))
+                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
                 else
-                    # Skip Create button (focus 4) when disabled
-                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 5 ))
-                    [[ $NEW_AGENT_FOCUS -eq 4 ]] && NEW_AGENT_FOCUS=0
+                    # Skip Create button (focus 5) when disabled
+                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
+                    [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=0
                 fi
                 _DIALOG_DIRTY=1
                 ;;
             $'\x1e')  # Enter
                 if [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # Worker checkbox - toggle
+                    NEW_AGENT_WORKER=$(( 1 - NEW_AGENT_WORKER ))
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # In prompt area, add newline
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}"$'\n'
                     _DIALOG_DIRTY=1
-                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 4 ]]; then
                     # Cancel button
                     DIALOG_MODE=0
-                elif [[ $NEW_AGENT_FOCUS -eq 4 && $can_create == "1" ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 5 && $can_create == "1" ]]; then
                     # Create button
                     DIALOG_MODE=0
                     local model_arg=""
                     if [[ "${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}" != "default" ]]; then
                         model_arg="--model ${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}"
                     fi
+                    local worker_arg=""
+                    if [[ $NEW_AGENT_WORKER -eq 1 ]]; then
+                        worker_arg="--worker"
+                    fi
                     if [[ -n "$NEW_AGENT_NAME" ]]; then
-                        cmd_new_agent --name "$NEW_AGENT_NAME" $model_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
+                        cmd_new_agent --name "$NEW_AGENT_NAME" $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
                     else
-                        cmd_new_agent $model_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
+                        cmd_new_agent $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
                     fi
                 fi
                 ;;
@@ -4969,7 +4991,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
                     _DIALOG_DIRTY=1
@@ -4985,7 +5007,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
                     _DIALOG_DIRTY=1
@@ -5002,7 +5024,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}["
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}["
                     _DIALOG_DIRTY=1
                 fi
@@ -5011,11 +5033,11 @@ EOF
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     # Shift+Tab - backward
                     if [[ $can_create == "1" ]]; then
-                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 5) % 5 ))
+                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
                     else
-                        # Skip Create button (focus 4) when disabled
-                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 5) % 5 ))
-                        [[ $NEW_AGENT_FOCUS -eq 4 ]] && NEW_AGENT_FOCUS=3
+                        # Skip Create button (focus 5) when disabled
+                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
+                        [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=4
                     fi
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
@@ -5024,7 +5046,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}Z"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}Z"
                     _DIALOG_DIRTY=1
                 fi
@@ -5058,7 +5080,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}B"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}B"
                     _DIALOG_DIRTY=1
                 fi
@@ -5071,7 +5093,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
                     _DIALOG_DIRTY=1
                 fi
@@ -5081,7 +5103,7 @@ EOF
                     # Single line - clear all
                     NEW_AGENT_NAME=""
                     _DIALOG_DIRTY=1
-                elif [[ $NEW_AGENT_FOCUS -eq 2 && -n "$NEW_AGENT_PROMPT" ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 && -n "$NEW_AGENT_PROMPT" ]]; then
                     dialog_delete_line "$NEW_AGENT_PROMPT"
                     NEW_AGENT_PROMPT="$_DIALOG_TEXT_RESULT"
                     _DIALOG_DIRTY=1
@@ -5098,7 +5120,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME%?}"
                     fi
                     _DIALOG_DIRTY=1
-                elif [[ $NEW_AGENT_FOCUS -eq 2 && -n "$NEW_AGENT_PROMPT" ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 && -n "$NEW_AGENT_PROMPT" ]]; then
                     if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
                         # Option+Delete - delete word
                         dialog_delete_word "$NEW_AGENT_PROMPT"
@@ -5120,7 +5142,7 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
                     _DIALOG_DIRTY=1
