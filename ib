@@ -3627,10 +3627,13 @@ EOF
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
-        if tmux has-session -t "$tmux_session" 2>/dev/null; then
+        # Try capture directly - falls back to output.log if session doesn't exist
+        local tmux_output
+        tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
+        if [[ -n "$tmux_output" ]]; then
             while IFS= read -r line; do
                 all_tmux_lines+=("$line")
-            done < <(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null)
+            done <<< "$tmux_output"
         else
             local output_file="$AGENTS_DIR/$selected_id/output.log"
             if [[ -f "$output_file" ]]; then
@@ -3641,23 +3644,15 @@ EOF
         fi
         local t_tmux=$(get_ms)
 
-        # Get agent log and wrap it (all lines, for total count)
+        # Get agent log and wrap it
         local t_log_start=$(get_ms)
         local all_log_lines=()
-        local log_raw_count=0
         local log_file="$AGENTS_DIR/$selected_id/agent.log"
         if [[ -f "$log_file" ]]; then
-            # Read all lines at once, then wrap in a single fold call
-            local log_content
-            log_content=$(tail -n "$capture_lines" "$log_file" 2>/dev/null)
-            if [[ -n "$log_content" ]]; then
-                # Count raw lines
-                log_raw_count=$(printf '%s\n' "$log_content" | wc -l)
-                # Wrap all lines at once with fold
-                while IFS= read -r wrapped_line; do
-                    all_log_lines+=("$wrapped_line")
-                done < <(printf '%s\n' "$log_content" | fold -w "$right_pane_width")
-            fi
+            # Read and wrap in a single pipeline
+            while IFS= read -r wrapped_line; do
+                all_log_lines+=("$wrapped_line")
+            done < <(tail -n "$capture_lines" "$log_file" 2>/dev/null | fold -w "$right_pane_width")
         fi
         local t_log=$(get_ms)
 
