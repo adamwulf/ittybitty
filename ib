@@ -4229,42 +4229,25 @@ EOF
     }
 
     # Main loop
-    local LAST_QUEUE_SIZE=0
-    local RENDER_MS=0
-    local INPUT_MS=0
-    local FRAME_MS=0
-
     while true; do
-        local frame_start=$(get_ms)
-
         # Render frame
-        local render_start=$(get_ms)
         watch_render
-        local render_end=$(get_ms)
-        RENDER_MS=$((render_end - render_start))
 
         # Small delay for input collection
         sleep 0.02
 
         # Collect and clear accumulated keys
-        local input_start=$(get_ms)
         local keys_to_process=""
         if [[ -s "$keyfile" ]]; then
             keys_to_process=$(cat "$keyfile")
             : > "$keyfile"  # Clear for next frame
         fi
-        LAST_QUEUE_SIZE=${#keys_to_process}
 
         # Process all accumulated keys
         local i
         for ((i=0; i<${#keys_to_process}; i++)); do
             watch_process_key "${keys_to_process:$i:1}"
         done
-        local input_end=$(get_ms)
-        INPUT_MS=$((input_end - input_start))
-
-        local frame_end=$(get_ms)
-        FRAME_MS=$((frame_end - frame_start))
     done
 }
 
