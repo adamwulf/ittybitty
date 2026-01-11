@@ -4026,12 +4026,12 @@ EOF
 
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
-        # Header rows: tree_display_lines + pane_header(1) + footer(1) = tree_display_lines + 2
-        local pane_height=$((TERM_LINES - tree_display_lines - 2))
+        # Rows: tree + pane_header(1) + pane_separator(1) + footer(1) = tree + 3
+        local pane_height=$((TERM_LINES - tree_display_lines - 3))
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
-        # Pane headers (use same separator as content for alignment)
+        # Pane headers with connected box-drawing characters
         local left_header="── $selected_id "
         local right_header="── AGENT LOG "
         # Pad headers with ─ to fill width
@@ -4041,7 +4041,7 @@ EOF
         while [[ ${#right_header} -lt $right_pane_width ]]; do
             right_header="${right_header}─"
         done
-        printf "%s │ %s\n" "$left_header" "$right_header"
+        printf "%s─┬─%s\n" "$left_header" "$right_header"
 
         # Reset scroll offset when agent changes
         if [[ $SELECTED_INDEX -ne $PREV_SELECTED_INDEX ]]; then
@@ -4166,6 +4166,14 @@ EOF
                 "$row" "$((left_pane_width + 1))" \
                 "${visible_log_lines[$pane_line]}"
         done
+
+        # Bottom separator line with connected box-drawing character
+        local separator_row=$((_WATCH_PANE_START_ROW + pane_height))
+        local left_sep="" right_sep=""
+        local i
+        for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
+        for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
+        printf '\e[%d;1H%s─┴─%s' "$separator_row" "$left_sep" "$right_sep"
     }
 
     # Main render function
@@ -4217,8 +4225,8 @@ EOF
         # Render split panes (tmux output + agent log)
         watch_render_split_panes "$selected_id" "$tree_display_lines"
 
-        # Render footer
-        local footer_row=$((_WATCH_PANE_START_ROW + _WATCH_PANE_HEIGHT))
+        # Render footer (after panes + separator line)
+        local footer_row=$((_WATCH_PANE_START_ROW + _WATCH_PANE_HEIGHT + 1))
         watch_render_footer "$footer_row" "$t_frame_start"
         # tmpfile cleanup handled by RETURN trap
     }
