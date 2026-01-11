@@ -3749,6 +3749,7 @@ EOF
         rm -f "$keyfile"
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
+    trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
 
     # Helper to get current time in milliseconds
     get_ms() {
