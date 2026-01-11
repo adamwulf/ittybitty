@@ -4207,8 +4207,13 @@ EOF
         ((row++))
 
         # Text area box - top border
+        # inner_width = space between outer │ borders (46 for DIALOG_WIDTH=50)
+        # text_width = space for content inside inner │ borders
+        # Both lines: │ ┌───┐ │ and │ │xxx│ │ should total DIALOG_WIDTH
+        # │ ┌ (3) + dashes + ┐ │ (3) = 50, so dashes = 44
+        # │ │ (3) + content + │ │ (3) = 50, so content = 44
         local inner_width=$((DIALOG_WIDTH - 4))
-        local text_width=$((inner_width - 4))  # Inside the text box
+        local text_width=$((inner_width - 2))  # 44 chars for content
         printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
         local i
         for ((i=0; i<text_width; i++)); do printf '─'; done
@@ -4275,14 +4280,14 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Buttons
+        # Buttons (Cancel on left, Send on right)
         local send_disabled=$([[ -z "$SEND_TEXT" ]] && echo 1 || echo 0)
-        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)" "$send_disabled")
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)")
-        local btn_visual_width=18  # [Send] = 6, [Cancel] = 8, gap = 4
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$send_disabled")
+        local btn_visual_width=18  # [Cancel] = 8, [Send] = 6, gap = 4
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
         local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$send_btn" "$cancel_btn" "$right_pad" ""
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$send_btn" "$right_pad" ""
         ((row++))
 
         # Bottom border
@@ -4297,11 +4302,12 @@ EOF
 
     watch_dialog_key_send() {
         local key="$1"
+        # Focus: 0=text, 1=Cancel, 2=Send
         case "$key" in
             $'\t')  # Tab - forward
                 if [[ -z "$SEND_TEXT" ]]; then
-                    # Skip Send button when text is empty
-                    SEND_FOCUS=$(( SEND_FOCUS == 0 ? 2 : 0 ))
+                    # Skip Send button (focus 2) when text is empty
+                    SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
                 else
                     SEND_FOCUS=$(( (SEND_FOCUS + 1) % 3 ))
                 fi
@@ -4312,13 +4318,13 @@ EOF
                     # In text area, add newline
                     SEND_TEXT="${SEND_TEXT}"$'\n'
                     _DIALOG_DIRTY=1
-                elif [[ $SEND_FOCUS -eq 1 && -n "$SEND_TEXT" ]]; then
+                elif [[ $SEND_FOCUS -eq 1 ]]; then
+                    # Cancel button
+                    DIALOG_MODE=0
+                elif [[ $SEND_FOCUS -eq 2 && -n "$SEND_TEXT" ]]; then
                     # Send button
                     DIALOG_MODE=0
                     cmd_send "$_WATCH_SELECTED_ID" "$SEND_TEXT" >/dev/null 2>&1 &
-                elif [[ $SEND_FOCUS -eq 2 ]]; then
-                    # Cancel
-                    DIALOG_MODE=0
                 fi
                 ;;
             $'\e')  # Escape - check for sequence
@@ -4337,8 +4343,8 @@ EOF
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     # Shift+Tab - backward
                     if [[ -z "$SEND_TEXT" ]]; then
-                        # Skip Send button when text is empty
-                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 2 : 0 ))
+                        # Skip Send button (focus 2) when text is empty
+                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
                     else
                         SEND_FOCUS=$(( (SEND_FOCUS - 1 + 3) % 3 ))
                     fi
@@ -4570,33 +4576,377 @@ EOF
     # ==========================================================================
 
     # ==========================================================================
-    # New Agent Dialog (DIALOG_MODE=4) - TODO
+    # New Agent Dialog (DIALOG_MODE=4)
     # ==========================================================================
 
     watch_dialog_init_new_agent() {
         NEW_AGENT_NAME=""
-        NEW_AGENT_MODEL_INDEX=0
         NEW_AGENT_PROMPT=""
-        NEW_AGENT_FOCUS=0
+        NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=prompt, 3=Create, 4=Cancel
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Get default model from .ittybitty.json
+        local config_model=""
+        if [[ -f ".ittybitty.json" ]]; then
+            config_model=$(jq -r '.model // ""' ".ittybitty.json" 2>/dev/null)
+        fi
+
+        # Find index for the configured model (default to 0 if not found)
+        NEW_AGENT_MODEL_INDEX=0
+        local i
+        for i in "${!NEW_AGENT_MODELS[@]}"; do
+            if [[ "${NEW_AGENT_MODELS[$i]}" == "$config_model" ]]; then
+                NEW_AGENT_MODEL_INDEX=$i
+                break
+            fi
+        done
     }
 
     watch_dialog_render_new_agent() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
         TERM_LINES=$(tput lines)
         TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 5) / 2 ))
-        dialog_clear "$start_row" 5
-        dialog_draw_hline "$start_row" "┌" "─" "┐"
-        dialog_draw_line "$((start_row + 1))" "New Agent dialog - TODO"
-        dialog_draw_line "$((start_row + 2))" "Press Escape to close"
-        dialog_draw_line "$((start_row + 3))" ""
-        dialog_draw_hline "$((start_row + 4))" "└" "─" "┘"
+        local dialog_height=15  # Total dialog height
+        local prompt_area_height=3  # Lines in the prompt area
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "Create New Agent"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Name field
+        local name_focused=$([[ $NEW_AGENT_FOCUS -eq 0 ]] && echo 1 || echo 0)
+        local name_display="$NEW_AGENT_NAME"
+        [[ $name_focused == "1" ]] && name_display="${name_display}_"
+        printf '\e[%d;%dH│ Name:  ' "$row" "$_DIALOG_START_COL"
+        if [[ $name_focused == "1" ]]; then
+            printf '\e[7m%-20s\e[0m' "$name_display"
+        else
+            printf '%-20s' "$name_display"
+        fi
+        local remaining=$((DIALOG_WIDTH - 30))
+        printf '%*s│' "$remaining" ""
+        ((row++))
+
+        # Model field
+        local model_focused=$([[ $NEW_AGENT_FOCUS -eq 1 ]] && echo 1 || echo 0)
+        local model_name="${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}"
+        printf '\e[%d;%dH│ Model: ' "$row" "$_DIALOG_START_COL"
+        if [[ $model_focused == "1" ]]; then
+            printf '\e[7m%-17s ▼\e[0m' "$model_name"
+        else
+            printf '%-17s ▼' "$model_name"
+        fi
+        remaining=$((DIALOG_WIDTH - 30))
+        printf '%*s│' "$remaining" ""
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Prompt label
+        dialog_draw_line "$row" "Prompt:"
+        ((row++))
+
+        # Prompt text area box - top border
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))  # 44 chars for content
+        printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
+        local i
+        for ((i=0; i<text_width; i++)); do printf '─'; done
+        printf '┐ │'
+        ((row++))
+
+        # Parse prompt text into lines and display
+        local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 2 ]] && echo 1 || echo 0)
+        local display_text="$NEW_AGENT_PROMPT"
+        [[ $prompt_focused == "1" ]] && display_text="${display_text}_"
+
+        # Split text by newlines and wrap long lines
+        local -a display_lines=()
+        local line=""
+        local char
+        local len=${#display_text}
+        for ((i=0; i<len; i++)); do
+            char="${display_text:$i:1}"
+            if [[ "$char" == $'\n' ]]; then
+                display_lines+=("$line")
+                line=""
+            else
+                line="${line}${char}"
+                if [[ ${#line} -ge $text_width ]]; then
+                    display_lines+=("$line")
+                    line=""
+                fi
+            fi
+        done
+        [[ -n "$line" ]] && display_lines+=("$line")
+
+        # Show last N lines (scroll to bottom)
+        local total_lines=${#display_lines[@]}
+        local start_line=0
+        if [[ $total_lines -gt $prompt_area_height ]]; then
+            start_line=$((total_lines - prompt_area_height))
+        fi
+
+        # Draw prompt area lines
+        local line_idx
+        for ((line_idx=0; line_idx<prompt_area_height; line_idx++)); do
+            local content_idx=$((start_line + line_idx))
+            local content=""
+            if [[ $content_idx -lt $total_lines ]]; then
+                content="${display_lines[$content_idx]}"
+            fi
+            printf '\e[%d;%dH│ │' "$row" "$_DIALOG_START_COL"
+            if [[ $prompt_focused == "1" ]]; then
+                printf '\e[7m%-*s\e[0m' "$text_width" "$content"
+            else
+                printf '%-*s' "$text_width" "$content"
+            fi
+            printf '│ │'
+            ((row++))
+        done
+
+        # Prompt text area box - bottom border
+        printf '\e[%d;%dH│ └' "$row" "$_DIALOG_START_COL"
+        for ((i=0; i<text_width; i++)); do printf '─'; done
+        printf '┘ │'
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons - Create disabled if name or prompt empty
+        local create_disabled=$([[ -z "$NEW_AGENT_NAME" || -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)" "$create_disabled")
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
+        local btn_visual_width=20  # [Create] = 8, [Cancel] = 8, gap = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$create_btn" "$cancel_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Tab: next   j/k: model   Enter: select"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
     watch_dialog_key_new_agent() {
-        case "$1" in
-            $'\e') DIALOG_MODE=0 ;;
-            *) ;;  # Ignore other keys
+        local key="$1"
+        local can_create=$([[ -n "$NEW_AGENT_NAME" && -n "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+
+        case "$key" in
+            $'\t')  # Tab - forward
+                if [[ $can_create == "1" ]]; then
+                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 5 ))
+                else
+                    # Skip Create button (focus 3) when disabled
+                    NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 5 ))
+                    [[ $NEW_AGENT_FOCUS -eq 3 ]] && NEW_AGENT_FOCUS=4
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x1e')  # Enter
+                if [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # In prompt area, add newline
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}"$'\n'
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 3 && $can_create == "1" ]]; then
+                    # Create button
+                    DIALOG_MODE=0
+                    local model_arg=""
+                    if [[ "${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}" != "default" ]]; then
+                        model_arg="--model ${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}"
+                    fi
+                    if [[ -n "$NEW_AGENT_NAME" ]]; then
+                        cmd_new_agent --name "$NEW_AGENT_NAME" $model_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
+                    else
+                        cmd_new_agent $model_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 4 ]]; then
+                    # Cancel
+                    DIALOG_MODE=0
+                fi
+                ;;
+            'j'|'J')  # j - next model (when on model field)
+                if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                    NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX + 1) % ${#NEW_AGENT_MODELS[@]} ))
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    # Typing in name field
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # Typing in prompt field
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'k'|'K')  # k - previous model (when on model field)
+                if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                    NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX - 1 + ${#NEW_AGENT_MODELS[@]}) % ${#NEW_AGENT_MODELS[@]} ))
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    # Typing in name field
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # Typing in prompt field
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}["
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}["
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'Z')  # Shift+Tab (part of \e[Z sequence)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Shift+Tab - backward
+                    if [[ $can_create == "1" ]]; then
+                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 5) % 5 ))
+                    else
+                        # Skip Create button when disabled
+                        NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 5) % 5 ))
+                        [[ $NEW_AGENT_FOCUS -eq 3 ]] && NEW_AGENT_FOCUS=2
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}Z"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}Z"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'A')  # Up arrow - previous model (when on model field)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                        NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX - 1 + ${#NEW_AGENT_MODELS[@]}) % ${#NEW_AGENT_MODELS[@]} ))
+                        _DIALOG_DIRTY=1
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}A"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}A"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B')  # Down arrow - next model (when on model field)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                        NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX + 1) % ${#NEW_AGENT_MODELS[@]} ))
+                        _DIALOG_DIRTY=1
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}B"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}B"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'C'|'D')  # Left/right arrows - ignore
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\x7f'|$'\b')  # Backspace (DEL or BS)
+                if [[ $NEW_AGENT_FOCUS -eq 0 && -n "$NEW_AGENT_NAME" ]]; then
+                    NEW_AGENT_NAME="${NEW_AGENT_NAME%?}"
+                    _DIALOG_DIRTY=1
+                elif [[ $NEW_AGENT_FOCUS -eq 2 && -n "$NEW_AGENT_PROMPT" ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT%?}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    # Typing in name field (20 char max, no newlines)
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" != $'\n' ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # Typing in prompt field
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
+                    _DIALOG_DIRTY=1
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
         esac
     }
 
