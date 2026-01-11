@@ -606,7 +606,19 @@ capture_tmux() {
     local session="$1"
     local lines="${2:-20}"
 
-    # Just try to capture - returns empty if session doesn't exist
+    # Try to read from background cache first (much faster)
+    if [[ -n "$TMUX_CACHE_DIR" && "$session" == ittybitty-* ]]; then
+        local agent_id="${session#ittybitty-}"
+        local cache_file="$TMUX_CACHE_DIR/$agent_id"
+        if [[ -f "$cache_file" ]]; then
+            # Read from cache, take last N lines
+            LAST_TMUX_CAPTURE=$(tail -n "$lines" "$cache_file" 2>/dev/null) || true
+            echo "$LAST_TMUX_CAPTURE"
+            return
+        fi
+    fi
+
+    # Fallback: capture directly from tmux
     # Note: || true prevents set -e from exiting when session doesn't exist
     LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
     echo "$LAST_TMUX_CAPTURE"
@@ -789,6 +801,7 @@ CACHED_NOW=0
 # Cached tmux sessions (refreshed every 3 frames, or read from SESSIONS_FILE if available)
 CACHED_SESSIONS=""
 SESSIONS_FILE=""  # Set by watch to enable async session monitoring
+TMUX_CACHE_DIR=""  # Set by watch for async tmux pane capture
 
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
@@ -3878,21 +3891,20 @@ EOF
         local tmux_session
         tmux_session=$(session_name "$selected_id")
         local all_tmux_lines=()
-        # Try capture directly - falls back to output.log if session doesn't exist
-        # Note: || true prevents set -e from exiting when session doesn't exist
-        local tmux_output
-        tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
+        # Try background cache first, then direct capture, then output.log
+        local tmux_output=""
+        local cache_file="$TMUX_CACHE_DIR/$selected_id"
+        if [[ -n "$TMUX_CACHE_DIR" && -f "$cache_file" ]]; then
+            # Read from background cache (fast)
+            tmux_output=$(cat "$cache_file" 2>/dev/null) || true
+        else
+            # Fallback: capture directly from tmux
+            tmux_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
+        fi
         if [[ -n "$tmux_output" ]]; then
             while IFS= read -r line; do
                 all_tmux_lines+=("$line")
             done <<< "$tmux_output"
-        else
-            local output_file="$AGENTS_DIR/$selected_id/output.log"
-            if [[ -f "$output_file" ]]; then
-                while IFS= read -r line; do
-                    all_tmux_lines+=("$line")
-                done < <(tail -n "$capture_lines" "$output_file" 2>/dev/null)
-            fi
         fi
         local t_tmux=$(get_ms)
 
@@ -4029,13 +4041,27 @@ EOF
     ) &
     local reader_pid=$!
 
-    # Start background session monitor (refreshes tmux session list async)
+    # Start background session monitor (refreshes tmux session list AND captures pane output)
     local sessionfile=$(mktemp)
+    local tmux_cache_dir=$(mktemp -d)
     SESSIONS_FILE="$sessionfile"  # Global for build_agent_data_file to read
+    TMUX_CACHE_DIR="$tmux_cache_dir"  # Global for reading cached tmux output
     (
         while true; do
-            tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' '|' > "$sessionfile"
-            sleep 0.2
+            # Get session list
+            local sessions
+            sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || true
+            printf '%s' "${sessions//$'\n'/|}" > "$sessionfile"
+
+            # Capture pane output for each ittybitty session
+            for session in $sessions; do
+                if [[ "$session" == ittybitty-* ]]; then
+                    local agent_id="${session#ittybitty-}"
+                    tmux capture-pane -t "$session" -p -S -500 > "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                fi
+            done
+
+            sleep 0.15
         done
     ) &
     local session_monitor_pid=$!
@@ -4045,7 +4071,9 @@ EOF
         kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
         rm -f "$keyfile" "$sessionfile"
+        rm -rf "$tmux_cache_dir"
         SESSIONS_FILE=""
+        TMUX_CACHE_DIR=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
