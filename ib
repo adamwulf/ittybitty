@@ -3960,8 +3960,8 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
-    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials
-    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS")
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE")
 
     # Dialog state variables
     local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent
@@ -5230,6 +5230,7 @@ EOF
     watch_render_split_panes() {
         local selected_id="$1"
         local tree_display_lines="$2"
+        local tmpfile="$3"
 
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
@@ -5286,6 +5287,75 @@ EOF
                     if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
                         # Truncate to terminal width
                         local display_line="${DENIALS_CACHE_LINES[$array_idx]:0:$content_width}"
+                        printf '%-*s\n' "$content_width" "$display_line"
+                    else
+                        # Empty line (no content)
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            fi
+
+            # Bottom separator
+            local separator=""
+            local i
+            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
+            printf '%s' "$separator"
+
+            # Store pane info for footer
+            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
+            _WATCH_PANE_HEIGHT=$content_height
+
+            return  # Skip normal split pane rendering
+        fi
+
+        # ===== TREE MODE (MODE 3) =====
+        if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
+            # Full-width header for tree mode
+            local header="── AGENT TREE "
+            while [[ ${#header} -lt $TERM_COLS ]]; do
+                header="${header}─"
+            done
+            printf "%s\n" "$header"
+
+            # Render full-width tree pane (hide left tmux pane)
+            local content_height=$pane_height
+            local content_width=$TERM_COLS
+
+            # Build tree using existing tree building functions
+            # Use the same tmpfile that was already built for the top tree display
+            build_tree_lines "$tmpfile"
+            format_tree_lines "$TERM_COLS"
+            local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
+            local total_lines=${#tree_lines[@]}
+
+            # Show "No agents" if empty
+            if [[ $total_lines -eq 0 ]]; then
+                local empty_msg="No agents running"
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$empty_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            else
+                # Calculate scroll parameters
+                local max_scroll=$((total_lines - content_height + 1))
+                [[ $max_scroll -lt 0 ]] && max_scroll=0
+                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+                local start_idx=$((total_lines - content_height - SCROLL_OFFSET + 1))
+                [[ $start_idx -lt 0 ]] && start_idx=0
+
+                local line_num
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    local array_idx=$((start_idx + line_num))
+                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
+                        # Truncate to terminal width
+                        local display_line="${tree_lines[$array_idx]:0:$content_width}"
                         printf '%-*s\n' "$content_width" "$display_line"
                     else
                         # Empty line (no content)
@@ -5657,7 +5727,7 @@ EOF
         local tree_display_lines="$_WATCH_TREE_DISPLAY_LINES"
 
         # Render split panes (tmux output + agent log)
-        watch_render_split_panes "$selected_id" "$tree_display_lines"
+        watch_render_split_panes "$selected_id" "$tree_display_lines" "$tmpfile"
 
         # Render footer (after panes + separator line)
         local footer_row=$((_WATCH_PANE_START_ROW + _WATCH_PANE_HEIGHT + 1))
