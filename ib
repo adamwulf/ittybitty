@@ -790,11 +790,9 @@ build_agent_data_file() {
         local id=$(basename "$agent_dir")
         local meta="$agent_dir/meta.json"
 
-        # Read metadata
-        local prompt=$(jq -r '.prompt // ""' "$meta" 2>/dev/null | head -1 | cut -c1-40)
-        local manager=$(jq -r '.manager // ""' "$meta" 2>/dev/null)
-        local created=$(jq -r '.created // ""' "$meta" 2>/dev/null)
-        local model=$(jq -r '.model // ""' "$meta" 2>/dev/null)
+        # Read all metadata in single jq call (prompt truncated to 40 chars, first line only)
+        local prompt manager created model
+        IFS=$'\t' read -r prompt manager created model < <(jq -r '[(.prompt // "" | split("\n")[0] | .[0:40]), .manager // "", .created // "", .model // ""] | @tsv' "$meta" 2>/dev/null)
 
         # Get state and age
         local state=$(get_state "$id")
