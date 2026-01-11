@@ -351,7 +351,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS
 load_config() {
     CONFIG_MANAGER_ALLOW=""
     CONFIG_MANAGER_DENY=""
@@ -360,6 +360,7 @@ load_config() {
     CONFIG_CREATE_PRS="false"
     CONFIG_MAX_AGENTS="10"
     CONFIG_MODEL=""
+    CONFIG_FPS="10"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -390,6 +391,9 @@ load_config() {
     if [[ "$CONFIG_MODEL" == "null" ]]; then
         CONFIG_MODEL=""
     fi
+
+    # Read fps setting for watch screen
+    CONFIG_FPS=$(jq -r '.fps // 10' "$config_file" 2>/dev/null)
 }
 
 # Count active agents (agents with meta.json)
@@ -1503,6 +1507,7 @@ Configuration:
 
     {
       "maxAgents": 10,
+      "fps": 10,
       "model": "sonnet",
       "permissions": {
         "manager": { "allow": ["Read", "Write", "Edit"], "deny": [] },
@@ -1511,6 +1516,7 @@ Configuration:
     }
 
   - maxAgents: Maximum number of concurrent agents (default: 10)
+  - fps: Target frame rate for 'ib watch' screen (default: 10)
   - model: Default Claude model for spawned agents (e.g., opus, sonnet, haiku)
            Overridden by --model parameter if provided
   - permissions.manager: Applied to manager (coordinator) agents
@@ -3901,6 +3907,9 @@ EOF
         esac
     done
 
+    # Load configuration (for CONFIG_FPS, etc.)
+    load_config
+
     # State variables
     local TERM_LINES TERM_COLS
     local SELECTED_INDEX=0
@@ -3916,10 +3925,10 @@ EOF
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
-    local TARGET_FPS=10
-    local TARGET_FRAME_MS=$((1000 / TARGET_FPS))  # 100ms per frame for 10fps
+    local TARGET_FPS="${CONFIG_FPS:-10}"
+    local TARGET_FRAME_MS=$((1000 / TARGET_FPS))
     local LAST_FRAME_MS=0
-    local SLEEP_ADJUST_MS=60  # Adaptive sleep time, starts at 60ms
+    local SLEEP_ADJUST_MS=$((TARGET_FRAME_MS * 6 / 10))  # Start at 60% of target frame time
 
     # Send dialog state
     local SEND_TEXT=""
