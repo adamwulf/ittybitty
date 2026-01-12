@@ -519,8 +519,7 @@ build_agent_settings() {
         .hooks.Stop = [{
             "hooks": [{
                 "type": "command",
-                "command": "ib",
-                "args": ["hook-status", "__AGENT_ID__"]
+                "command": "ib hook-status __AGENT_ID__"
             }]
         }] |
         .hooks.PermissionRequest = [{
@@ -531,11 +530,10 @@ build_agent_settings() {
             }]
         }] |
         .hooks.PreToolUse = [{
-            "matcher": "Read|Write|Edit|Bash",
+            "matcher": "*",
             "hooks": [{
                 "type": "command",
-                "command": "ib",
-                "args": ["hook-check-path", "__AGENT_ID__"]
+                "command": "ib hook-check-path __AGENT_ID__"
             }]
         }]
     '
@@ -3636,6 +3634,7 @@ cmd_hook_check_path() {
         exit 1
     fi
 
+
     # Read JSON input from stdin
     local json_input
     json_input=$(cat)
@@ -3645,6 +3644,7 @@ cmd_hook_check_path() {
     local file_path
     tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
     file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+
 
     # Special handling for Bash tool - check for cd commands
     if [[ "$tool_name" == "Bash" ]]; then
@@ -3734,9 +3734,11 @@ cmd_hook_check_path() {
     fi
 
     # Check 4: Block access to main repo (outside worktree)
+    # Use git worktree list to find the main repo path
     local ROOT_REPO
-    ROOT_REPO=$(git -C "$WORKTREE_PATH" rev-parse --show-toplevel 2>/dev/null || echo "")
-    if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* ]]; then
+    ROOT_REPO=$(git -C "$WORKTREE_PATH" worktree list --porcelain | grep -m1 '^worktree ' | sed 's/^worktree //')
+
+    if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* && "$file_path" != "$WORKTREE_PATH"* ]]; then
         log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access main repo: $file_path" --quiet
         echo "Access denied: work in your worktree, not the main repo" >&2
         exit 2  # Block
