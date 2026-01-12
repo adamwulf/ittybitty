@@ -204,6 +204,7 @@ You were spawned via `ib new-agent --worker`. You run in a tmux session with you
 | `ib send <id> "msg"` | Send input to an agent |
 | `ib status <id>` | Show agent's git commits and changes |
 | `ib diff <id>` | Show full diff of agent's work vs main |
+| `ib info <id>` | Show agent's meta.json configuration |
 | `ib merge <id>` | Merge agent's work and permanently close it |
 | `ib kill <id>` | Permanently close agent without merging |
 | `ib resume <id>` | Restart a stopped agent's session |
