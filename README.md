@@ -190,7 +190,7 @@ ib ask "Should I proceed with approach A or B?"
 
 Then enter WAITING mode. The user will see your question and respond via `ib send`.
 
-**Note**: Sub-managers and workers cannot use `ib ask`. They should ask their manager via `ib send <manager-id> "question"`.
+**Note**: Sub-managers and workers cannot use `ib ask`. They should ask their manager via `ib send <manager-id> "question"`. However, if a manager has been merged/killed, orphaned agents are allowed to escalate to the user directly.
 
 ### Watchdog Notifications
 
