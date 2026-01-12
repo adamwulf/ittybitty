@@ -407,7 +407,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS
 load_config() {
     CONFIG_MANAGER_ALLOW=""
     CONFIG_MANAGER_DENY=""
@@ -417,6 +417,7 @@ load_config() {
     CONFIG_MAX_AGENTS="10"
     CONFIG_MODEL=""
     CONFIG_FPS="10"
+    CONFIG_ALLOW_AGENT_QUESTIONS="true"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -450,6 +451,9 @@ load_config() {
 
     # Read fps setting for watch screen
     CONFIG_FPS=$(jq -r '.fps // 10' "$config_file" 2>/dev/null)
+
+    # Read allowAgentQuestions setting (defaults to true)
+    CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$config_file" 2>/dev/null)
 }
 
 # Fetch Claude usage percentages from Anthropic API
@@ -2146,6 +2150,7 @@ Configuration:
       "maxAgents": 10,
       "fps": 10,
       "model": "sonnet",
+      "allowAgentQuestions": true,
       "permissions": {
         "manager": { "allow": ["Read", "Write", "Edit"], "deny": [] },
         "worker": { "allow": ["Read", "Write"], "deny": [] }
@@ -2156,6 +2161,8 @@ Configuration:
   - fps: Target frame rate for 'ib watch' screen (default: 10)
   - model: Default Claude model for spawned agents (e.g., opus, sonnet, haiku)
            Overridden by --model parameter if provided
+  - allowAgentQuestions: Allow root managers to ask user questions via 'ib ask'
+                         (default: true). Set to false to disable.
   - permissions.manager: Applied to manager (coordinator) agents
   - permissions.worker: Applied to worker agents
   - Bash(ib:*) is always added for agent coordination
@@ -4970,6 +4977,11 @@ STATUS.md file that the user-level Claude sees via @import.
 The user-level Claude should use 'ib acknowledge <question-id>' to mark
 a question as handled, then 'ib send <agent-id> "answer"' to respond.
 
+Configuration:
+  This feature can be disabled in .ittybitty.json:
+    { "allowAgentQuestions": false }
+  Default is true (questions are allowed).
+
 Options:
   --id ID     Specify agent ID (auto-detected in agent worktrees)
   -h, --help  Show this help
@@ -5028,6 +5040,13 @@ EOF
         echo "Error: Only top-level managers can ask the user questions directly." >&2
         echo "You should ask your manager '$manager' instead:" >&2
         echo "  ib send $manager \"$QUESTION\"" >&2
+        exit 1
+    fi
+
+    # Check if agent questions are allowed in config
+    if [[ "$CONFIG_ALLOW_AGENT_QUESTIONS" == "false" ]]; then
+        echo "Error: Agent questions are disabled in .ittybitty.json" >&2
+        echo "Set 'allowAgentQuestions: true' to enable this feature." >&2
         exit 1
     fi
 

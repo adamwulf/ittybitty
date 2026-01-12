@@ -48,9 +48,10 @@ Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_ag
 
 ## Configuration
 
-`.ittybitty.json` configures permissions for spawned agents:
+`.ittybitty.json` configures permissions and behavior for spawned agents:
 - `permissions.manager.allow/deny` - tools for manager agents
 - `permissions.worker.allow/deny` - tools for worker agents
+- `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
 ## Agent Hooks
