@@ -7166,11 +7166,29 @@ EOF
         local tree_lines=("${_FORMATTED_TREE_LINES[@]}")
         local total_tree_lines=${#tree_lines[@]}
 
-        # Calculate tree scroll to keep selection visible (window of 5)
-        if [[ $SELECTED_INDEX -lt $TREE_SCROLL ]]; then
-            TREE_SCROLL=$SELECTED_INDEX
-        elif [[ $SELECTED_INDEX -ge $((TREE_SCROLL + 5)) ]]; then
-            TREE_SCROLL=$((SELECTED_INDEX - 4))
+        # Calculate tree scroll to keep selection in middle positions (1-3)
+        # Only use position 0 when at first item, position 4 when at last item
+        # This makes it clear when you've hit the top or bottom of the list
+        if [[ $AGENT_COUNT -le 5 ]]; then
+            # All agents fit on screen - no scrolling needed
+            TREE_SCROLL=0
+        elif [[ $SELECTED_INDEX -eq 0 ]]; then
+            # First item - show at position 0
+            TREE_SCROLL=0
+        elif [[ $SELECTED_INDEX -eq $((AGENT_COUNT - 1)) ]]; then
+            # Last item - show at position 4 (bottom)
+            TREE_SCROLL=$((AGENT_COUNT - 5))
+        else
+            # Keep selection in middle positions (1-3)
+            # Ideal position is 2 (center of 0-4)
+            local ideal_scroll=$((SELECTED_INDEX - 2))
+            # Clamp to valid range
+            if [[ $ideal_scroll -lt 0 ]]; then
+                ideal_scroll=0
+            elif [[ $ideal_scroll -gt $((AGENT_COUNT - 5)) ]]; then
+                ideal_scroll=$((AGENT_COUNT - 5))
+            fi
+            TREE_SCROLL=$ideal_scroll
         fi
 
         # Display min(agent count, 5) lines of tree with selection highlighting
