@@ -6613,6 +6613,220 @@ EOF
     # ==========================================================================
 
     # ==========================================================================
+    # Jump Dialog (DIALOG_MODE=5)
+    # ==========================================================================
+
+    watch_dialog_init_jump() {
+        JUMP_PATTERN=""
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    watch_dialog_render_jump() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 9) / 2 ))  # 9 lines tall
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Find matching agents
+        local -a matching_ids=()
+        local agent_dir id
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            id="${agent_dir%/}"; id="${id##*/}"
+            # Case-insensitive substring match
+            if [[ -z "$JUMP_PATTERN" ]] || [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+                matching_ids+=("$id")
+            fi
+        done
+
+        # Clear dialog area
+        dialog_clear "$start_row" 10
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "Jump to Agent"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Search input line
+        local input_display="${JUMP_PATTERN}_"
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local input_width=$((inner_width - 10))  # "Search: " is 8 chars + some padding
+        printf '\e[%d;%dH│ Search: \e[7m%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$input_width" "${input_display:0:$input_width}"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Match count and status
+        local match_count=${#matching_ids[@]}
+        local match_text
+        if [[ $match_count -eq 0 ]]; then
+            match_text="No matches"
+        elif [[ $match_count -eq 1 ]]; then
+            match_text="Match: ${matching_ids[0]}"
+        else
+            match_text="$match_count matches"
+        fi
+        dialog_draw_line "$row" "$match_text"
+        ((row++))
+
+        # Show first few matches if multiple
+        if [[ $match_count -gt 1 && $match_count -le 3 ]]; then
+            local m
+            for m in "${matching_ids[@]:0:3}"; do
+                dialog_draw_line "$row" "  $m"
+                ((row++))
+            done
+        else
+            # Blank lines for consistent height
+            dialog_draw_line "$row" ""
+            ((row++))
+            dialog_draw_line "$row" ""
+            ((row++))
+        fi
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Enter: select   Esc: cancel"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
+    }
+
+    # Helper to check if exactly one agent matches and auto-select it
+    watch_jump_check_single_match() {
+        [[ -z "$JUMP_PATTERN" ]] && return  # Don't auto-jump if empty pattern
+
+        local -a matching_ids=()
+        local agent_dir id
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            id="${agent_dir%/}"; id="${id##*/}"
+            if [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+                matching_ids+=("$id")
+            fi
+        done
+
+        if [[ ${#matching_ids[@]} -eq 1 ]]; then
+            # Exactly one match - auto-select it and close dialog
+            SELECTED_NAME="${matching_ids[0]}"
+            SELECTED_INDEX=-1  # Will be reconciled in render
+            DIALOG_MODE=0
+        fi
+    }
+
+    watch_dialog_key_jump() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter - select if exactly one match, or close dialog
+                # Find matching agents
+                local -a matching_ids=()
+                local agent_dir id
+                for agent_dir in "$AGENTS_DIR"/*/; do
+                    [[ -d "$agent_dir" ]] || continue
+                    id="${agent_dir%/}"; id="${id##*/}"
+                    if [[ -z "$JUMP_PATTERN" ]] || [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+                        matching_ids+=("$id")
+                    fi
+                done
+
+                if [[ ${#matching_ids[@]} -eq 1 ]]; then
+                    # Exactly one match - select it and close dialog
+                    SELECTED_NAME="${matching_ids[0]}"
+                    SELECTED_INDEX=-1  # Will be reconciled in render
+                    DIALOG_MODE=0
+                fi
+                # If no match or multiple matches, do nothing on Enter
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                else
+                    # Typing in search field
+                    JUMP_PATTERN="${JUMP_PATTERN}["
+                    _DIALOG_DIRTY=1
+                    watch_jump_check_single_match
+                fi
+                ;;
+            'A'|'B'|'C'|'D'|'Z')  # Arrow keys or shift-tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    _DIALOG_ESC_PENDING=0
+                else
+                    # Regular character in search
+                    JUMP_PATTERN="${JUMP_PATTERN}${key}"
+                    _DIALOG_DIRTY=1
+                    watch_jump_check_single_match
+                fi
+                ;;
+            $'\x15')  # Ctrl+U - clear all
+                JUMP_PATTERN=""
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ -n "$JUMP_PATTERN" ]]; then
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$JUMP_PATTERN"
+                        JUMP_PATTERN="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        # Regular backspace - delete one char
+                        JUMP_PATTERN="${JUMP_PATTERN%?}"
+                    fi
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                else
+                    # Add character to search pattern
+                    JUMP_PATTERN="${JUMP_PATTERN}${key}"
+                    _DIALOG_DIRTY=1
+                    watch_jump_check_single_match
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Jump Dialog
+    # ==========================================================================
+
+    # ==========================================================================
     # Error Dialog (DIALOG_MODE=7) - Reusable overlay dialog
     # ==========================================================================
 
