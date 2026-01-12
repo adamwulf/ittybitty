@@ -4122,12 +4122,12 @@ EOF
     # Args: $1=text
     dialog_delete_word() {
         local text="$1"
-        # First delete non-whitespace from end (the word)
-        while [[ -n "$text" && ! "${text: -1}" =~ [[:space:]] ]]; do
+        # Delete trailing whitespace first (if any)
+        while [[ -n "$text" && "${text: -1}" =~ [[:space:]] ]]; do
             text="${text%?}"
         done
-        # Then delete whitespace from end (space before word)
-        while [[ -n "$text" && "${text: -1}" =~ [[:space:]] ]]; do
+        # Then delete non-whitespace (the word)
+        while [[ -n "$text" && ! "${text: -1}" =~ [[:space:]] ]]; do
             text="${text%?}"
         done
         _DIALOG_TEXT_RESULT="$text"
