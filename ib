@@ -452,6 +452,52 @@ load_config() {
     CONFIG_FPS=$(jq -r '.fps // 10' "$config_file" 2>/dev/null)
 }
 
+# Fetch Claude usage percentages from Anthropic API
+# Uses OAuth token from macOS Keychain
+# Sets global variables: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT
+# Returns 0 on success, 1 on failure
+fetch_claude_usage() {
+    _USAGE_SESSION_PCT=""
+    _USAGE_WEEKLY_PCT=""
+
+    # Get OAuth access token from macOS Keychain
+    local token
+    token=$(security find-generic-password -s "claude-ai-oauth" -a "access_token" -w 2>/dev/null)
+    if [[ -z "$token" ]]; then
+        return 1
+    fi
+
+    # Call usage API
+    local response
+    response=$(curl -s --max-time 5 \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+    if [[ -z "$response" ]]; then
+        return 1
+    fi
+
+    # Parse response with jq
+    if ! command -v jq &>/dev/null; then
+        return 1
+    fi
+
+    local session_pct weekly_pct
+    session_pct=$(echo "$response" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
+    weekly_pct=$(echo "$response" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
+
+    # Convert to percentages (API returns 0-1 float)
+    if [[ -n "$session_pct" && "$session_pct" != "null" ]]; then
+        # Multiply by 100 and format as integer percentage
+        _USAGE_SESSION_PCT=$(echo "$session_pct" | awk '{printf "%.0f", $1 * 100}')
+    fi
+    if [[ -n "$weekly_pct" && "$weekly_pct" != "null" ]]; then
+        _USAGE_WEEKLY_PCT=$(echo "$weekly_pct" | awk '{printf "%.0f", $1 * 100}')
+    fi
+
+    return 0
+}
+
 # Count active agents (agents with meta.json)
 count_agents() {
     local count=0
@@ -5080,6 +5126,12 @@ EOF
     local ERROR_MESSAGE=""     # Message to display (will be wrapped)
     local ERROR_PREV_MODE=0    # Previous DIALOG_MODE to restore after OK
 
+    # Usage tracking state (refreshed periodically)
+    local USAGE_SESSION_PCT=""   # 5-hour session utilization percentage
+    local USAGE_WEEKLY_PCT=""    # 7-day weekly utilization percentage
+    local USAGE_LAST_FETCH=0     # Timestamp of last successful fetch
+    local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
+
     # Check if main repo hooks are installed
     watch_check_hooks_status() {
         local status
@@ -5093,6 +5145,22 @@ EOF
 
     # Check hooks on startup
     watch_check_hooks_status
+
+    # Refresh usage data if interval has elapsed
+    watch_refresh_usage() {
+        local now
+        now=$(date +%s)
+        if [[ $((now - USAGE_LAST_FETCH)) -ge $USAGE_FETCH_INTERVAL ]]; then
+            USAGE_LAST_FETCH=$now
+            if fetch_claude_usage; then
+                USAGE_SESSION_PCT="$_USAGE_SESSION_PCT"
+                USAGE_WEEKLY_PCT="$_USAGE_WEEKLY_PCT"
+            fi
+        fi
+    }
+
+    # Fetch usage on startup
+    watch_refresh_usage
 
     # Refresh CLAUDE.md status on watch startup
     update_claude_status
@@ -7064,6 +7132,32 @@ EOF
             bg_status="bg:${hb_age}s  "
         fi
 
+        # Row 0: Usage stats (right-aligned)
+        local usage_info=""
+        if [[ -n "$USAGE_SESSION_PCT" || -n "$USAGE_WEEKLY_PCT" ]]; then
+            local session_str=""
+            local weekly_str=""
+            if [[ -n "$USAGE_SESSION_PCT" ]]; then
+                session_str="session:${USAGE_SESSION_PCT}%"
+            fi
+            if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
+                weekly_str="weekly:${USAGE_WEEKLY_PCT}%"
+            fi
+            if [[ -n "$session_str" && -n "$weekly_str" ]]; then
+                usage_info="$session_str  $weekly_str"
+            elif [[ -n "$session_str" ]]; then
+                usage_info="$session_str"
+            else
+                usage_info="$weekly_str"
+            fi
+        fi
+        if [[ -n "$usage_info" ]]; then
+            local usage_padding=$((TERM_COLS - ${#usage_info}))
+            printf "%*s%s\n" "$usage_padding" "" "$usage_info"
+        else
+            printf "%-*s\n" "$TERM_COLS" ""
+        fi
+
         # Row 1: Navigation keys (context-aware)
         local help_text
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
@@ -7242,7 +7336,7 @@ EOF
         if [[ "$is_orphaned" == "true" ]]; then
             warning_pane_height=2
         fi
-        local pane_height=$((TERM_LINES - tree_display_lines - 4 - warning_pane_height))  # header + separator + 2 footer lines + warning
+        local pane_height=$((TERM_LINES - tree_display_lines - 5 - warning_pane_height))  # header + separator + 3 footer lines + warning
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -7674,6 +7768,9 @@ EOF
             return
         fi
 
+        # Refresh usage data periodically
+        watch_refresh_usage
+
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
@@ -7692,7 +7789,7 @@ EOF
             # Only redraw when dirty (reduces flicker)
             if [[ "${_NO_AGENTS_DIRTY:-1}" != "1" ]]; then
                 # Just update footer for timing
-                local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer
+                local pane_height=$((TERM_LINES - 5 - 5))  # 5 tree lines + header + separator + 3 footer
                 local footer_row=$((5 + 1 + pane_height + 2))  # tree(5) + header(1) + panes + separator(1) = start after separator
                 watch_render_footer "$footer_row" "$t_frame_start"
                 return
@@ -7711,7 +7808,7 @@ EOF
             done
 
             # Calculate pane dimensions
-            local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer  # tree lines + header + separator + footer
+            local pane_height=$((TERM_LINES - 5 - 5))  # 5 tree lines + header + separator + 3 footer
             local left_pane_width=$TMUX_WIDTH
             local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
 
