@@ -4,8 +4,10 @@
 
 - [x] Agent status showing 'waiting' in tree view when actually running (fixed: `42d754d`)
   - State detection may be incorrectly identifying running agents as waiting
-- [ ] Tree view has incorrect alignment when managers have workers
-  - Indentation or spacing is off in hierarchical display
+- [x] Tree view has incorrect alignment when managers have workers (fix ready: `97d90b4`)
+  - Root cause: printf counts bytes not display chars for UTF-8 box-drawing characters
+  - Fix: Manual padding using character count instead of printf field width
+  - NOTE: Commit needs manual merge - run: `git merge 97d90b4`
 
 ## Features & Enhancements
 
@@ -42,7 +44,7 @@
 
 ## Security & Permissions
 
-- [ ] Prevent non-yolo agents from spawning agents in yolo mode
-  - Need to verify if this protection exists currently
-  - Non-yolo agents should not be able to escalate permissions by spawning yolo children
+- [x] Prevent non-yolo agents from spawning agents in yolo mode (implemented: `b340fe7`)
+  - Added yolo field to meta.json for detection
+  - Added security check in cmd_new_agent that blocks yolo escalation
 
