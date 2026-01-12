@@ -5239,9 +5239,12 @@ EOF
                     DIALOG_MODE=0
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    # Typing in name field (20 char max, no newlines)
+                    # Typing in name field (20 char max, no newlines, convert spaces to dashes)
                     if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" != $'\n' ]]; then
-                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        # Convert space to dash
+                        local char="$key"
+                        [[ "$char" == " " ]] && char="-"
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${char}"
                         _DIALOG_DIRTY=1
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
