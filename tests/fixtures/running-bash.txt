@@ -1,0 +1,4 @@
+I'll run the tests now.
+
+⏺ Bash(npm test)
+  ⎿  Running (ctrl+c to interrupt)

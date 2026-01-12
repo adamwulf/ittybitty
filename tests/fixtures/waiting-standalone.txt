@@ -1,0 +1,3 @@
+I've spawned the sub-agents and will wait for them to complete.
+
+WAITING
