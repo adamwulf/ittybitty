@@ -3601,8 +3601,16 @@ cmd_hook_check_path() {
     # Normalize path (resolve . and ..)
     file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
 
-    # Get agent's worktree path
-    local AGENT_DIR="$AGENTS_DIR/$ID"
+    # Resolve AGENTS_DIR to absolute path for proper comparison
+    local ABS_AGENTS_DIR
+    if [[ -d "$AGENTS_DIR" ]]; then
+        ABS_AGENTS_DIR=$(cd "$AGENTS_DIR" && pwd)
+    else
+        ABS_AGENTS_DIR="$AGENTS_DIR"
+    fi
+
+    # Get agent's worktree path (absolute)
+    local AGENT_DIR="$ABS_AGENTS_DIR/$ID"
     local WORKTREE_PATH="$AGENT_DIR/repo"
 
     # Resolve worktree to absolute path
@@ -3621,7 +3629,7 @@ cmd_hook_check_path() {
     fi
 
     # Check 3: Block access to other agents' directories
-    if [[ "$file_path" == "$AGENTS_DIR/"* ]]; then
+    if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
         log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access other agent's data: $file_path" --quiet
         echo "Access denied: cannot access other agents' files" >&2
         exit 2  # Block
