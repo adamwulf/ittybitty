@@ -1,0 +1,15 @@
+  ⎿  [agent/fix-thinking-state be71b70] Detect thinking
+     spinners as running state in parse_state()
+      21 files changed, 15 insertions(+)
+     … +40 lines (ctrl+o to expand)
+
+· Committing changes… (ctrl+c to interrupt · 5m 38s)
+
+────────────────────────────────────────────────────────────
+❯ Try "how does <filepath> work?"
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/fix-thinking-state
+  Session: 77% (1h 0m) Weekly: 11% (6d 20h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+

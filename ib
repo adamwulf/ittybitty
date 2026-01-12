@@ -851,7 +851,7 @@ parse_state() {
 
     # Check for thinking spinners at start of line (model is actively thinking)
     # These Unicode spinner characters appear at line start when Claude is processing
-    if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻][[:space:]] ]]; then
+    if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         echo "running"
         return
     fi
@@ -4353,7 +4353,7 @@ EOF
         fi
 
         # Check for thinking spinners at start of line
-        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻][[:space:]] ]]; then
+        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
             echo "running (matched: thinking spinner at line start)"
             return
         fi

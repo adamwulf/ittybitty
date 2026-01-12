@@ -1,0 +1,15 @@
+✻ Simmering… (ctrl+c to interrupt · 2m 17s)
+
+────────────────────────────────────────────────────────────
+❯ Try "how do I log an error?"
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/bash-auto-complete
+  Session: 76% (1h 5m) Weekly: 11% (6d 20h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+
+
+
+
+
+
