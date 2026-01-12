@@ -1,0 +1,41 @@
+  Summary of what was done:
+
+  1. Read existing test fixtures - Analyzed all 26 existing
+fixtures covering complete, running, waiting, and unknown st
+ates
+  2. Analyzed state detection logic - Studied parse_state()
+(ib:790-848) and capture_tmux() (ib:752-774):
+    - Strong running indicators take priority (esc/ctrl+c to
+ interrupt, ctrl+b ctrl+b, ⎿ Running, thinking)
+    - 15-line window for completion/waiting detection
+    - 20-line default capture from tmux
+  3. Identified 6 coverage gaps:
+    - Boundary conditions for 15-line window not tested
+    - Missing running indicator variants (ctrl+c to interrup
+t)
+    - Missing tool coverage (WebFetch, WebSearch, LSP, etc.)
+    - No negative tests preventing false positives
+    - No realistic long output tests
+    - No combined state indicator priority tests
+  4. Proposed 23 new test fixtures organized by priority:
+    - P1: 4 boundary condition tests
+    - P2: 4 running indicator priority tests
+    - P3: 5 tool coverage expansions
+    - P4: 3 negative tests
+    - P5: 2 realistic long output tests
+    - P6: 2 multiple indicator tests
+    - P7: 3 edge case tests
+
+  The proposal is committed to branch agent/test-expansion.
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Baked for 1m 47s
+
+────────────────────────────────────────────────────────────
+❯ ib merge test-expansion                            ↵ send
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/test-expansion
+  Session: 32% (3h 3m) Weekly: 5% (6d 22h)
+  ⏵⏵ accept edits on (shift+tab to cycle)

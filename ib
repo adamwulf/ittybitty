@@ -801,19 +801,22 @@ parse_state() {
         return
     fi
 
-    # Check for STRONG running indicators FIRST (active tool execution)
-    # These indicate something is definitely executing right now:
+    # Get last 5 lines for active execution detection (very recent window)
+    local very_recent
+    very_recent=$(echo "$input" | tail -5)
+
+    # Check for ACTIVE running indicators FIRST in very recent output
+    # These indicate something is definitely executing RIGHT NOW:
     # - "esc to interrupt" / "ctrl+c to interrupt" - shown during tool execution
-    # - "ctrl+b ctrl+b" - tmux passthrough indicator during execution
     # - "⎿  Running" - explicit running status indicator
-    # - "thinking)" - model thinking indicator
-    # These override completion phrases because they represent current state
-    if [[ "$input" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running|thinking\) ]]; then
+    # Active indicators in the last 5 lines override completion because the
+    # agent may have resumed work after saying they completed
+    if [[ "$very_recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|⎿\ \ Running ]]; then
         echo "running"
         return
     fi
 
-    # Get last 15 lines for completion/waiting detection
+    # Get last 15 lines for completion/waiting detection (broader window)
     local last_lines
     last_lines=$(echo "$input" | tail -15)
 
@@ -833,12 +836,22 @@ parse_state() {
         return
     fi
 
+    # No completion/waiting - check for other running indicators in recent window
+    # These may appear in discussions about Claude but are less definitive:
+    # - "ctrl+b ctrl+b" - tmux passthrough indicator
+    # - "thinking)" - model thinking indicator
+    # Only checked in last 15 lines to avoid matching historical text
+    if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
+        echo "running"
+        return
+    fi
+
     # Check for tool invocation patterns (weaker running signal)
     # ⏺ followed by a tool name and opening paren indicates tool use
     # This is weaker than the strong indicators because tool output can remain
     # visible after completion, but if there's no completion/waiting phrase,
     # it suggests the agent might still be processing
-    if [[ "$input" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
+    if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
         echo "running"
         return
     fi
@@ -4242,36 +4255,31 @@ EOF
     fi
 
     if $verbose; then
-        # Check STRONG running indicators first (matches parse_state logic)
-        if [[ "$input" =~ esc\ to\ interrupt ]]; then
-            echo "running (matched: esc to interrupt)"
-            return
-        fi
+        # Get last 5 lines for active execution detection (very recent window)
+        local very_recent
+        very_recent=$(echo "$input" | tail -5)
 
-        if [[ "$input" =~ ctrl\+c\ to\ interrupt ]]; then
-            echo "running (matched: ctrl+c to interrupt)"
-            return
-        fi
-
-        if [[ "$input" =~ ctrl\+b\ ctrl\+b ]]; then
-            echo "running (matched: ctrl+b ctrl+b)"
-            return
-        fi
-
-        if [[ "$input" =~ ⎿\ \ Running ]]; then
-            echo "running (matched: ⎿  Running)"
-            return
-        fi
-
-        if [[ "$input" =~ thinking\) ]]; then
-            echo "running (matched: thinking))"
-            return
-        fi
-
-        # Get last 15 lines for completion/waiting
+        # Get last 15 lines for broader state detection
         local last_lines
         last_lines=$(echo "$input" | tail -15)
 
+        # Check for ACTIVE running indicators FIRST in very recent output
+        if [[ "$very_recent" =~ esc\ to\ interrupt ]]; then
+            echo "running (matched: esc to interrupt in last 5 lines)"
+            return
+        fi
+
+        if [[ "$very_recent" =~ ctrl\+c\ to\ interrupt ]]; then
+            echo "running (matched: ctrl+c to interrupt in last 5 lines)"
+            return
+        fi
+
+        if [[ "$very_recent" =~ ⎿\ \ Running ]]; then
+            echo "running (matched: ⎿  Running in last 5 lines)"
+            return
+        fi
+
+        # Check completion/waiting in last 15 lines
         if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
             echo "complete (matched: I HAVE COMPLETED THE GOAL)"
             return
@@ -4287,8 +4295,19 @@ EOF
             return
         fi
 
+        # Other running indicators in last 15 lines
+        if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b ]]; then
+            echo "running (matched: ctrl+b ctrl+b)"
+            return
+        fi
+
+        if [[ "$last_lines" =~ thinking\) ]]; then
+            echo "running (matched: thinking))"
+            return
+        fi
+
         # Weak running indicator (tool invocation without strong indicator)
-        if [[ "$input" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
+        if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
             echo "running (matched: ⏺ ToolName()"
             return
         fi

@@ -189,17 +189,24 @@ The `kill_agent_process` function uses two strategies:
 
 ### Agent State Detection
 
-The `get_state` function (ib:424) reads recent tmux output to determine state:
+The `get_state` function (ib:853) reads recent tmux output to determine state:
 
 | State | Detection Method |
 |-------|------------------|
 | `stopped` | tmux session doesn't exist |
-| `running` | Output contains "esc to interrupt", "ctrl+b ctrl+b", or "⎿  Running" |
+| `running` | Last 5 lines contain active indicators ("esc to interrupt", "⎿  Running") OR last 15 lines contain "ctrl+b ctrl+b", "thinking)" |
 | `complete` | Last 15 lines contain "I HAVE COMPLETED THE GOAL" |
 | `waiting` | Last 15 lines contain standalone "WAITING" |
 | `unknown` | Session exists but no clear indicators |
 
-**Important**: Check for `running` indicators FIRST, before completion phrases, because the completion phrase may exist in context/history while the agent is still working.
+**Priority order**:
+1. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
+2. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
+3. Check last 15 lines for waiting ("WAITING")
+4. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
+5. Unknown if no indicators found
+
+This order ensures that active execution indicators in the very recent output override completion phrases, while completion phrases take priority over running indicators that may appear in descriptive text or historical output.
 
 ### Graceful Process Shutdown
 
