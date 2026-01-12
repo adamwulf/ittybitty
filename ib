@@ -4873,6 +4873,128 @@ cmd_test_pretooluse() {
 }
 
 # =============================================================================
+# COMMAND: test-format-age
+# =============================================================================
+
+# Test format_age() function with deterministic timestamps
+# Input format: '<timestamp> [<now_timestamp>]' (two timestamps, space-separated; second is optional)
+# If only one timestamp provided, uses current time as 'now'
+# Output: formatted age string (e.g., '5s', '5m', '2h', '1d')
+cmd_test_format_age() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-format-age [options] [file]
+
+Test the format_age() function with deterministic timestamps.
+
+Reads from stdin if no file is provided, or from the specified file.
+Input format: '<timestamp> [<now_timestamp>]'
+  - First timestamp: the "created" time to format
+  - Second timestamp (optional): the "now" reference time
+  - If only one timestamp, uses current time as "now"
+
+Timestamps should be Unix epoch seconds.
+
+Output: Formatted age string (e.g., '5s', '5m', '2h', '1d')
+
+Options:
+  -v, --verbose  Show diff in seconds and both timestamps
+  -h, --help     Show this help
+
+Examples:
+  # Using explicit now timestamp for deterministic testing
+  echo "1704067200 1704067205" | ib test-format-age
+  # Output: 5s
+
+  # From file
+  ib test-format-age tests/fixtures/format-age/5s-basic.txt
+
+  # Verbose output
+  echo "1704067200 1704067260" | ib test-format-age -v
+  # Output: 1m (diff: 60 seconds, from: 1704067200, to: 1704067260)
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-format-age [file] or echo 'timestamp [now]' | ib test-format-age" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse the input - expect "timestamp [now_timestamp]"
+    # Trim whitespace and handle both single and double values
+    input=$(echo "$input" | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    local created_ts now_ts
+    if [[ "$input" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
+        # Two timestamps provided
+        created_ts="${BASH_REMATCH[1]}"
+        now_ts="${BASH_REMATCH[2]}"
+    elif [[ "$input" =~ ^([0-9]+)$ ]]; then
+        # Single timestamp - use current time
+        created_ts="${BASH_REMATCH[1]}"
+        now_ts=$(date +%s)
+    else
+        echo "Error: invalid input format. Expected 'timestamp [now_timestamp]'" >&2
+        echo "Got: $input" >&2
+        exit 1
+    fi
+
+    # Calculate the diff
+    local diff=$((now_ts - created_ts))
+
+    # Format the age (same logic as format_age but without ISO parsing)
+    local result
+    if [[ $diff -lt 60 ]]; then
+        result="${diff}s"
+    elif [[ $diff -lt 3600 ]]; then
+        result="$((diff / 60))m"
+    elif [[ $diff -lt 86400 ]]; then
+        result="$((diff / 3600))h"
+    else
+        result="$((diff / 86400))d"
+    fi
+
+    if $verbose; then
+        echo "$result (diff: $diff seconds, from: $created_ts, to: $now_ts)"
+    else
+        echo "$result"
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -9150,6 +9272,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-format-age)
+        shift
+        cmd_test_format_age "$@"
         ;;
     log)
         shift
