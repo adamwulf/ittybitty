@@ -915,6 +915,7 @@ parse_state() {
     # These indicate something is definitely executing RIGHT NOW:
     # - "(esc to interrupt)" / "(ctrl+c to interrupt)" - shown during tool execution (in parens)
     # - "⎿  Running" - explicit running status indicator
+    # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Active indicators in the last 5 lines override completion because the
     # agent may have resumed work after saying they completed
     # Note: We require parentheses around interrupt phrases to distinguish from discussion text
@@ -947,8 +948,16 @@ parse_state() {
     # These may appear in discussions about Claude but are less definitive:
     # - "ctrl+b ctrl+b" - tmux passthrough indicator
     # - "thinking)" - model thinking indicator
+    # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Only checked in last 15 lines to avoid matching historical text
     if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
+        echo "running"
+        return
+    fi
+
+    # Check for thinking spinners at start of line (model is actively thinking)
+    # These Unicode spinner characters appear at line start when Claude is processing
+    if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         echo "running"
         return
     fi
@@ -4628,6 +4637,12 @@ EOF
 
         if [[ "$last_lines" =~ thinking\) ]]; then
             echo "running (matched: thinking))"
+            return
+        fi
+
+        # Check for thinking spinners at start of line
+        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
+            echo "running (matched: thinking spinner at line start)"
             return
         fi
 
