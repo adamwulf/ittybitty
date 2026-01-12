@@ -7525,7 +7525,7 @@ EOF
     # End Jump Dialog
     # ==========================================================================
 
-    # Render footer with help text, timing, and clock
+    # Render footer with help text, timing, and clock (2 lines)
     # Args: $1=footer_row, $2=frame_start_ms
     watch_render_footer() {
         local footer_row="$1"
@@ -7544,7 +7544,7 @@ EOF
             bg_status="bg:${hb_age}s  "
         fi
 
-        # Row 0: Usage stats (right-aligned)
+        # Build usage info string for right side of row 1
         local usage_info=""
         if [[ -n "$USAGE_SESSION_PCT" || -n "$USAGE_WEEKLY_PCT" ]]; then
             local session_str=""
@@ -7563,14 +7563,8 @@ EOF
                 usage_info="$weekly_str"
             fi
         fi
-        if [[ -n "$usage_info" ]]; then
-            local usage_padding=$((TERM_COLS - ${#usage_info}))
-            printf "%*s%s\n" "$usage_padding" "" "$usage_info"
-        else
-            printf "%-*s\n" "$TERM_COLS" ""
-        fi
 
-        # Row 1: Navigation keys (context-aware)
+        # Row 1: Navigation keys (left) + Usage stats (right)
         local help_text
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
             # Denials mode: show time filter toggle
@@ -7581,9 +7575,12 @@ EOF
             help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
         fi
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
-        printf "%-*s\n" "$TERM_COLS" "$help_text"
+        local help_text_len=${#help_text}
+        local usage_info_len=${#usage_info}
+        local row1_padding=$((TERM_COLS - help_text_len - usage_info_len))
+        printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
-        # Row 2: Action keys + timing
+        # Row 2: Action keys (left) + timing info (right)
         local action_text
         local action_text_visible_len
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
@@ -7752,13 +7749,13 @@ EOF
 
         # Calculate pane dimensions
         # Left pane uses TMUX_WIDTH, right pane gets the rest
-        # Rows: tree + pane_header(1) + pane_separator(1) + footer(1) = tree + 3
+        # Rows: tree + pane_header(1) + pane_separator(1) + footer(2) = tree + 4
         # If orphaned, add warning pane (2 lines)
         local warning_pane_height=0
         if [[ "$is_orphaned" == "true" ]]; then
             warning_pane_height=2
         fi
-        local pane_height=$((TERM_LINES - tree_display_lines - 5 - warning_pane_height))  # header + separator + 3 footer lines + warning
+        local pane_height=$((TERM_LINES - tree_display_lines - 4 - warning_pane_height))  # header + separator + 2 footer lines + warning
         local left_pane_width=$TMUX_WIDTH
         local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))  # -3 for " │ " separator
 
@@ -8300,8 +8297,8 @@ EOF
             # Only redraw when dirty (reduces flicker)
             if [[ "${_NO_AGENTS_DIRTY:-1}" != "1" ]]; then
                 # Just update footer for timing
-                local pane_height=$((TERM_LINES - 5 - 5))  # 5 tree lines + header + separator + 3 footer
-                local footer_row=$((5 + 1 + pane_height + 2))  # tree(5) + header(1) + panes + separator(1) = start after separator
+                local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer
+                local footer_row=$((5 + 1 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
                 watch_render_footer "$footer_row" "$t_frame_start"
                 return
             fi
@@ -8319,7 +8316,7 @@ EOF
             done
 
             # Calculate pane dimensions
-            local pane_height=$((TERM_LINES - 5 - 5))  # 5 tree lines + header + separator + 3 footer
+            local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer
             local left_pane_width=$TMUX_WIDTH
             local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
 
@@ -8348,7 +8345,7 @@ EOF
             printf '%s─┴─%s' "$left_sep" "$right_sep"
 
             # Footer
-            local footer_row=$((5 + 1 + pane_height + 2))  # tree(5) + header(1) + panes + separator(1) = start after separator
+            local footer_row=$((5 + 1 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
             watch_render_footer "$footer_row" "$t_frame_start"
 
             return  # tmpfile cleanup handled by RETURN trap
