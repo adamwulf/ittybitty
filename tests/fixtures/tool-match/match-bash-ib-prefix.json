@@ -1,0 +1,8 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ib list",
+    "description": "List agents"
+  },
+  "pattern": "Bash(ib:*)"
+}
