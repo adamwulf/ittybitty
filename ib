@@ -141,9 +141,9 @@ is_running_as_agent() {
 
 # Get children of a manager agent with optional state filtering
 # Args: $1 = manager agent ID
-#       $2 = filter (optional): all|unfinished|running|waiting|complete (default: all)
+#       $2 = filter (optional): all|unfinished|running|waiting|complete|creating (default: all)
 # Returns: space-separated list of child IDs matching filter
-# Note: "unfinished" includes running, waiting, and complete states
+# Note: "unfinished" includes creating, running, waiting, and complete states
 get_children() {
     local manager_id="$1"
     local filter="${2:-all}"
@@ -174,8 +174,8 @@ get_children() {
                 local state=$(get_state "$child_id")
 
                 if [[ "$filter" == "unfinished" ]]; then
-                    # Unfinished = running, waiting, or complete
-                    if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                    # Unfinished = creating, running, waiting, or complete
+                    if [[ "$state" == "creating" || "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
                         if [[ -n "$children" ]]; then
                             children="$children $child_id"
                         else
@@ -226,7 +226,7 @@ get_descendants_recursive() {
 # Get unfinished children of a manager agent (children that haven't been merged/killed)
 # Args: $1 = manager agent ID
 # Returns: space-separated list of unfinished child IDs (empty if none)
-# Children in running, waiting, or complete state all need attention before manager can complete
+# Children in creating, running, waiting, or complete state all need attention before manager can complete
 get_unfinished_children() {
     get_children "$1" "unfinished"
 }
@@ -862,7 +862,7 @@ parse_state() {
 }
 
 # Detect agent state from tmux
-# States: running, waiting, stopped, complete, unknown
+# States: creating, running, waiting, stopped, complete, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
@@ -876,6 +876,26 @@ get_state() {
     if [[ -z "$recent" ]]; then
         echo "stopped"
         return
+    fi
+
+    # Check if Claude hasn't started yet (creating state)
+    # This happens when the agent is very new and either:
+    # - Still showing permissions screen (hasn't been accepted yet)
+    # - Nothing meaningful showing yet (Claude still loading)
+    # We capture more history to check for Claude logo
+    local full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -50)
+    if ! echo "$full_history" | grep -q "Claude Code v" && ! echo "$full_history" | grep -q "\[USER TASK\]"; then
+        # Check if permissions screen is showing
+        if echo "$full_history" | grep -qi "Enter to confirm" && echo "$full_history" | grep -qi "trust"; then
+            echo "creating"
+            return
+        fi
+        # Check if session is very new (minimal output, just bash starting up)
+        local line_count=$(echo "$full_history" | wc -l | tr -d ' ')
+        if [[ "$line_count" -lt 10 ]]; then
+            echo "creating"
+            return
+        fi
     fi
 
     # Use parse_state for the actual state detection logic
@@ -2508,22 +2528,27 @@ EOF
         exit 1
     fi
 
-    # For non-yolo mode, auto-accept the workspace trust dialog
+    # Output the agent ID immediately so caller isn't blocked
+    echo "$ID"
+
+    # For non-yolo mode, auto-accept the workspace trust dialog in background
     # (yolo bypasses this entirely, but default and strict still see it)
+    # This runs asynchronously so agent creation returns quickly
     if [[ "$YOLO_MODE" != true ]]; then
-        auto_accept_workspace_trust "$TMUX_SESSION"
+        (
+            auto_accept_workspace_trust "$TMUX_SESSION"
+            # Update status after initialization completes
+            update_claude_status
+        ) &
+    else
+        # For yolo mode, just update status immediately
+        update_claude_status
     fi
 
     # Auto-spawn watchdog if agent has a manager
     if [[ -n "$MANAGER" ]]; then
         ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
-
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
-
-    # Output the agent ID
-    echo "$ID"
 }
 
 # =============================================================================
@@ -2552,13 +2577,14 @@ Options:
 
 Output columns:
   ID        Agent identifier
-  STATE     running, waiting, complete, or stopped
+  STATE     creating, running, waiting, complete, or stopped
   AGE       Time since spawn
   MODEL     Claude model being used
   MANAGER   Manager agent ID (if any)
   PROMPT    First 40 chars of prompt
 
 States:
+  creating  Agent is initializing (Claude starting up)
   running   Agent is actively processing
   waiting   Agent is idle, may need input
   complete  Agent has signaled task completion (merge or kill to close)
@@ -3554,6 +3580,9 @@ EOF
     if [[ "$state" != "stopped" ]]; then
         echo "Error: agent '$ID' is not stopped (current state: $state)" >&2
         case "$state" in
+            creating)
+                echo "Agent is still initializing. Wait a moment for Claude to start." >&2
+                ;;
             running)
                 echo "Agent is actively processing. Use 'ib look $ID' to view output." >&2
                 ;;
@@ -4722,6 +4751,16 @@ cmd_watchdog() {
                     notified_complete=true
                 fi
                 # No logging if already notified - silence
+                ;;
+
+            creating)
+                # Agent still initializing - treat like running
+                if [[ "$prev_state" != "creating" ]]; then
+                    echo "[watchdog] Agent state: creating (Claude starting up)"
+                    log_agent "$AGENT_ID" "[watchdog] State: creating" --quiet
+                fi
+                waiting_counter=0
+                notify_interval=6  # Reset to initial interval
                 ;;
 
             running)

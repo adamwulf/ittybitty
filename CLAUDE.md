@@ -189,24 +189,26 @@ The `kill_agent_process` function uses two strategies:
 
 ### Agent State Detection
 
-The `get_state` function (ib:853) reads recent tmux output to determine state:
+The `get_state` function (ib:867) reads recent tmux output to determine state:
 
 | State | Detection Method |
 |-------|------------------|
 | `stopped` | tmux session doesn't exist |
+| `creating` | Session exists but Claude hasn't started yet (no logo, may show permissions screen) |
 | `running` | Last 5 lines contain active indicators ("esc to interrupt", "⎿  Running") OR last 15 lines contain "ctrl+b ctrl+b", "thinking)" |
 | `complete` | Last 15 lines contain "I HAVE COMPLETED THE GOAL" |
 | `waiting` | Last 15 lines contain standalone "WAITING" |
 | `unknown` | Session exists but no clear indicators |
 
 **Priority order**:
-1. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
-2. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
-3. Check last 15 lines for waiting ("WAITING")
-4. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
-5. Unknown if no indicators found
+1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
+2. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
+3. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
+4. Check last 15 lines for waiting ("WAITING")
+5. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
+6. Unknown if no indicators found
 
-This order ensures that active execution indicators in the very recent output override completion phrases, while completion phrases take priority over running indicators that may appear in descriptive text or historical output.
+This order ensures that creating agents are properly identified, active execution indicators in the very recent output override completion phrases, while completion phrases take priority over running indicators that may appear in descriptive text or historical output.
 
 ### Graceful Process Shutdown
 
@@ -386,6 +388,7 @@ ib new-agent --yolo "research latest React patterns and update our components"
 
 | State      | Meaning                                                 |
 | ---------- | ------------------------------------------------------- |
+| `creating` | Agent is initializing (Claude starting up)              |
 | `running`  | Agent is actively processing                            |
 | `waiting`  | Agent is idle, may need input                           |
 | `complete` | Agent signaled task completion (merge or kill to close) |
