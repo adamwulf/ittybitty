@@ -5638,6 +5638,9 @@ EOF
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local HOOKS_FOCUS=0  # 0=Install/Uninstall button, 1=Close button
 
+    # STATUS.md integration state (for ib ask to work)
+    local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
+
     # Errors cache for async agent creation failures
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
     local -a ERRORS_CACHE=()
@@ -5662,6 +5665,25 @@ EOF
 
     # Check hooks on startup
     watch_check_hooks_status
+
+    # Check if CLAUDE.md has STATUS.md integration (needed for ib ask)
+    watch_check_status_integration() {
+        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
+        if [[ -f "$claude_md" ]]; then
+            # Check for either <ittybitty-status> block or @.ittybitty/STATUS.md import
+            if grep -q '<ittybitty-status>' "$claude_md" || grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+                STATUS_MD_INTEGRATED=1
+            else
+                STATUS_MD_INTEGRATED=2
+            fi
+        else
+            # No CLAUDE.md file
+            STATUS_MD_INTEGRATED=2
+        fi
+    }
+
+    # Check STATUS.md integration on startup
+    watch_check_status_integration
 
     # Refresh usage data if interval has elapsed
     watch_refresh_usage() {
@@ -7605,6 +7627,11 @@ EOF
             if [[ $HOOKS_INSTALLED -eq 2 ]]; then
                 action_text="$action_text    "$'\e[33m'"h: hooks"$'\e[0m'
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: hooks" = 12 chars
+            fi
+            # Add STATUS.md integration warning if not set up (in yellow)
+            if [[ $STATUS_MD_INTEGRATED -eq 2 ]]; then
+                action_text="$action_text    "$'\e[33m'"ib init needed"$'\e[0m'
+                action_text_visible_len=$((action_text_visible_len + 18))  # "    ib init needed" = 18 chars
             fi
         fi
         # Use LAST_FRAME_MS from previous complete frame (includes sleep)
