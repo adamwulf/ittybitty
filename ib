@@ -4873,6 +4873,169 @@ cmd_test_pretooluse() {
 }
 
 # =============================================================================
+# COMMAND: test-tool-allowed
+# =============================================================================
+
+# Test tool_in_allow_list() logic directly
+# This is for testing only - blocked from running inside agents
+# Input format (JSON via stdin or file):
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "ib list"},
+#   "settings": {"permissions": {"allow": ["Bash(ib:*)"]}}
+# }
+cmd_test_tool_allowed() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-tool-allowed [options] [file]
+
+Test tool permission checking against allow list patterns.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs 'allowed' or 'denied' based on whether the tool matches the allow list.
+
+This command is primarily for testing the tool_in_allow_list() logic.
+
+Options:
+  -v, --verbose  Show which pattern matched (if any)
+  -h, --help     Show this help
+
+Input format:
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "ib list"},
+    "settings": {"permissions": {"allow": ["Bash(ib:*)"]}}
+  }
+
+Pattern types:
+  - Exact tool name: "Read", "Edit", "Write"
+  - Bash prefix: "Bash(git:*)" matches git commands
+  - Bash prefix: "Bash(ib:*)" matches ib commands
+
+Examples:
+  echo '{"tool_name": "Read", "tool_input": {}, "settings": {"permissions": {"allow": ["Read"]}}}' | ib test-tool-allowed
+  ib test-tool-allowed tests/fixtures/tool-allowed/allowed-exact-tool.json
+  ib test-tool-allowed -v tests/fixtures/tool-allowed/allowed-bash-prefix.json
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-tool-allowed [file] or echo '{...}' | ib test-tool-allowed" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local tool_name tool_input allow_list
+    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
+    allow_list=$(echo "$input" | jq -r '.settings.permissions.allow // []')
+
+    if [[ -z "$tool_name" ]]; then
+        echo "Error: tool_name is required in input" >&2
+        exit 1
+    fi
+
+    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
+    test_tool_matches_pattern() {
+        local t_name="$1"
+        local t_input="$2"
+        local pattern="$3"
+
+        # Check for Bash(prefix:*) pattern
+        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$t_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$t_input" | jq -r '.command // ""')
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    return 0
+                fi
+            fi
+            return 1
+        fi
+
+        # Exact tool name match
+        if [[ "$pattern" == "$t_name" ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Check if tool is in allow list
+    local matched_pattern=""
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+            matched_pattern="$pattern"
+            break
+        fi
+    done < <(echo "$allow_list" | jq -r '.[]')
+
+    if [[ -n "$matched_pattern" ]]; then
+        if $verbose; then
+            if [[ "$tool_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$tool_input" | jq -r '.command // ""')
+                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name, command: $command)"
+            else
+                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name)"
+            fi
+        else
+            echo "allowed"
+        fi
+    else
+        if $verbose; then
+            local allow_list_str
+            allow_list_str=$(echo "$allow_list" | jq -r '. | join(", ")')
+            echo "denied (tool: $tool_name, allow list: [$allow_list_str])"
+        else
+            echo "denied"
+        fi
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -9150,6 +9313,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-tool-allowed)
+        shift
+        cmd_test_tool_allowed "$@"
         ;;
     log)
         shift

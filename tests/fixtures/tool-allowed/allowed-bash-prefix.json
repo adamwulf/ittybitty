@@ -1,0 +1,12 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ib list",
+    "description": "List running agents"
+  },
+  "settings": {
+    "permissions": {
+      "allow": ["Bash(ib:*)", "Read"]
+    }
+  }
+}

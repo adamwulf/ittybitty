@@ -1,0 +1,12 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "curl https://example.com",
+    "description": "Fetch URL"
+  },
+  "settings": {
+    "permissions": {
+      "allow": ["Bash(ib:*)", "Bash(git:*)"]
+    }
+  }
+}
