@@ -4932,6 +4932,9 @@ EOF
     local LAST_FRAME_MS=0
     local SLEEP_ADJUST_MS=$((TARGET_FRAME_MS * 6 / 10))  # Start at 60% of target frame time
 
+    # Escape sequence tracking for normal mode (arrow keys)
+    local _WATCH_ESC_PENDING=0  # 0=none, 1=got ESC, 2=got ESC+[
+
     # Send dialog state
     local SEND_TEXT=""
     local SEND_FOCUS=0   # 0=text, 1=Send button, 2=Cancel button
@@ -5215,9 +5218,18 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'A'|'B'|'C'|'D')  # Arrow key direction (up/down/left/right)
+            'A'|'D')  # Up or Left arrow - same as Shift+Tab (backward)
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    _DIALOG_ESC_PENDING=0  # Complete sequence, ignore it
+                    KILL_FOCUS=$(( (KILL_FOCUS - 1 + 2) % 2 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B'|'C')  # Down or Right arrow - same as Tab (forward)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    KILL_FOCUS=$(( (KILL_FOCUS + 1) % 2 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
                 fi
                 ;;
             *)  # Any other key
@@ -5439,13 +5451,32 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'A'|'B'|'C'|'D')  # Arrow key direction
+            'A'|'D')  # Up or Left arrow - same as Shift+Tab (backward)
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ -z "$SEND_TEXT" ]]; then
+                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
+                    else
+                        SEND_FOCUS=$(( (SEND_FOCUS - 1 + 3) % 3 ))
+                    fi
                     _DIALOG_ESC_PENDING=0
-                elif [[ $SEND_FOCUS -eq 0 ]]; then
-                    # Typing in text field
-                    SEND_TEXT="${SEND_TEXT}${key}"
                     _DIALOG_DIRTY=1
+                elif [[ $SEND_FOCUS -eq 0 ]]; then
+                    # Typing in text field - ignore arrow keys in escape sequence that wasn't detected
+                    :
+                fi
+                ;;
+            'B'|'C')  # Down or Right arrow - same as Tab (forward)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ -z "$SEND_TEXT" ]]; then
+                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
+                    else
+                        SEND_FOCUS=$(( (SEND_FOCUS + 1) % 3 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $SEND_FOCUS -eq 0 ]]; then
+                    # Typing in text field - ignore arrow keys in escape sequence that wasn't detected
+                    :
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
@@ -5636,15 +5667,32 @@ EOF
                     fi
                 fi
                 ;;
-            'A'|'B'|'C'|'D')  # Arrow key direction
+            'A'|'D')  # Up or Left arrow - same as Shift+Tab (backward)
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    _DIALOG_ESC_PENDING=0
-                elif [[ $NUKE_FOCUS -eq 0 ]]; then
-                    # Typing in text field
-                    if [[ ${#NUKE_TEXT} -lt 4 ]]; then
-                        NUKE_TEXT="${NUKE_TEXT}${key}"
-                        _DIALOG_DIRTY=1
+                    if [[ "$NUKE_TEXT" == "NUKE" ]]; then
+                        NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 3) % 3 ))
+                    else
+                        NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 2) % 2 ))
                     fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $NUKE_FOCUS -eq 0 ]]; then
+                    # Typing in text field - ignore
+                    :
+                fi
+                ;;
+            'B'|'C')  # Down or Right arrow - same as Tab (forward)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ "$NUKE_TEXT" == "NUKE" ]]; then
+                        NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 3 ))
+                    else
+                        NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 2 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $NUKE_FOCUS -eq 0 ]]; then
+                    # Typing in text field - ignore
+                    :
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete all (single line input)
@@ -6054,10 +6102,20 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'A')  # Up arrow - previous model (when on model field)
+            'A')  # Up arrow - previous model (when on model field), or backward navigation
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                        # On model field: cycle model
                         NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX - 1 + ${#NEW_AGENT_MODELS[@]}) % ${#NEW_AGENT_MODELS[@]} ))
+                        _DIALOG_DIRTY=1
+                    elif [[ $NEW_AGENT_FOCUS -eq 2 || $NEW_AGENT_FOCUS -eq 4 || $NEW_AGENT_FOCUS -eq 5 ]]; then
+                        # On checkbox or buttons: navigate backward like Shift+Tab
+                        if [[ $can_create == "1" ]]; then
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
+                        else
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
+                            [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=4
+                        fi
                         _DIALOG_DIRTY=1
                     fi
                     _DIALOG_ESC_PENDING=0
@@ -6067,15 +6125,25 @@ EOF
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}A"
                         _DIALOG_DIRTY=1
                     fi
-                elif [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}A"
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'B')  # Down arrow - next model (when on model field)
+            'B')  # Down arrow - next model (when on model field), or forward navigation
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     if [[ $NEW_AGENT_FOCUS -eq 1 ]]; then
+                        # On model field: cycle model
                         NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX + 1) % ${#NEW_AGENT_MODELS[@]} ))
+                        _DIALOG_DIRTY=1
+                    elif [[ $NEW_AGENT_FOCUS -eq 2 || $NEW_AGENT_FOCUS -eq 4 || $NEW_AGENT_FOCUS -eq 5 ]]; then
+                        # On checkbox or buttons: navigate forward like Tab
+                        if [[ $can_create == "1" ]]; then
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
+                        else
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
+                            [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=0
+                        fi
                         _DIALOG_DIRTY=1
                     fi
                     _DIALOG_ESC_PENDING=0
@@ -6090,17 +6158,51 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'C'|'D')  # Left/right arrows - ignore
+            'D')  # Left arrow - backward navigation (like Shift+Tab)
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $NEW_AGENT_FOCUS -ne 0 && $NEW_AGENT_FOCUS -ne 3 ]]; then
+                        # Not in text fields: navigate backward
+                        if [[ $can_create == "1" ]]; then
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
+                        else
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS - 1 + 6) % 6 ))
+                            [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=4
+                        fi
+                        _DIALOG_DIRTY=1
+                    fi
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
                     # Typing in name field - only alphanumeric and hyphen allowed
                     if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
-                        NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}D"
                         _DIALOG_DIRTY=1
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
-                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}D"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'C')  # Right arrow - forward navigation (like Tab)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $NEW_AGENT_FOCUS -ne 0 && $NEW_AGENT_FOCUS -ne 3 ]]; then
+                        # Not in text fields: navigate forward
+                        if [[ $can_create == "1" ]]; then
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
+                        else
+                            NEW_AGENT_FOCUS=$(( (NEW_AGENT_FOCUS + 1) % 6 ))
+                            [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=0
+                        fi
+                        _DIALOG_DIRTY=1
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
+                        NEW_AGENT_NAME="${NEW_AGENT_NAME}C"
+                        _DIALOG_DIRTY=1
+                    fi
+                elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
+                    NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}C"
                     _DIALOG_DIRTY=1
                 fi
                 ;;
@@ -6431,16 +6533,38 @@ EOF
                     DIALOG_MODE=0
                 fi
                 ;;
-            $'\e')  # Escape
-                DIALOG_MODE=0
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
                 ;;
-            $'\t'|'['|'C')  # Tab or right arrow
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t')  # Tab - forward
                 HOOKS_FOCUS=$(( (HOOKS_FOCUS + 1) % 2 ))
                 _DIALOG_DIRTY=1
                 ;;
-            'D'|'Z')  # Left arrow or Shift+Tab
-                HOOKS_FOCUS=$(( (HOOKS_FOCUS - 1 + 2) % 2 ))
-                _DIALOG_DIRTY=1
+            'B'|'C')  # Down or Right arrow - forward (like Tab)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    HOOKS_FOCUS=$(( (HOOKS_FOCUS + 1) % 2 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'A'|'D'|'Z')  # Up or Left arrow or Shift+Tab - backward
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    HOOKS_FOCUS=$(( (HOOKS_FOCUS - 1 + 2) % 2 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Real escape - close dialog
+                    DIALOG_MODE=0
+                fi
+                _DIALOG_ESC_PENDING=0
                 ;;
         esac
     }
@@ -7322,7 +7446,52 @@ EOF
 
         # Normal mode key handling
         case "$key" in
+            $'\e')  # Escape - start of arrow key sequence
+                _WATCH_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "$_WATCH_ESC_PENDING" == "1" ]]; then
+                    _WATCH_ESC_PENDING=2
+                fi
+                ;;
+            'A')  # Up arrow (when part of escape sequence)
+                if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
+                    # Up arrow = same as k (move selection up)
+                    if [[ $AGENT_COUNT -gt 0 ]]; then
+                        SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
+                        SELECTED_NAME=""
+                    fi
+                    _WATCH_ESC_PENDING=0
+                fi
+                ;;
+            'B')  # Down arrow (when part of escape sequence)
+                if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
+                    # Down arrow = same as j (move selection down)
+                    if [[ $AGENT_COUNT -gt 0 ]]; then
+                        SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
+                        SELECTED_NAME=""
+                    fi
+                    _WATCH_ESC_PENDING=0
+                fi
+                ;;
+            'C')  # Right arrow (when part of escape sequence)
+                if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
+                    # Right arrow = same as n (next pane)
+                    RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE + 1) % ${#RIGHT_PANE_NAMES[@]} ))
+                    SCROLL_OFFSET=0
+                    _WATCH_ESC_PENDING=0
+                fi
+                ;;
+            'D')  # Left arrow (when part of escape sequence)
+                if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
+                    # Left arrow = same as p (previous pane)
+                    RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
+                    SCROLL_OFFSET=0
+                    _WATCH_ESC_PENDING=0
+                fi
+                ;;
             j)
+                _WATCH_ESC_PENDING=0
                 # Move selection down
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
@@ -7330,6 +7499,7 @@ EOF
                 fi
                 ;;
             k)
+                _WATCH_ESC_PENDING=0
                 # Move selection up
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
@@ -7337,10 +7507,12 @@ EOF
                 fi
                 ;;
             \;)
+                _WATCH_ESC_PENDING=0
                 # Scroll down (show older content) - ; key
                 SCROLL_OFFSET=$((SCROLL_OFFSET + 10))
                 ;;
             l)
+                _WATCH_ESC_PENDING=0
                 # Scroll up (show newer content, toward bottom)
                 SCROLL_OFFSET=$((SCROLL_OFFSET - 10))
                 if [[ $SCROLL_OFFSET -lt 0 ]]; then
@@ -7348,16 +7520,19 @@ EOF
                 fi
                 ;;
             n)
+                _WATCH_ESC_PENDING=0
                 # Next right pane mode
                 RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE + 1) % ${#RIGHT_PANE_NAMES[@]} ))
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             p)
+                _WATCH_ESC_PENDING=0
                 # Previous right pane mode
                 RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             s)
+                _WATCH_ESC_PENDING=0
                 # Open Send dialog
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     watch_dialog_init_send
@@ -7365,6 +7540,7 @@ EOF
                 fi
                 ;;
             x)
+                _WATCH_ESC_PENDING=0
                 # Open Kill dialog
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     watch_dialog_init_kill
@@ -7372,16 +7548,19 @@ EOF
                 fi
                 ;;
             !)
+                _WATCH_ESC_PENDING=0
                 # Open Nuke dialog
                 watch_dialog_init_nuke
                 DIALOG_MODE=3
                 ;;
             a)
+                _WATCH_ESC_PENDING=0
                 # Open New Agent dialog
                 watch_dialog_init_new_agent
                 DIALOG_MODE=4
                 ;;
             /)
+                _WATCH_ESC_PENDING=0
                 # Open Jump dialog
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     watch_dialog_init_jump
@@ -7389,9 +7568,13 @@ EOF
                 fi
                 ;;
             h)
+                _WATCH_ESC_PENDING=0
                 # Open Hooks dialog
                 watch_dialog_init_hooks
                 DIALOG_MODE=6
+                ;;
+            *)
+                _WATCH_ESC_PENDING=0
                 ;;
         esac
     }
