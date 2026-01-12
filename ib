@@ -4405,8 +4405,8 @@ cmd_hooks_status() {
     fi
 
     # Check if our hook exists in the file
-    # Handle both array command ["ib","hooks","main-path"] and string command
-    if jq -e '.hooks.PreToolUse[]? | select(.command != null and (if (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path")) else (.command | contains("ib hooks main-path")) end))' "$SETTINGS_FILE" >/dev/null 2>&1; then
+    # Correct format: .hooks.PreToolUse[].hooks[].command contains "ib hooks main-path"
+    if jq -e '.hooks.PreToolUse[]?.hooks[]? | select(.command != null and (.command | contains("ib hooks main-path")))' "$SETTINGS_FILE" >/dev/null 2>&1; then
         echo "installed"
     else
         echo "not-installed"
@@ -4433,14 +4433,16 @@ cmd_hooks_install() {
         settings=$(cat "$SETTINGS_FILE")
     fi
 
-    # Check if hook already exists (handle array or string command)
-    if echo "$settings" | jq -e '.hooks.PreToolUse[]? | select(.command != null and (if (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path")) else (.command | contains("ib hooks main-path")) end))' >/dev/null 2>&1; then
+    # Check if hook already exists
+    # Correct format: .hooks.PreToolUse[].hooks[].command contains "ib hooks main-path"
+    if echo "$settings" | jq -e '.hooks.PreToolUse[]?.hooks[]? | select(.command != null and (.command | contains("ib hooks main-path")))' >/dev/null 2>&1; then
         echo "Hook already installed"
         exit 0
     fi
 
-    # Define our hook
-    local our_hook='{"matcher":"Bash","command":["ib","hooks","main-path"]}'
+    # Define our hook using correct Claude Code format:
+    # Each PreToolUse entry has a "matcher" and a "hooks" array of hook objects
+    local our_hook='{"matcher":"Bash","hooks":[{"type":"command","command":"ib hooks main-path"}]}'
 
     # Add the hook to settings, preserving existing content
     settings=$(echo "$settings" | jq --argjson hook "$our_hook" '
@@ -4470,14 +4472,12 @@ cmd_hooks_uninstall() {
     local settings
     settings=$(cat "$SETTINGS_FILE")
 
-    # Remove our hook from PreToolUse array (handle array or string command)
+    # Remove our hook from PreToolUse array
+    # Correct format: filter out entries where .hooks[].command contains "ib hooks main-path"
     settings=$(echo "$settings" | jq '
         if .hooks.PreToolUse then
             .hooks.PreToolUse = [.hooks.PreToolUse[] | select(
-                if .command == null then true
-                elif (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path") | not)
-                else (.command | contains("ib hooks main-path") | not)
-                end
+                (.hooks // []) | all(.command == null or (.command | contains("ib hooks main-path") | not))
             )]
         else
             .
