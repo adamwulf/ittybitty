@@ -611,8 +611,8 @@ build_agent_settings() {
 
     # Build the PermissionRequest hook command
     # The hook receives JSON via stdin with tool_name, tool_input, etc.
-    # Format: "Permission denied: ToolName (key1: val1, key2: val2)"
-    local hook_cmd="jq -r '\"Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
+    # Format: "[PermissionRequest] Permission denied: ToolName (key1: val1, key2: val2)"
+    local hook_cmd="jq -r '\"[PermissionRequest] Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
 
     # Merge everything together and add hooks
     echo "$base_settings" | jq --argjson ib "$ib_perms" \
@@ -4363,16 +4363,16 @@ cmd_hooks_agent_path() {
         echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"$decision\",\"permissionDecisionReason\":\"$reason\"}}"
     }
 
-    # Helper to log a denial in the same format as PermissionRequest hook
+    # Helper to log a denial with [PreToolUse] prefix for clear attribution
     log_denial() {
         local tool="$1"
         local input_json="$2"
         local params
         params=$(echo "$input_json" | jq -r 'to_entries | map(.key + ": " + (.value | tostring)) | join(", ")' 2>/dev/null || echo "")
         if [[ -n "$params" ]]; then
-            log_agent "$ID" "Permission denied: $tool ($params)" --quiet
+            log_agent "$ID" "[PreToolUse] Permission denied: $tool ($params)" --quiet
         else
-            log_agent "$ID" "Permission denied: $tool" --quiet
+            log_agent "$ID" "[PreToolUse] Permission denied: $tool" --quiet
         fi
     }
 
@@ -4489,10 +4489,10 @@ cmd_hooks_agent_path() {
     # Check 3: Block access to other agents' directories
     if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
         if [[ "$tool_name" == "Bash" ]]; then
-            log_agent "$ID" "Path violation: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
+            log_agent "$ID" "[PreToolUse] Path violation: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
             output_decision "deny" "Access denied: cannot cd into other agents' worktrees"
         else
-            log_agent "$ID" "Path violation: $tool_name tried to access other agent's data: $file_path" --quiet
+            log_agent "$ID" "[PreToolUse] Path violation: $tool_name tried to access other agent's data: $file_path" --quiet
             output_decision "deny" "Access denied: cannot access other agents' files"
         fi
         exit 0
@@ -4504,7 +4504,7 @@ cmd_hooks_agent_path() {
     ROOT_REPO=$(git -C "$WORKTREE_PATH" worktree list --porcelain 2>/dev/null | grep -m1 '^worktree ' | sed 's/^worktree //')
 
     if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* && "$file_path" != "$WORKTREE_PATH"* ]]; then
-        log_agent "$ID" "Path violation: $tool_name tried to access main repo: $file_path" --quiet
+        log_agent "$ID" "[PreToolUse] Path violation: $tool_name tried to access main repo: $file_path" --quiet
         output_decision "deny" "Access denied: work in your worktree, not the main repo"
         exit 0
     fi
