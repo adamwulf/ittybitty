@@ -469,6 +469,66 @@ count_agents() {
     echo "$count"
 }
 
+# Check if a tool matches an allow pattern
+# Args: $1 = tool_name, $2 = tool_input JSON, $3 = pattern
+# Returns: 0 if matches, 1 if not
+# Pattern formats:
+#   - "Edit" = exact tool name match
+#   - "Bash(git:*)" = Bash tool where command starts with "git"
+tool_matches_pattern() {
+    local tool_name="$1"
+    local tool_input="$2"
+    local pattern="$3"
+
+    # Check for Bash(prefix:*) pattern
+    if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+        local prefix="${BASH_REMATCH[1]}"
+        if [[ "$tool_name" == "Bash" ]]; then
+            local command
+            command=$(echo "$tool_input" | jq -r '.command // ""')
+            # Check if command starts with prefix (with space or end of string)
+            if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                return 0
+            fi
+        fi
+        return 1
+    fi
+
+    # Exact tool name match
+    if [[ "$pattern" == "$tool_name" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Check if a tool is in the allow list
+# Args: $1 = tool_name, $2 = tool_input JSON, $3 = settings file path
+# Returns: 0 if allowed, 1 if not
+tool_in_allow_list() {
+    local tool_name="$1"
+    local tool_input="$2"
+    local settings_file="$3"
+
+    if [[ ! -f "$settings_file" ]]; then
+        return 1
+    fi
+
+    # Read allow list from settings
+    local allow_list
+    allow_list=$(jq -r '.permissions.allow // [] | .[]' "$settings_file" 2>/dev/null)
+
+    # Check each pattern
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+            return 0
+        fi
+    done <<< "$allow_list"
+
+    return 1
+}
+
 # Build settings.local.json content for an agent worktree
 # Args: $1 = "manager" or "worker"
 build_agent_settings() {
@@ -4174,22 +4234,72 @@ cmd_hooks_agent_status() {
 cmd_hooks_agent_path() {
     local ID="$1"
 
+    # Helper to output JSON with permissionDecision
+    output_decision() {
+        local decision="$1"
+        local reason="$2"
+        echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"$decision\",\"permissionDecisionReason\":\"$reason\"}}"
+    }
+
+    # Helper to log a denial in the same format as PermissionRequest hook
+    log_denial() {
+        local tool="$1"
+        local input_json="$2"
+        local params
+        params=$(echo "$input_json" | jq -r 'to_entries | map(.key + ": " + (.value | tostring)) | join(", ")' 2>/dev/null || echo "")
+        if [[ -n "$params" ]]; then
+            log_agent "$ID" "Permission denied: $tool ($params)" --quiet
+        else
+            log_agent "$ID" "Permission denied: $tool" --quiet
+        fi
+    }
+
     if [[ -z "$ID" ]]; then
         echo "Error: agent ID required" >&2
         exit 1
     fi
 
-
     # Read JSON input from stdin
     local json_input
     json_input=$(cat)
 
-    # Extract tool name and file path from input
+    # Extract tool name and tool_input from input
     local tool_name
-    local file_path
+    local tool_input
     tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
-    file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+    tool_input=$(echo "$json_input" | jq -c '.tool_input // {}')
 
+    # Resolve AGENTS_DIR to absolute path for proper comparison
+    local ABS_AGENTS_DIR
+    if [[ -d "$AGENTS_DIR" ]]; then
+        ABS_AGENTS_DIR=$(cd "$AGENTS_DIR" && pwd)
+    else
+        ABS_AGENTS_DIR="$AGENTS_DIR"
+    fi
+
+    # Get agent's worktree path (absolute)
+    local AGENT_DIR="$ABS_AGENTS_DIR/$ID"
+    local WORKTREE_PATH="$AGENT_DIR/repo"
+    local SETTINGS_FILE="$WORKTREE_PATH/.claude/settings.local.json"
+
+    # Resolve worktree to absolute path
+    if [[ -d "$WORKTREE_PATH" ]]; then
+        WORKTREE_PATH=$(cd "$WORKTREE_PATH" && pwd)
+    fi
+
+    # Check if tool is in allow list
+    if ! tool_in_allow_list "$tool_name" "$tool_input" "$SETTINGS_FILE"; then
+        # Tool not in allow list - deny and log
+        log_denial "$tool_name" "$tool_input"
+        output_decision "deny" "Tool not in allow list"
+        exit 0
+    fi
+
+    # Tool is in allow list - now check path isolation
+
+    # Extract file path from input
+    local file_path
+    file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
 
     # Special handling for Bash tool - check for cd commands
     if [[ "$tool_name" == "Bash" ]]; then
@@ -4211,19 +4321,22 @@ cmd_hooks_agent_path() {
 
             # If cd target is empty or just whitespace, allow (cd to home)
             if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+                output_decision "allow" "Tool in allow list, cd to home"
                 exit 0
             fi
 
             # Use cd_target as the file_path for further checks
             file_path="$cd_target"
         else
-            # Not a cd command, allow all other Bash commands
+            # Not a cd command - allowed by allow list, no path check needed for non-cd
+            output_decision "allow" "Tool in allow list"
             exit 0
         fi
     fi
 
-    # If no file path found, allow (might be a non-file tool)
+    # If no file path found, allow (might be a non-file tool or tool with no path param)
     if [[ -z "$file_path" ]]; then
+        output_decision "allow" "Tool in allow list"
         exit 0
     fi
 
@@ -4239,57 +4352,43 @@ cmd_hooks_agent_path() {
     # Normalize path (resolve . and ..)
     file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
 
-    # Resolve AGENTS_DIR to absolute path for proper comparison
-    local ABS_AGENTS_DIR
-    if [[ -d "$AGENTS_DIR" ]]; then
-        ABS_AGENTS_DIR=$(cd "$AGENTS_DIR" && pwd)
-    else
-        ABS_AGENTS_DIR="$AGENTS_DIR"
-    fi
-
-    # Get agent's worktree path (absolute)
-    local AGENT_DIR="$ABS_AGENTS_DIR/$ID"
-    local WORKTREE_PATH="$AGENT_DIR/repo"
-
-    # Resolve worktree to absolute path
-    if [[ -d "$WORKTREE_PATH" ]]; then
-        WORKTREE_PATH=$(cd "$WORKTREE_PATH" && pwd)
-    fi
-
     # Check 1: Allow access within agent's own worktree
     if [[ "$file_path" == "$WORKTREE_PATH"* ]]; then
-        exit 0  # Allow
+        output_decision "allow" "Tool in allow list, path in worktree"
+        exit 0
     fi
 
     # Check 2: Allow access to agent's own log file
     if [[ "$file_path" == "$AGENT_DIR/agent.log" ]]; then
-        exit 0  # Allow
+        output_decision "allow" "Tool in allow list, accessing own log"
+        exit 0
     fi
 
     # Check 3: Block access to other agents' directories
     if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
         if [[ "$tool_name" == "Bash" ]]; then
-            log_agent "$ID" "[hook-check-path] Blocked: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
-            echo "Access denied: cannot cd into other agents' worktrees. Work in your own worktree." >&2
+            log_agent "$ID" "Path violation: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
+            output_decision "deny" "Access denied: cannot cd into other agents' worktrees"
         else
-            log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access other agent's data: $file_path" --quiet
-            echo "Access denied: cannot access other agents' files" >&2
+            log_agent "$ID" "Path violation: $tool_name tried to access other agent's data: $file_path" --quiet
+            output_decision "deny" "Access denied: cannot access other agents' files"
         fi
-        exit 2  # Block
+        exit 0
     fi
 
     # Check 4: Block access to main repo (outside worktree)
     # Use git worktree list to find the main repo path
     local ROOT_REPO
-    ROOT_REPO=$(git -C "$WORKTREE_PATH" worktree list --porcelain | grep -m1 '^worktree ' | sed 's/^worktree //')
+    ROOT_REPO=$(git -C "$WORKTREE_PATH" worktree list --porcelain 2>/dev/null | grep -m1 '^worktree ' | sed 's/^worktree //')
 
     if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* && "$file_path" != "$WORKTREE_PATH"* ]]; then
-        log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access main repo: $file_path" --quiet
-        echo "Access denied: work in your worktree, not the main repo" >&2
-        exit 2  # Block
+        log_agent "$ID" "Path violation: $tool_name tried to access main repo: $file_path" --quiet
+        output_decision "deny" "Access denied: work in your worktree, not the main repo"
+        exit 0
     fi
 
-    # All other paths: allow (system files, etc. - let Claude Code handle those)
+    # All other paths: allow (system files, etc. - tool is in allow list)
+    output_decision "allow" "Tool in allow list"
     exit 0
 }
 
