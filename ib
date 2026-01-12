@@ -4251,6 +4251,12 @@ EOF
         fi
         input=$(cat "$input_file")
     else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib parse-state [file] or echo 'text' | ib parse-state" >&2
+            exit 1
+        fi
         input=$(cat)
     fi
 
