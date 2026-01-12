@@ -497,7 +497,7 @@ build_agent_settings() {
 
     # Always include ib and git permissions
     # Git commands are safe in worktrees: agents can't switch branches or push
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
 
     # Always deny plan mode tools (agents should work directly, not enter planning mode)
     # Plan mode creates complexity and agents often get stuck trying to exit
