@@ -782,7 +782,7 @@ get_state() {
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
     # Using bash pattern matching instead of grep to avoid subprocess spawning
-    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running ]]; then
+    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running|thinking\)|⏺ ]]; then
         echo "running"
         return
     fi
@@ -1200,6 +1200,7 @@ build_agent_data_file() {
                 # Refresh one agent per frame (round-robin) or if not cached
                 if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
                     state=$(get_state "$id")
+                    [[ "$state" == "unknown" ]] && state="waiting"
                     # Update cache
                     if [[ $state_cache_idx -ge 0 ]]; then
                         STATE_CACHE_DATA[$state_cache_idx]="$state"
