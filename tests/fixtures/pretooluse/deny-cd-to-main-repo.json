@@ -1,0 +1,11 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /repo/src"
+  },
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["Bash(cd:*)"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo"
+}
