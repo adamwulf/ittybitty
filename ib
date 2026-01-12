@@ -4706,6 +4706,194 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-tool-match
+# =============================================================================
+
+# Test tool_matches_pattern() with a JSON fixture file or stdin
+# This command allows testing the pattern matching logic in isolation
+# Input JSON format:
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "git status"},
+#   "pattern": "Bash(git:*)"
+# }
+# For testing against multiple patterns (returns first match):
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "ib list"},
+#   "patterns": ["Bash(git:*)", "Bash(ib:*)"]
+# }
+# Output: 'match' or 'no-match'
+# Verbose output shows why the match succeeded/failed
+cmd_test_tool_match() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-tool-match [options] [file]
+
+Test tool permission pattern matching logic.
+
+Reads from stdin if no file is provided, or from the specified file.
+Outputs 'match' or 'no-match'.
+
+This command is primarily for testing the tool_matches_pattern() function.
+
+Options:
+  -v, --verbose  Show why the match succeeded or failed
+  -h, --help     Show this help
+
+Input JSON format (single pattern):
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "git status"},
+    "pattern": "Bash(git:*)"
+  }
+
+Input JSON format (multiple patterns - returns first match):
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "ib list"},
+    "patterns": ["Bash(git:*)", "Bash(ib:*)"]
+  }
+
+Pattern formats:
+  - "Read"         Exact tool name match
+  - "Bash(git:*)"  Bash tool where command starts with "git"
+  - "Bash(ib:*)"   Bash tool where command starts with "ib"
+
+Examples:
+  echo '{"tool_name": "Read", "tool_input": {}, "pattern": "Read"}' | ib test-tool-match
+  ib test-tool-match tests/fixtures/tool-match/match-exact-tool.json
+  echo '{"tool_name": "Bash", "tool_input": {"command": "git status"}, "pattern": "Bash(git:*)"}' | ib test-tool-match -v
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-tool-match [file] or echo '{...}' | ib test-tool-match" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters
+    local tool_name tool_input pattern patterns
+    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
+    pattern=$(echo "$input" | jq -r '.pattern // ""')
+    patterns=$(echo "$input" | jq -c '.patterns // []')
+
+    # Validate required fields
+    if [[ -z "$tool_name" ]]; then
+        echo "Error: tool_name is required in JSON input" >&2
+        exit 1
+    fi
+
+    # Build list of patterns to test
+    local patterns_to_test=()
+    if [[ -n "$pattern" ]]; then
+        patterns_to_test+=("$pattern")
+    fi
+
+    # Add patterns from array if present
+    local patterns_len
+    patterns_len=$(echo "$patterns" | jq 'length')
+    if [[ "$patterns_len" -gt 0 ]]; then
+        while IFS= read -r p; do
+            [[ -n "$p" ]] && patterns_to_test+=("$p")
+        done < <(echo "$patterns" | jq -r '.[]')
+    fi
+
+    if [[ ${#patterns_to_test[@]} -eq 0 ]]; then
+        echo "Error: either pattern or patterns is required in JSON input" >&2
+        exit 1
+    fi
+
+    # Test each pattern
+    for p in "${patterns_to_test[@]}"; do
+        # Check for Bash(prefix:*) pattern
+        if [[ "$p" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$tool_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$tool_input" | jq -r '.command // ""')
+                # Check if command starts with prefix (with space or end of string)
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    if $verbose; then
+                        echo "match (pattern: $p, command: $command, prefix match: $prefix)"
+                    else
+                        echo "match"
+                    fi
+                    return 0
+                else
+                    if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                        echo "no-match (pattern: $p, tool: $tool_name, command: $command, expected prefix: $prefix)"
+                        return 0
+                    fi
+                fi
+            else
+                if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                    echo "no-match (pattern: $p, tool: $tool_name, pattern requires Bash tool)"
+                    return 0
+                fi
+            fi
+        # Exact tool name match
+        elif [[ "$p" == "$tool_name" ]]; then
+            if $verbose; then
+                echo "match (pattern: $p, exact tool match)"
+            else
+                echo "match"
+            fi
+            return 0
+        else
+            if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                echo "no-match (pattern: $p, tool: $tool_name)"
+                return 0
+            fi
+        fi
+    done
+
+    # No pattern matched
+    if $verbose; then
+        local patterns_str
+        patterns_str=$(printf '%s, ' "${patterns_to_test[@]}")
+        patterns_str="${patterns_str%, }"  # Remove trailing comma and space
+        echo "no-match (tool: $tool_name, tested patterns: $patterns_str)"
+    else
+        echo "no-match"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-pretooluse
 # =============================================================================
 
@@ -9268,6 +9456,10 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
+        ;;
+    test-tool-match)
+        shift
+        cmd_test_tool_match "$@"
         ;;
     test-pretooluse)
         shift
