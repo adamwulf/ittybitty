@@ -59,8 +59,23 @@ Each spawned agent automatically gets Claude Code hooks configured in their `set
 
 | Hook | Purpose |
 |------|---------|
-| `Stop` | Calls `ib hook-status <id>` when agent stops to update state tracking |
+| `Stop` | Calls `ib hooks agent-status <id>` when agent stops to update state tracking |
+| `PreToolUse` | Calls `ib hooks agent-path <id>` to enforce path isolation |
 | `PermissionRequest` | Logs denied tool requests to agent.log and auto-denies them |
+
+### Main Repo Hooks
+
+To prevent the main repo's Claude from `cd`-ing into agent worktrees:
+
+```bash
+ib hooks status      # Check if installed
+ib hooks install     # Install PreToolUse hook
+ib hooks uninstall   # Remove hook
+```
+
+The hook only blocks `cd` commands into `.ittybitty/agents/*/repo` paths. Read/Write/Edit and other tools still work.
+
+In `ib watch`, press `h` to open the hooks dialog for easy install/uninstall.
 
 ### PermissionRequest Hook
 
@@ -380,6 +395,12 @@ ib new-agent --yolo "research latest React patterns and update our components"
 | Lost on crash         | Resumable via session ID |
 
 <ittybitty-status>
+## Current Agents (4 active)
+
+hooks-refactor   complete  22m    Implement the plan in plans/main-repo...
+prompt-trim      running   24m    In the new agent dialog
+stop-hook-debug  complete  22m    Investigate why the stop hook didn't ...
+test-expansion   waiting   3m     Research and propose additional parse...
 </ittybitty-status>
 
 </ittybitty>

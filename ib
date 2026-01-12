@@ -3940,10 +3940,63 @@ EOF
 }
 
 # =============================================================================
-# COMMAND: hook-status
+# COMMAND: hooks (dispatcher)
 # =============================================================================
 
-cmd_hook_status() {
+cmd_hooks() {
+    local SUBCMD="$1"
+    shift 2>/dev/null || true
+
+    case "$SUBCMD" in
+        agent-status)
+            cmd_hooks_agent_status "$@"
+            ;;
+        agent-path)
+            cmd_hooks_agent_path "$@"
+            ;;
+        main-path)
+            cmd_hooks_main_path "$@"
+            ;;
+        status)
+            cmd_hooks_status "$@"
+            ;;
+        install)
+            cmd_hooks_install "$@"
+            ;;
+        uninstall)
+            cmd_hooks_uninstall "$@"
+            ;;
+        -h|--help|"")
+            cat <<EOF
+Usage: ib hooks <subcommand> [options]
+
+Subcommands:
+  status       Check if main repo hooks are installed
+  install      Install PreToolUse hook to main repo
+  uninstall    Remove hook from main repo
+
+Agent hooks (internal, used by spawned agents):
+  agent-status <id>   Stop hook - nudges agent, notifies managers
+  agent-path <id>     PreToolUse - blocks agent file access outside worktree
+  main-path           PreToolUse - blocks main Claude from cd into worktrees
+
+Run 'ib hooks <subcommand> --help' for subcommand-specific help.
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown hooks subcommand: $SUBCMD" >&2
+            echo "Run 'ib hooks --help' for usage." >&2
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# COMMAND: hooks agent-status (formerly hook-status)
+# =============================================================================
+
+cmd_hooks_agent_status() {
     local ID="$1"
 
     if [[ -z "$ID" ]]; then
@@ -4021,12 +4074,12 @@ cmd_hook_status() {
 }
 
 # =============================================================================
-# COMMAND: hook-check-path
+# COMMAND: hooks agent-path (formerly hook-check-path)
 # =============================================================================
 
 # PreToolUse hook to enforce agent path isolation
 # Blocks file access outside the agent's worktree
-cmd_hook_check_path() {
+cmd_hooks_agent_path() {
     local ID="$1"
 
     if [[ -z "$ID" ]]; then
@@ -4270,6 +4323,182 @@ EOF
         echo "unknown (no patterns matched)"
     else
         parse_state "$input"
+    fi
+}
+
+# =============================================================================
+# COMMAND: hooks main-path
+# =============================================================================
+
+# PreToolUse hook to prevent main repo Claude from cd-ing into agent worktrees
+# Only blocks Bash cd commands - allows Read/Write/Edit to worktree paths
+cmd_hooks_main_path() {
+    # Read JSON input from stdin
+    local json_input
+    json_input=$(cat)
+
+    # Extract tool name
+    local tool_name
+    tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
+
+    # Only check Bash commands - allow all other tools
+    if [[ "$tool_name" != "Bash" ]]; then
+        exit 0
+    fi
+
+    # Extract bash command
+    local bash_command
+    bash_command=$(echo "$json_input" | jq -r '.tool_input.command // ""')
+
+    # Only check cd commands - allow all other Bash commands
+    if [[ ! "$bash_command" =~ ^cd[[:space:]]+ ]]; then
+        exit 0
+    fi
+
+    # Extract cd target
+    local cd_target="${bash_command#cd }"
+    cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
+
+    # Remove quotes if present
+    cd_target="${cd_target#\"}"
+    cd_target="${cd_target%\"}"
+    cd_target="${cd_target#\'}"
+    cd_target="${cd_target%\'}"
+
+    # If cd target is empty (cd to home), allow
+    if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+        exit 0
+    fi
+
+    # Resolve to absolute path using cwd from JSON
+    local file_path="$cd_target"
+    if [[ "$file_path" != /* ]]; then
+        local cwd
+        cwd=$(echo "$json_input" | jq -r '.cwd // ""')
+        if [[ -n "$cwd" ]]; then
+            file_path="$cwd/$file_path"
+        fi
+    fi
+
+    # Normalize path (resolve . and ..)
+    file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
+
+    # Check if path matches .ittybitty/agents/*/repo pattern
+    if [[ "$file_path" == *"/.ittybitty/agents/"*"/repo"* || "$file_path" == *"/.ittybitty/agents/"*"/repo" ]]; then
+        echo "Access denied: cannot cd into agent worktrees. Use 'ib look/diff/status <agent>' or git show agent/<name>:path/file instead." >&2
+        exit 2  # Block
+    fi
+
+    # Allow all other paths
+    exit 0
+}
+
+# =============================================================================
+# COMMAND: hooks status
+# =============================================================================
+
+# Check if main repo hooks are installed
+cmd_hooks_status() {
+    local SETTINGS_FILE=".claude/settings.local.json"
+
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+        echo "not-installed"
+        exit 0
+    fi
+
+    # Check if our hook exists in the file
+    # Handle both array command ["ib","hooks","main-path"] and string command
+    if jq -e '.hooks.PreToolUse[]? | select(.command != null and (if (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path")) else (.command | contains("ib hooks main-path")) end))' "$SETTINGS_FILE" >/dev/null 2>&1; then
+        echo "installed"
+    else
+        echo "not-installed"
+    fi
+}
+
+# =============================================================================
+# COMMAND: hooks install
+# =============================================================================
+
+# Install PreToolUse hook to main repo
+cmd_hooks_install() {
+    local SETTINGS_FILE=".claude/settings.local.json"
+    local CLAUDE_DIR=".claude"
+
+    # Create .claude directory if needed
+    if [[ ! -d "$CLAUDE_DIR" ]]; then
+        mkdir -p "$CLAUDE_DIR"
+    fi
+
+    # Start with existing settings or empty object
+    local settings="{}"
+    if [[ -f "$SETTINGS_FILE" ]]; then
+        settings=$(cat "$SETTINGS_FILE")
+    fi
+
+    # Check if hook already exists (handle array or string command)
+    if echo "$settings" | jq -e '.hooks.PreToolUse[]? | select(.command != null and (if (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path")) else (.command | contains("ib hooks main-path")) end))' >/dev/null 2>&1; then
+        echo "Hook already installed"
+        exit 0
+    fi
+
+    # Define our hook
+    local our_hook='{"matcher":"Bash","command":["ib","hooks","main-path"]}'
+
+    # Add the hook to settings, preserving existing content
+    settings=$(echo "$settings" | jq --argjson hook "$our_hook" '
+        .hooks //= {} |
+        .hooks.PreToolUse //= [] |
+        .hooks.PreToolUse += [$hook]
+    ')
+
+    # Write settings
+    echo "$settings" | jq '.' > "$SETTINGS_FILE"
+    echo "Hook installed to $SETTINGS_FILE"
+}
+
+# =============================================================================
+# COMMAND: hooks uninstall
+# =============================================================================
+
+# Remove hook from main repo
+cmd_hooks_uninstall() {
+    local SETTINGS_FILE=".claude/settings.local.json"
+
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+        echo "No settings file found, nothing to uninstall"
+        exit 0
+    fi
+
+    local settings
+    settings=$(cat "$SETTINGS_FILE")
+
+    # Remove our hook from PreToolUse array (handle array or string command)
+    settings=$(echo "$settings" | jq '
+        if .hooks.PreToolUse then
+            .hooks.PreToolUse = [.hooks.PreToolUse[] | select(
+                if .command == null then true
+                elif (.command | type) == "array" then (.command | join(" ") | contains("ib hooks main-path") | not)
+                else (.command | contains("ib hooks main-path") | not)
+                end
+            )]
+        else
+            .
+        end
+    ')
+
+    # Clean up empty arrays/objects
+    settings=$(echo "$settings" | jq '
+        if .hooks.PreToolUse == [] then del(.hooks.PreToolUse) else . end |
+        if .hooks == {} then del(.hooks) else . end
+    ')
+
+    # Write settings (or delete file if empty)
+    if [[ $(echo "$settings" | jq 'keys | length') -eq 0 ]]; then
+        rm -f "$SETTINGS_FILE"
+        echo "Hook uninstalled, removed empty settings file"
+    else
+        echo "$settings" | jq '.' > "$SETTINGS_FILE"
+        echo "Hook uninstalled from $SETTINGS_FILE"
     fi
 }
 
@@ -4694,7 +4923,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -4723,6 +4952,24 @@ EOF
 
     # Jump dialog state
     local JUMP_PATTERN=""
+
+    # Hooks dialog state
+    local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
+    local HOOKS_FOCUS=0  # 0=Install/Uninstall button, 1=Close button
+
+    # Check if main repo hooks are installed
+    watch_check_hooks_status() {
+        local status
+        status=$(cmd_hooks_status 2>/dev/null)
+        if [[ "$status" == "installed" ]]; then
+            HOOKS_INSTALLED=1
+        else
+            HOOKS_INSTALLED=2
+        fi
+    }
+
+    # Check hooks on startup
+    watch_check_hooks_status
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -6037,6 +6284,123 @@ EOF
     # End Jump Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # Hooks Dialog (DIALOG_MODE=6)
+    # ==========================================================================
+
+    watch_dialog_init_hooks() {
+        HOOKS_FOCUS=0
+        _DIALOG_DIRTY=1
+        # Refresh hooks status
+        watch_check_hooks_status
+    }
+
+    watch_dialog_render_hooks() {
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - 10) / 2 ))  # 10 lines tall
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" 11
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "MAIN REPO HOOKS"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Status
+        local status_text
+        if [[ $HOOKS_INSTALLED -eq 1 ]]; then
+            status_text="Status: INSTALLED"
+        else
+            status_text="Status: NOT INSTALLED"
+        fi
+        dialog_draw_line "$row" "$status_text"
+        ((row++))
+
+        # Description
+        dialog_draw_line "$row" ""
+        ((row++))
+        dialog_draw_line "$row" "Hooks prevent Claude from cd-ing into"
+        ((row++))
+        dialog_draw_line "$row" "agent worktrees (.ittybitty/agents/*/repo)"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons
+        local action_label
+        if [[ $HOOKS_INSTALLED -eq 1 ]]; then
+            action_label="Uninstall"
+        else
+            action_label="Install"
+        fi
+        local action_btn=$(dialog_format_button "$action_label" "$([[ $HOOKS_FOCUS -eq 0 ]] && echo 1 || echo 0)")
+        local close_btn=$(dialog_format_button "Close" "$([[ $HOOKS_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local buttons="$action_btn  $close_btn"
+        dialog_draw_line "$row" "$buttons"
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_hooks() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter
+                if [[ $HOOKS_FOCUS -eq 0 ]]; then
+                    # Install or uninstall
+                    if [[ $HOOKS_INSTALLED -eq 1 ]]; then
+                        cmd_hooks_uninstall >/dev/null 2>&1
+                    else
+                        cmd_hooks_install >/dev/null 2>&1
+                    fi
+                    # Refresh status
+                    watch_check_hooks_status
+                    _DIALOG_DIRTY=1
+                else
+                    # Close button
+                    DIALOG_MODE=0
+                fi
+                ;;
+            $'\e')  # Escape
+                DIALOG_MODE=0
+                ;;
+            $'\t'|'['|'C')  # Tab or right arrow
+                HOOKS_FOCUS=$(( (HOOKS_FOCUS + 1) % 2 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'D'|'Z')  # Left arrow or Shift+Tab
+                HOOKS_FOCUS=$(( (HOOKS_FOCUS - 1 + 2) % 2 ))
+                _DIALOG_DIRTY=1
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Hooks Dialog
+    # ==========================================================================
+
     # Render footer with help text, timing, and clock
     # Args: $1=footer_row, $2=frame_start_ms
     watch_render_footer() {
@@ -6077,6 +6441,10 @@ EOF
         else
             # Normal mode: show action keys
             action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
+            # Add hooks warning if not installed (in yellow)
+            if [[ $HOOKS_INSTALLED -eq 2 ]]; then
+                action_text="$action_text    \e[33m[h: hooks]\e[0m"
+            fi
         fi
         # Use LAST_FRAME_MS from previous complete frame (includes sleep)
         local frame_ms=$LAST_FRAME_MS
@@ -6733,6 +7101,7 @@ EOF
                 3) watch_dialog_key_nuke "$key" ;;
                 4) watch_dialog_key_new_agent "$key" ;;
                 5) watch_dialog_key_jump "$key" ;;
+                6) watch_dialog_key_hooks "$key" ;;
             esac
             return
         fi
@@ -6815,6 +7184,11 @@ EOF
                     watch_dialog_init_jump
                     DIALOG_MODE=5
                 fi
+                ;;
+            h)
+                # Open Hooks dialog
+                watch_dialog_init_hooks
+                DIALOG_MODE=6
                 ;;
         esac
     }
@@ -6918,6 +7292,7 @@ EOF
                 3) watch_dialog_render_nuke ;;
                 4) watch_dialog_render_new_agent ;;
                 5) watch_dialog_render_jump ;;
+                6) watch_dialog_render_hooks ;;
             esac
             set -e
         else
@@ -7180,13 +7555,19 @@ case "${1:-help}" in
         shift
         cmd_resume "$@"
         ;;
-    hook-status)
+    hooks)
         shift
-        cmd_hook_status "$@"
+        cmd_hooks "$@"
+        ;;
+    hook-status)
+        # Backward compatibility alias
+        shift
+        cmd_hooks_agent_status "$@"
         ;;
     hook-check-path)
+        # Backward compatibility alias
         shift
-        cmd_hook_check_path "$@"
+        cmd_hooks_agent_path "$@"
         ;;
     parse-state)
         shift
@@ -7227,6 +7608,7 @@ Commands:
   kill        Close an agent without merging
   resume      Restart a stopped agent's session
   watchdog    Monitor an agent and notify manager when it needs attention
+  hooks       Manage main repo hooks (status, install, uninstall)
   config      Get or set configuration values in .ittybitty.json
 
 Aliases:
@@ -7239,9 +7621,11 @@ EOF
 
 Undocumented Commands:
   nuke        EMERGENCY STOP: Kill all agents, or a manager and all descendants
-  hook-status     Internal: Check agent state and nudge if unknown (used by hooks)
-  hook-check-path Internal: Enforce path isolation for file tools (used by hooks)
   log         Write timestamped message to agent's log file (auto-detects agent ID)
+
+Deprecated Aliases (still work, use 'ib hooks' instead):
+  hook-status     Alias for 'ib hooks agent-status'
+  hook-check-path Alias for 'ib hooks agent-path'
 
 Undocumented Options:
   help --undocumented   Show this extended help (you found it!)
