@@ -1,0 +1,387 @@
+
+────────────────────────────────────────────────────────────
+ Do you trust the files in this folder?
+
+ /Users/adamwulf/Developer/bash/ittybitty/.ittybitty/agents
+ /arrow-keys/repo
+
+ Claude Code may read, write, or execute files contained in
+  this directory. This can pose security risks, so only use
+  files, hooks, and bash commands from trusted sources.
+
+ Execution allowed by:
+
+   • .claude/settings.local.json
+
+ Learn more
+
+ ❯ 1. Yes, proceed
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────
+ Allow external CLAUDE.md file imports?
+
+ This project's CLAUDE.md imports files outside the current
+  working directory. Never allow this for third-party
+ repositories.
+
+ Important: Only use Claude Code with files you trust.
+ Accessing untrusted files may pose security risks
+ https://code.claude.com/docs/en/security
+
+ ❯ 1. Yes, allow external imports
+   2. No, disable external imports
+
+ Enter to confirm · Esc to disable external includes
+
+ ▐▛███▜▌   Claude Code v2.1.5
+▝▜█████▛▘  Opus 4.5 · Claude Max
+  ▘▘ ▝▝    ~/…/.ittybitty/agents/arrow-keys/repo
+
+❯ <ittybitty>You are an IttyBitty manager
+  agent.</ittybitty>
+
+  [AGENT CONTEXT]
+  You are running as agent arrow-keys in a git worktree
+  on branch agent/arrow-keys.
+
+
+  You have access to the 'ib' tool for multi-agent
+  coordination.
+  IMPORTANT: Always use 'ib' (not './ib') to ensure you
+  use the current version from PATH.
+
+  ib new-agent --manager arrow-keys --worker "task"
+  Spawn a worker sub-agent (focused worker, no
+  sub-agents)
+  ib list --manager arrow-keys
+  List your sub-agents
+  ib look <agent-id>                             Read
+  an agent's output
+  ib send <agent-id> "message"                  Send
+  input to an agent
+  ib status <agent-id>
+  Check agent's git commits
+  ib merge <agent-id>
+  Merge agent's work and close it
+  ib kill <agent-id>                             Stop
+  an agent without merging
+
+  TASK SIZING STRATEGY:
+  When you receive a task, think about what is needed
+  to accomplish it, then decide:
+
+  SMALL TASK (do yourself)
+  - One agent can finish quickly
+  - Just do the task yourself - don't spawn
+  sub-agents unnecessarily
+
+  MEDIUM TASK (2-3 parallel worker agents)
+  - Can be split into 2-3 independent subtasks
+  - Spawn WORKER agents to work in parallel (always
+  use --worker unless sub-agent needs to manage its
+  own sub-agents)
+  - After spawning them, enter WAITING mode -
+  you'll be notified when they complete
+
+  LARGE TASK (multiple stages)
+  - Requires multiple stages that must run serially
+  - Use TodoWrite tool to track stages
+  - For each stage, spawn WORKER agents to work in
+  parallel (always use --worker)
+  - After spawning agents for a stage, enter
+  WAITING mode
+  - When notified of completion, review work and
+  move to next stage
+
+  AUTOMATIC NOTIFICATIONS:
+  - A watchdog monitors each sub-agent you spawn
+  - You will be notified when sub-agents complete OR
+  when they need help
+  - Once you've created agents to work, enter WAITING
+  mode - don't poll 'ib list'
+  - The watchdog ensures you're woken up when action
+  is needed
+
+  If `ib merge` fails due to conflicts, choose the best
+  strategy:
+  1. Resolve the merge yourself: edit conflicting
+  files, `git add <files> && git commit`, then clean up
+  with `git worktree remove <path> --force && git
+  branch -D agent/<id>`
+  2. Spawn a WORKER sub-agent to handle the merge
+  resolution, then monitor it to completion
+  3. If the merge is no longer needed, skip it and note
+  this in your final report
+
+  State Management:
+  - Whenever you stop working and are idle, you must
+  end your message with either:
+  - 'WAITING' - if waiting for next monitoring cycle
+  or have nothing more to do
+  - 'I HAVE COMPLETED THE GOAL' - if you have
+  completed your primary goal
+
+  Your workflow:
+  CRITICAL: Before spawning ANY sub-agents, you MUST
+  define clear, objective completion criteria for each
+  task.
+  You need these criteria to judge whether a sub-agent
+  has truly completed its work when it signals
+  completion.
+
+  1. Break down the goal into specific tasks with
+  measurable completion criteria
+  - What files should be changed? What should the
+  output look like?
+  - What specific conditions define "done"? (tests
+  pass, specific files exist, specific content present,
+  etc.)
+  - Track these tasks and criteria in your Claude
+  Code tasks tracker (TodoWrite tool)
+  2. Spawn WORKER sub-agents (--worker) for each
+  independent task
+  - Provide the specific task AND the clear
+  completion criteria in the prompt
+  - Default to --worker unless the sub-agent itself
+  needs to coordinate multiple parallel sub-agents
+  3. Enter WAITING mode - watchdogs will notify you
+  when sub-agents need attention
+  4. When notified, review sub-agent work against your
+  predefined completion criteria:
+  - Use `ib look <agent-id>` to see what the agent
+  reports
+  - Use `ib status <agent-id>` to see the agent's
+  commits
+  - Use `ib diff <agent-id>` to verify the actual
+  changes match your criteria
+  - If criteria met: `ib merge <agent-id>` or `ib
+  kill <agent-id>` (if no changes needed)
+  - If criteria NOT met: `ib send <agent-id>
+  "message"` explaining what's missing and how to fix
+  it
+  - If a sub-agent is `stopped`, STOP and notify the
+  user immediately
+  5. When merging successful agents, commit any changes
+  you made directly (git add && git commit).
+  6. BEFORE completing: You MUST merge or kill ALL
+  sub-agents. Use `ib list` to verify no children
+  remain in running, waiting, or complete state.
+
+  Once you have completed your primary goal by merging
+  in successful agents, double check that you have
+  completed the goal.
+  If so, say the exact phrase: "I HAVE COMPLETED THE
+  GOAL"
+  This phrase signals to the orchestrator that you are
+  done.
+  Your work is on branch `agent/arrow-keys` for review.
+
+  [USER TASK]
+  please make the arrow keys dothe same as jkl;
+
+  in a dialog, left and up should do the same as shift
+  tab. down and right should do the same as tab.
+
+  in ibwatch, up and down should change the seelcted
+  agent, and left and right should switch panes
+
+⏺ I'll analyze this task and implement it myself since it's
+a focused change to the key handling in ib watch.
+
+  Let me first understand the current key handling implement
+ation.
+
+⏺ Search(pattern: "jkl;", path: "~/Developer/bash/ittybitty/
+        .ittybitty/agents/arrow-keys/repo")
+  ⎿  Found 0 files
+
+⏺ Search(pattern: "case.*key", path: "~/Developer/bash/ittyb
+        itty/.ittybitty/agents/arrow-keys/repo")
+  ⎿  Found 2 files (ctrl+o to expand)
+
+⏺ Search(pattern: "read.*key\|getc\|getch", path: "ib",
+        output_mode: "content")
+  ⎿  Found 0 lines
+
+⏺ Search(pattern: "read -[rsn]", path: "ib", output_mode:
+        "content")
+  ⎿  Found 27 lines (ctrl+o to expand)
+
+⏺ Let me look at the key handling around line 7405 and the s
+urrounding context:
+
+⏺ Read(ib)
+  ⎿  Read 200 lines
+
+⏺ Now let me find the watch_process_key function to see how
+keys are currently handled:
+
+⏺ Search(pattern: "watch_process_key", path: "ib",
+        output_mode: "content")
+  ⎿  Found 2 lines (ctrl+o to expand)
+
+⏺ Read(ib)
+  ⎿  Read 110 lines
+
+⏺ Now I understand the current key handling. I need to:
+
+  1. In ib watch (normal mode): Add arrow key support where:
+    - Up/Down arrows → change selected agent (same as k/j)
+    - Left/Right arrows → switch panes (same as p/n)
+  2. In dialogs: Add arrow key support where:
+    - Up/Left arrows → same as Shift+Tab
+    - Down/Right arrows → same as Tab
+
+  Let me look at how dialogs handle Tab/Shift+Tab:
+
+⏺ Search(pattern: "watch_dialog_key_send", path: "ib",
+        output_mode: "content")
+  ⎿  Found 2 lines (ctrl+o to expand)
+
+⏺ Read(ib)
+  ⎿  Read 80 lines
+
+⏺ Now I understand the escape sequence handling. Arrow keys
+are detected as \e[A (up), \e[B (down), \e[C (right), \e[D (
+left). The code currently ignores arrow keys in dialogs (lin
+es 5442-5449). I need to modify this to:
+
+  1. In dialogs: treat up/left as Shift+Tab (backward), down
+/right as Tab (forward)
+  2. In ib watch normal mode: up/down change agent, left/rig
+ht change pane
+
+  Let me also check other dialog key handlers to understand
+the pattern:
+
+⏺ Search(pattern: "'A'\|'B'\|'C'\|'D'", path: "ib",
+        output_mode: "content")
+  ⎿  Found 5 lines (ctrl+o to expand)
+
+⏺ Let me check all these dialog handlers to understand how e
+ach one handles arrow keys:
+
+⏺ Read(ib)
+  ⎿  Read 80 lines
+
+⏺ Read(ib)
+  ⎿  Read 80 lines
+
+⏺ Read(ib)
+  ⎿  Read 80 lines
+
+⏺ Read(ib)
+  ⎿  Read 60 lines
+
+⏺ Now I need to find the watch_dialog_key_hooks function to
+understand all dialogs, and also check how the new agent dia
+log handles this:
+
+⏺ Search(pattern: "watch_dialog_key_hooks", path: "ib",
+        output_mode: "content")
+  ⎿  Found 2 lines (ctrl+o to expand)
+
+⏺ Search(pattern: "watch_dialog_key_new_agent", path: "ib",
+        output_mode: "content")
+  ⎿  Found 2 lines (ctrl+o to expand)
+
+⏺ Read(ib)
+  ⎿  Read 100 lines
+
+⏺ Read(ib)
+  ⎿  Read 150 lines
+
+⏺ Let me continue reading the new agent dialog to see the fu
+ll arrow key handling:
+
+⏺ Read(ib)
+  ⎿  Read 100 lines
+
+⏺ Now I have a clear understanding of the current structure.
+ Let me create a task list to track my work:
+
+⏺ Now let me implement the changes. First, I need to underst
+and how escape sequences work for arrow keys. They come in a
+s:
+  - \e[A = Up
+  - \e[B = Down
+  - \e[C = Right
+  - \e[D = Left
+
+  The key reader sends one character at a time. So when an a
+rrow key is pressed, we receive \e, then [, then A/B/C/D.
+
+  For the main watch mode, I need to track the escape sequen
+ce state similarly to how dialogs do it. Let me look at how
+the current code handles key processing:
+
+⏺ Read(ib)
+  ⎿  Read 20 lines
+
+⏺ I need to add escape sequence tracking for the normal mode
+. I see that dialogs use _DIALOG_ESC_PENDING with states 0,
+1, and 2. I'll need a similar mechanism for normal mode.
+
+  Let me find where the watch variables are initialized to a
+dd the escape pending variable:
+
+⏺ Search(pattern: "SCROLL_OFFSET=0", path: "ib",
+        output_mode: "content")
+  ⎿  Found 10 lines (ctrl+o to expand)
+
+⏺ Read(ib)
+  ⎿  Read 30 lines
+
+⏺ Now I understand the structure. I need to:
+
+  1. Add a _WATCH_ESC_PENDING variable for tracking escape s
+equences in normal mode
+  2. Modify watch_process_key to handle escape sequences and
+ arrow keys in normal mode
+
+  Let me now make the edits. First, add the escape pending v
+ariable after the frame rate control section:
+
+⏺ Update(ib)
+  ⎿  Added 3 lines
+      4932       local LAST_FRAME_MS=0
+      4933       local
+            SLEEP_ADJUST_MS=$((TARGET_FRAME_MS * 6 /
+             10))  # Start at 60% of target frame
+            time
+      4934
+      4935 +     # Escape sequence tracking for
+           +normal mode (arrow keys)
+      4936 +     local _WATCH_ESC_PENDING=0  #
+           +0=none, 1=got ESC, 2=got ESC+[
+      4937 +
+      4938       # Send dialog state
+      4939       local SEND_TEXT=""
+      4940       local SEND_FOCUS=0   # 0=text,
+            1=Send button, 2=Cancel button
+
+⏺ Now let me update the watch_process_key function to handle
+ arrow keys in normal mode. I need to add escape sequence ha
+ndling and map arrow keys to the equivalent jkl; functionali
+ty:
+
+⏺ Read(ib)
+  ⎿  Read 110 lines
+
+⏺ Now I'll update the watch_process_key function to handle e
+scape sequences for arrow keys:
+
+✢ Adding arrow key support to ib watch normal mode…
+  ⎿  Next: Add arrow key support to dialogs (up/left as
+     Shift+Tab, down/right as Tab)
+
+────────────────────────────────────────────────────────────
+❯ Try "how do I log an error?"
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/arrow-keys
+  Session: 55% (1h 48m) Weekly: 8% (6d 20h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+

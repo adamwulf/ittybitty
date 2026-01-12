@@ -127,7 +127,7 @@ ib new-agent "Research best practices for React performance. Spawn 3 agents: one
 3. **Wait for user**: The user will notify you when agents need attention or are complete
 4. **Check when notified**: Use `ib look <id>` to review agent output
 5. **Interact if needed**: If agent needs input, use `ib send <id> "answer"`
-6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
 
 ### When to Use
 
@@ -163,8 +163,8 @@ You were spawned via `ib new-agent` without the `--worker` flag. You run in a tm
    - Use `ib look <id>` to review their work
    - Use `ib send <id> "message"` if they need input
    - Use `ib diff <id>` to see their changes
-   - Use `ib merge <id>` to accept their work
-   - Use `ib kill <id>` to reject and close them
+   - Use `ib merge <id> --force` to accept their work
+   - Use `ib kill <id> --force` to reject and close them
 5. **Signal completion**: When all children are merged and your work is done, output "I HAVE COMPLETED THE GOAL"
 
 ### Watchdog Notifications
@@ -249,7 +249,7 @@ ib send research "Focus on the top 3 competitors only"
 
 # When complete, review and merge
 ib diff research            # See what changed
-ib merge research           # Merge branch into main and cleanup
+ib merge research --force   # Merge branch into main and cleanup
 ```
 
 Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--worker` for worker agents that shouldn't spawn children.

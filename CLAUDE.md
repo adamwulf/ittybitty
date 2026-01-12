@@ -322,7 +322,7 @@ When agent spawns child agent (agent-to-agent):
 3. **Wait for user**: The user will tell you when agents need attention or are complete
 4. **Check status**: Use `ib look <id>` to review output when the user notifies you
 5. **Interact**: If agent needs input, use `ib send <id> "answer"`
-6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
 
 **If you are a background agent spawning sub-agents (automatic watchdog notifications):**
 1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects manager, watchdog auto-spawns
@@ -330,7 +330,7 @@ When agent spawns child agent (agent-to-agent):
 3. **Auto-notify**: Watchdog monitors each child and notifies you when:
    - Child has been waiting >30s (needs input)
    - Child completes (ready to merge/review)
-4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id>` or `ib kill <id>`
+4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id> --force` or `ib kill <id> --force`
 
 ### All Commands
 
