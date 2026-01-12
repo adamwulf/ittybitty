@@ -3,7 +3,7 @@
   "fps": 10,
   "permissions": {
     "manager": {
-      "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash(jq:*)", "Bash(./tests/test-parse-state.sh:*)"],
+      "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash(jq:*)", "Bash(chmod +x tests/:*)", "Bash(chmod +x ./tests/:*)", "Bash(./tests/*.sh:*)"],
       "deny": []
     },
     "worker": {
