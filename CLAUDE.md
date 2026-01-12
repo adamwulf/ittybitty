@@ -379,4 +379,7 @@ ib new-agent --yolo "research latest React patterns and update our components"
 | Cannot spawn children | Can manage sub-agents    |
 | Lost on crash         | Resumable via session ID |
 
+<ittybitty-status>
+</ittybitty-status>
+
 </ittybitty>
