@@ -609,9 +609,10 @@ build_agent_settings() {
         deny_json="${CONFIG_MANAGER_DENY:-[]}"
     fi
 
-    # Always include ib and git permissions
+    # Always include ib, git, and task management permissions
     # Git commands are safe in worktrees: agents can't switch branches or push
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
+    # TodoWrite helps agents track and communicate progress
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "TodoWrite"]'
 
     # Always deny plan mode tools (agents should work directly, not enter planning mode)
     # Plan mode creates complexity and agents often get stuck trying to exit

@@ -1,0 +1,26 @@
+{
+  "description": "Bash tool with ib command matching Bash(ib:*) pattern should be allowed",
+  "settings": {
+    "permissions": {
+      "allow": ["Bash(ib:*)"]
+    }
+  },
+  "input": {
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "ib list",
+      "description": "List agents"
+    },
+    "cwd": "/test/agents/test-agent/repo"
+  },
+  "context": {
+    "worktree_path": "/test/agents/test-agent/repo",
+    "agent_dir": "/test/agents/test-agent",
+    "agents_dir": "/test/agents",
+    "root_repo": "/test/main-repo"
+  },
+  "expected": {
+    "decision": "allow",
+    "reason": "Tool in allow list"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "description": "Tool in allow list with no path parameter should be allowed",
+  "settings": {
+    "permissions": {
+      "allow": ["WebSearch"]
+    }
+  },
+  "input": {
+    "tool_name": "WebSearch",
+    "tool_input": {
+      "query": "bash scripting tutorial"
+    },
+    "cwd": "/test/agents/test-agent/repo"
+  },
+  "context": {
+    "worktree_path": "/test/agents/test-agent/repo",
+    "agent_dir": "/test/agents/test-agent",
+    "agents_dir": "/test/agents",
+    "root_repo": "/test/main-repo"
+  },
+  "expected": {
+    "decision": "allow",
+    "reason": "Tool in allow list"
+  }
+}

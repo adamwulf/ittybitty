@@ -1,0 +1,26 @@
+{
+  "description": "Bash tool with git command matching Bash(git:*) pattern should be allowed",
+  "settings": {
+    "permissions": {
+      "allow": ["Edit", "Bash(git:*)"]
+    }
+  },
+  "input": {
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "git status",
+      "description": "Check git status"
+    },
+    "cwd": "/test/agents/test-agent/repo"
+  },
+  "context": {
+    "worktree_path": "/test/agents/test-agent/repo",
+    "agent_dir": "/test/agents/test-agent",
+    "agents_dir": "/test/agents",
+    "root_repo": "/test/main-repo"
+  },
+  "expected": {
+    "decision": "allow",
+    "reason": "Tool in allow list"
+  }
+}
