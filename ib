@@ -5062,10 +5062,18 @@ EOF
     # Check if this is a top-level manager (no manager of its own)
     local manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
     if [[ -n "$manager" && "$manager" != "null" ]]; then
-        echo "Error: Only top-level managers can ask the user questions directly." >&2
-        echo "You should ask your manager '$manager' instead:" >&2
-        echo "  ib send $manager \"$QUESTION\"" >&2
-        exit 1
+        # Check if the manager agent still exists (may have been merged/killed)
+        local manager_dir="$AGENTS_DIR/$manager"
+        if [[ -d "$manager_dir" ]]; then
+            # Manager still exists - reject and point to manager
+            echo "Error: Only top-level managers can ask the user questions directly." >&2
+            echo "You should ask your manager '$manager' instead:" >&2
+            echo "  ib send $manager \"$QUESTION\"" >&2
+            exit 1
+        else
+            # Manager was merged/killed - allow asking user directly
+            echo "Note: Your manager '$manager' is no longer active. Escalating to user." >&2
+        fi
     fi
 
     # Check if agent questions are allowed in config
