@@ -5988,8 +5988,8 @@ EOF
                     NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX + 1) % ${#NEW_AGENT_MODELS[@]} ))
                     _DIALOG_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    # Typing in name field
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
@@ -6004,8 +6004,8 @@ EOF
                     NEW_AGENT_MODEL_INDEX=$(( (NEW_AGENT_MODEL_INDEX - 1 + ${#NEW_AGENT_MODELS[@]}) % ${#NEW_AGENT_MODELS[@]} ))
                     _DIALOG_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    # Typing in name field
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
@@ -6022,10 +6022,8 @@ EOF
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
                     _DIALOG_ESC_PENDING=2
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
-                        NEW_AGENT_NAME="${NEW_AGENT_NAME}["
-                        _DIALOG_DIRTY=1
-                    fi
+                    # '[' not allowed in name field - ignore
+                    :
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}["
                     _DIALOG_DIRTY=1
@@ -6044,7 +6042,8 @@ EOF
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}Z"
                         _DIALOG_DIRTY=1
                     fi
@@ -6061,7 +6060,8 @@ EOF
                     fi
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}A"
                         _DIALOG_DIRTY=1
                     fi
@@ -6078,7 +6078,8 @@ EOF
                     fi
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}B"
                         _DIALOG_DIRTY=1
                     fi
@@ -6091,7 +6092,8 @@ EOF
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
@@ -6139,8 +6141,8 @@ EOF
                     DIALOG_MODE=0
                     _DIALOG_ESC_PENDING=0
                 elif [[ $NEW_AGENT_FOCUS -eq 0 ]]; then
-                    # Typing in name field (20 char max, no newlines)
-                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" != $'\n' ]]; then
+                    # Typing in name field - only alphanumeric and hyphen allowed (spaces converted above)
+                    if [[ ${#NEW_AGENT_NAME} -lt 20 && "$key" =~ ^[a-zA-Z0-9-]$ ]]; then
                         NEW_AGENT_NAME="${NEW_AGENT_NAME}${key}"
                         _DIALOG_DIRTY=1
                     fi
