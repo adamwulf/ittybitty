@@ -2294,6 +2294,26 @@ EOF
         exit 1
     fi
 
+    # Warn if root-level manager and CLAUDE.md doesn't have STATUS.md integration
+    # This warning helps users understand that 'ib ask' won't work without the integration
+    if [[ -z "$MANAGER" && "$WORKER_MODE" != true ]]; then
+        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
+        if [[ -f "$claude_md" ]]; then
+            # Check for either <ittybitty-status> block or @.ittybitty/STATUS.md import
+            if ! grep -q '<ittybitty-status>' "$claude_md" && ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+                echo "Warning: CLAUDE.md does not import .ittybitty/STATUS.md" >&2
+                echo "The 'ib ask' feature requires this to show agent questions to the primary Claude." >&2
+                echo "Run 'ib init' to set up the integration." >&2
+                echo "" >&2
+            fi
+        else
+            echo "Warning: No CLAUDE.md found in repository root" >&2
+            echo "The 'ib ask' feature requires CLAUDE.md to import .ittybitty/STATUS.md" >&2
+            echo "Run 'ib init' to set up the integration." >&2
+            echo "" >&2
+        fi
+    fi
+
     # Generate agent ID
     local ID
     if [[ -n "$NAME" ]]; then
