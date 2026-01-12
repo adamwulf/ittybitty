@@ -7801,20 +7801,27 @@ ib (ittybitty) - multi-agent orchestration for Claude Code
 
 Usage: ib <command> [options]
 
-Commands:
+Agent Lifecycle:
   new-agent   Start a new agent with a prompt
-  list        Show all agents and their state
-  tree        Show agents in a tree structure (manager-worker hierarchy)
-  send        Send input to an agent
-  look        Look at an agent's recent output
-  status      Show git status of agent's work (commits, changes)
-  diff        Show full diff of agent's work vs main
-  merge       Merge agent's work into main branch and close the agent
-  kill        Close an agent without merging
   resume      Restart a stopped agent's session
-  watchdog    Monitor an agent and notify manager when it needs attention
+  kill        Close an agent without merging
+  merge       Merge agent's work and close the agent
+
+Monitoring:
+  list        Show all agents and their state
+  tree        Show agents in a tree structure
+  watch       Interactive dashboard for monitoring agents
+  look        View an agent's recent output
+  status      Show agent's git commits and changes
+  diff        Show full diff of agent's work vs main
+
+Communication:
+  send        Send input to an agent
+  watchdog    Monitor agent and notify manager on state changes
+
+Configuration:
   hooks       Manage main repo hooks (status, install, uninstall)
-  config      Get or set configuration values in .ittybitty.json
+  config      Get or set values in .ittybitty.json
 
 Aliases:
   new         Alias for new-agent
@@ -7824,43 +7831,35 @@ EOF
         if [[ "$SHOW_UNDOCUMENTED" == true ]]; then
             cat <<EOF
 
-Undocumented Commands:
-  nuke            EMERGENCY STOP: Kill all agents, or a manager and all descendants
-  log             Write timestamped message to agent's log file (auto-detects agent ID)
-  refresh-status  Update <ittybitty-status> block in CLAUDE.md (for hooks/scripts)
+Internal Commands (for scripts/testing):
+  nuke            Emergency stop: kill all agents or a manager tree
+  log             Write timestamped message to agent's log file
+  parse-state     Parse agent state from tmux output (for testing)
+  refresh-status  Update <ittybitty-status> block in CLAUDE.md
 
-Deprecated Aliases (still work, use 'ib hooks' instead):
-  hook-status     Alias for 'ib hooks agent-status'
-  hook-check-path Alias for 'ib hooks agent-path'
-
-Undocumented Options:
-  help --undocumented   Show this extended help (you found it!)
+Deprecated Aliases:
+  hook-status     Use 'ib hooks agent-status' instead
+  hook-check-path Use 'ib hooks agent-path' instead
 EOF
         fi
 
         cat <<EOF
 
 Environment:
-  ITTYBITTY_DIR    Base directory for all data (default: .ittybitty)
-                   Contains: agents/, archive/
+  ITTYBITTY_DIR   Base directory for data (default: .ittybitty)
 
 Configuration:
-  .ittybitty.json   Configure agent permissions (see 'ib new-agent --help')
+  .ittybitty.json   Agent permissions (see 'ib new-agent --help')
 
 Run 'ib <command> --help' for command-specific help.
 
 Examples:
-  ib new-agent "verify all citations in docs/comparison.md"
-  ib list
-  ib tree
-  ib look agent-abc123
-  ib status agent-abc123
-  ib diff agent-abc123
-  ib send agent-abc123 "yes, proceed with option 2"
-  ib watchdog agent-abc123
-  ib merge agent-abc123
-  ib kill agent-abc123
-  ib resume agent-abc123
+  ib new-agent "refactor the auth module"    # Spawn an agent
+  ib watch                                   # Monitor all agents
+  ib look abc123                             # View agent output
+  ib send abc123 "yes, proceed"              # Send input
+  ib diff abc123                             # Review changes
+  ib merge abc123                            # Merge and close
 EOF
         ;;
     *)
