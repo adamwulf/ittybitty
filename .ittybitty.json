@@ -1,5 +1,5 @@
 {
-  "model": "sonnet",
+  "model": "opus",
   "fps": 10,
   "permissions": {
     "manager": {

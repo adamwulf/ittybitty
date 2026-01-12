@@ -282,8 +282,8 @@ You have access to `ib` for spawning long-running background agents. Unlike Clau
 **IMPORTANT**: Watchdog notifications only work between agents, not between user and agent.
 
 - If **Manager Agent A** spawns **Worker Agent B**: Agent A gets automatic watchdog notifications about Agent B
-- If **you (user)** spawn **Agent A**: You will NOT get automatic notifications, even if Agent A spawns children
-- **Primary agents in user conversations** must actively poll with `ib list` to check on their children
+- If **you (primary agent)** spawn **Agent A**: You will NOT get automatic notifications
+- **Do NOT poll** with `ib list` - polling wastes tokens. Instead, tell the user that you've spawned agents and that you'll both need to check on them periodically. The user can run `ib watch` in another terminal to monitor agent status.
 
 When agent spawns child agent (agent-to-agent):
 - A watchdog is automatically spawned to monitor the child
@@ -291,16 +291,16 @@ When agent spawns child agent (agent-to-agent):
   - Child is waiting for >30 seconds (needs input)
   - Child completes (ready to review/merge)
 - Manager agents should enter WAITING mode after spawning children
-- No need for agents to poll `ib list` - watchdogs ensure timely notifications
 
 ### Workflow
 
 **If you are a primary agent in a user conversation (no watchdog notifications):**
 1. **Spawn**: `ib new-agent "clearly defined goal"` — returns agent ID
-2. **Poll actively**: Use `ib list` regularly to check agent states (you won't get notifications!)
-3. **Check status**: When agent shows `waiting` or `complete`, use `ib look <id>` to review
-4. **Interact**: If `waiting` and needs input, use `ib send <id> "answer"`
-5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+2. **Inform the user**: Tell them you've spawned agents and suggest they run `ib watch` in another terminal
+3. **Wait for user**: The user will tell you when agents need attention or are complete
+4. **Check status**: Use `ib look <id>` to review output when the user notifies you
+5. **Interact**: If agent needs input, use `ib send <id> "answer"`
+6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
 
 **If you are a background agent spawning sub-agents (automatic watchdog notifications):**
 1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects manager, watchdog auto-spawns

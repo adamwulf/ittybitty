@@ -517,6 +517,7 @@ build_agent_settings() {
         .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
         .permissions.deny = ((.permissions.deny // []) + $blocked + $cfg_deny | unique) |
         .hooks.Stop = [{
+            "matcher": "*",
             "hooks": [{
                 "type": "command",
                 "command": "ib hook-status __AGENT_ID__"

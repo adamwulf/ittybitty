@@ -92,7 +92,8 @@ Work on task and `ib send manager-id` a message if you get stuck
 
 You're having a conversation with a human user. When using `ib`:
 - **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
-- You do NOT get automatic watchdog notifications (must poll manually)
+- You do NOT get automatic watchdog notifications
+- **Do NOT poll** with `ib list` - polling wastes tokens. Tell the user you've spawned agents and suggest they run `ib watch` in another terminal to monitor status. Wait for them to notify you when agents need attention.
 - Each spawned agent is a full Claude Code instance with all your capabilities
 - Agents can be manager agents (can spawn children) or worker agents (workers only)
 - Don't try to micromanage. Let agents spawn their own children.
@@ -122,10 +123,11 @@ ib new-agent "Research best practices for React performance. Spawn 3 agents: one
 ### Primary Agent Workflow
 
 1. **Spawn root**: `ib new-agent "complete task description including structure"`
-2. **Poll regularly**: Use `ib list` to check the root's state (no automatic notifications!)
-3. **Check when ready**: When root shows `waiting` or `complete`, use `ib look <id>` to review
-4. **Interact if needed**: If `waiting` and needs input, use `ib send <id> "answer"`
-5. **Merge/kill**: When `complete`, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
+2. **Inform user**: Tell them you've spawned agents and suggest `ib watch` in another terminal
+3. **Wait for user**: The user will notify you when agents need attention or are complete
+4. **Check when notified**: Use `ib look <id>` to review agent output
+5. **Interact if needed**: If agent needs input, use `ib send <id> "answer"`
+6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id>` or `ib kill <id>`
 
 ### When to Use
 
@@ -235,7 +237,10 @@ You were spawned via `ib new-agent --worker`. You run in a tmux session with you
 # Spawn a research agent
 ib new-agent --name research "Research competitor pricing and summarize findings"
 
-# Check on it periodically
+# Monitor in another terminal
+ib watch                    # Interactive TUI showing all agent states
+
+# Or check manually when needed
 ib list                     # See state: running, waiting, complete, or stopped
 ib look research            # View recent output
 
