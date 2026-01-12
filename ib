@@ -2086,6 +2086,44 @@ EOF
         fi
     fi
 
+    # Security check: Prevent yolo escalation from non-yolo agents
+    # A non-yolo agent should NOT be able to spawn a yolo child, as this would
+    # allow permission escalation attacks where a constrained agent spawns
+    # an unconstrained one, bypassing all permission controls.
+    if [[ "$YOLO_MODE" == true ]]; then
+        local current_dir=$(pwd)
+        if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+            # We're running as an agent - check if parent is yolo
+            local parent_agent_dir=$(echo "$current_dir" | sed 's|\(.*/.ittybitty/agents/[^/]*\)/repo.*|\1|')
+            local parent_is_yolo=false
+
+            # First try meta.json (preferred, cleaner)
+            if [[ -f "$parent_agent_dir/meta.json" ]]; then
+                parent_is_yolo=$(read_meta_field "$parent_agent_dir/meta.json" "yolo" "false")
+            fi
+
+            # Fallback: check start.sh for dangerously-skip-permissions flag
+            # (for agents created before yolo was stored in meta.json)
+            if [[ "$parent_is_yolo" != "true" && -f "$parent_agent_dir/start.sh" ]]; then
+                if grep -q "dangerously-skip-permissions" "$parent_agent_dir/start.sh"; then
+                    parent_is_yolo=true
+                fi
+            fi
+
+            if [[ "$parent_is_yolo" != "true" ]]; then
+                echo "Error: Yolo mode denied - permission escalation not allowed" >&2
+                echo "" >&2
+                echo "Your agent is not running in yolo mode, so you cannot spawn sub-agents" >&2
+                echo "with --yolo. This would allow bypassing permission controls." >&2
+                echo "" >&2
+                echo "Either:" >&2
+                echo "  1. Remove the --yolo flag from your new-agent command" >&2
+                echo "  2. Ask the user to restart your agent with --yolo if appropriate" >&2
+                exit 1
+            fi
+        fi
+    fi
+
     # Load config for PR settings
     load_config
 
@@ -2215,6 +2253,7 @@ EOF
   "created_epoch": $(date +%s),
   "worktree": $USE_WORKTREE,
   "worker": $WORKER_MODE,
+  "yolo": $YOLO_MODE,
   "model": $(if [[ -n "$MODEL" ]]; then echo "\"$MODEL\""; else echo "null"; fi)
 }
 EOF
