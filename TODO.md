@@ -4,10 +4,9 @@
 
 - [x] Agent status showing 'waiting' in tree view when actually running (fixed: `42d754d`)
   - State detection may be incorrectly identifying running agents as waiting
-- [x] Tree view has incorrect alignment when managers have workers (fix ready: `97d90b4`)
+- [ ] Tree view has incorrect alignment when managers have workers
   - Root cause: printf counts bytes not display chars for UTF-8 box-drawing characters
-  - Fix: Manual padding using character count instead of printf field width
-  - NOTE: Commit needs manual merge - run: `git merge 97d90b4`
+  - Fix approach: Manual padding using character count instead of printf field width
 
 ## Features & Enhancements
 
