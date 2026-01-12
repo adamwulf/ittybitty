@@ -1,0 +1,6 @@
+I was WAITING for input
+
+But now I received new instructions:
+
+⏺ Read(/path/to/file)
+  ⎿  Running (esc to interrupt)

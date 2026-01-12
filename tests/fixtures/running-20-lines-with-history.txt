@@ -1,0 +1,16 @@
+Earlier output:
+I HAVE COMPLETED THE GOAL
+---
+But then new instructions came in:
+Please also add documentation.
+---
+Starting documentation task...
+
+⏺ Read(README.md)
+  ⎿  1→# Project Title
+     2→
+     3→This is a project...
+     ...truncated...
+
+⏺ Write(docs/api.md)
+  ⎿  Running (esc to interrupt)
