@@ -6448,15 +6448,19 @@ EOF
 
         # Row 2: Action keys + timing
         local action_text
+        local action_text_visible_len
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
             # Denials mode: show filter explanation
             action_text="Viewing aggregated permission denials across all agents"
+            action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
             action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
+            action_text_visible_len=${#action_text}
             # Add hooks warning if not installed (in yellow)
             if [[ $HOOKS_INSTALLED -eq 2 ]]; then
-                action_text="$action_text    \e[33m[h: hooks]\e[0m"
+                action_text="$action_text    "$'\e[33m'"h: hooks"$'\e[0m'
+                action_text_visible_len=$((action_text_visible_len + 12))  # "    h: hooks" = 12 chars
             fi
         fi
         # Use LAST_FRAME_MS from previous complete frame (includes sleep)
@@ -6473,7 +6477,7 @@ EOF
         local current_time
         current_time=$(date +%H:%M:%S)
         printf -v right_info "%sframe:%3dms  fps:%2d  %s" "$bg_status" "$frame_ms" "$fps" "$current_time"
-        local padding=$((TERM_COLS - ${#action_text} - ${#right_info}))
+        local padding=$((TERM_COLS - action_text_visible_len - ${#right_info}))
         printf "%s%*s%s" "$action_text" "$padding" "" "$right_info"
     }
 
