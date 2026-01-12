@@ -5034,11 +5034,11 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
-    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree
-    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE")
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=error
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -5075,10 +5075,10 @@ EOF
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local HOOKS_FOCUS=0  # 0=Install/Uninstall button, 1=Close button
 
-    # Error dialog state (reusable overlay dialog)
-    local ERROR_TITLE=""       # Title for the error dialog
-    local ERROR_MESSAGE=""     # Message to display (will be wrapped)
-    local ERROR_PREV_MODE=0    # Previous DIALOG_MODE to restore after OK
+    # Errors cache for async agent creation failures
+    # Each entry: "TIMESTAMP|TITLE|MESSAGE"
+    local -a ERRORS_CACHE=()
+    local ERRORS_UNREAD_COUNT=0  # Count of unread errors
 
     # Check if main repo hooks are installed
     watch_check_hooks_status() {
@@ -5096,6 +5096,48 @@ EOF
 
     # Refresh CLAUDE.md status on watch startup
     update_claude_status
+
+    # Add an error to the errors file (can be called from subshells)
+    # Args: $1=errors_file, $2=title, $3=message
+    watch_add_error_to_file() {
+        local errors_file="$1"
+        local title="$2"
+        local message="$3"
+        local timestamp
+        timestamp=$(date +%H:%M:%S)
+        # Atomic append to file (escape any | in message)
+        local safe_message="${message//|/ }"
+        echo "$timestamp|$title|$safe_message" >> "$errors_file"
+    }
+
+    # Load errors from file into cache array (called from main loop)
+    watch_load_errors_from_file() {
+        [[ -z "$ERRORS_FILE" || ! -f "$ERRORS_FILE" ]] && return
+        local line
+        local count_before=${#ERRORS_CACHE[@]}
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            ERRORS_CACHE+=("$line")
+        done < "$ERRORS_FILE"
+        local count_after=${#ERRORS_CACHE[@]}
+        local new_errors=$((count_after - count_before))
+        if [[ $new_errors -gt 0 ]]; then
+            ERRORS_UNREAD_COUNT=$((ERRORS_UNREAD_COUNT + new_errors))
+        fi
+        # Clear the file after loading
+        : > "$ERRORS_FILE"
+    }
+
+    # Clear all errors from the cache
+    watch_clear_errors() {
+        ERRORS_CACHE=()
+        ERRORS_UNREAD_COUNT=0
+    }
+
+    # Mark all errors as read (reset unread count)
+    watch_mark_errors_read() {
+        ERRORS_UNREAD_COUNT=0
+    }
 
     # Cleanup function for exit
     watch_cleanup() {
@@ -6113,7 +6155,7 @@ EOF
                     # Cancel button
                     DIALOG_MODE=0
                 elif [[ $NEW_AGENT_FOCUS -eq 5 && $can_create == "1" ]]; then
-                    # Create button - run synchronously to capture errors
+                    # Create button - run in background for fast UI response
                     local model_arg=""
                     if [[ "${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}" != "default" ]]; then
                         model_arg="--model ${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}"
@@ -6125,27 +6167,22 @@ EOF
                     # Use user-provided name, or the pre-generated default
                     local final_name="${NEW_AGENT_NAME:-$NEW_AGENT_DEFAULT_NAME}"
 
-                    # Run synchronously and capture stderr for error messages
-                    local error_output
-                    if error_output=$(cmd_new_agent --name "$final_name" $model_arg $worker_arg "$NEW_AGENT_PROMPT" 2>&1 >/dev/null); then
-                        # Success - close dialog
-                        DIALOG_MODE=0
-                    else
-                        # Failed - show error dialog with user-friendly message
-                        # Extract the actual error line
-                        local error_line
-                        error_line=$(echo "$error_output" | grep -m1 "^Error:" || echo "$error_output" | head -1)
-
-                        # Build user-friendly message
-                        local user_msg="$error_line"
-
-                        # Add hint about valid names if it looks like a name-related error
-                        if [[ "$error_line" == *"session"* ]] || [[ "$error_line" == *"branch"* ]]; then
-                            user_msg="$user_msg Agent names can only contain letters, numbers, and hyphens."
+                    # Run in background - errors reported via ERRORS_FILE
+                    (
+                        local error_output
+                        if ! error_output=$(cmd_new_agent --name "$final_name" $model_arg $worker_arg "$NEW_AGENT_PROMPT" 2>&1 >/dev/null); then
+                            # Failed - report error to errors file
+                            local error_line
+                            error_line=$(echo "$error_output" | grep -m1 "^Error:" || echo "$error_output" | head -1)
+                            local user_msg="$error_line"
+                            if [[ "$error_line" == *"session"* ]] || [[ "$error_line" == *"branch"* ]]; then
+                                user_msg="$user_msg Agent names can only contain letters, numbers, and hyphens."
+                            fi
+                            watch_add_error_to_file "$ERRORS_FILE" "Failed to Create Agent '$final_name'" "$user_msg"
                         fi
-
-                        watch_show_error "Failed to Create Agent" "$user_msg"
-                    fi
+                    ) &
+                    # Close dialog immediately - don't wait for completion
+                    DIALOG_MODE=0
                 fi
                 ;;
             'j'|'J')  # j - next model (when on model field)
@@ -6902,149 +6939,6 @@ EOF
     # End Jump Dialog
     # ==========================================================================
 
-    # ==========================================================================
-    # Error Dialog (DIALOG_MODE=7) - Reusable overlay dialog
-    # ==========================================================================
-
-    # Show an error dialog overlay
-    # Args: $1=title, $2=message
-    watch_show_error() {
-        ERROR_TITLE="$1"
-        ERROR_MESSAGE="$2"
-        ERROR_PREV_MODE=$DIALOG_MODE
-        DIALOG_MODE=7
-        _DIALOG_ESC_PENDING=0
-        _DIALOG_DIRTY=1
-    }
-
-    watch_dialog_render_error() {
-        # Check if a pending escape should close the dialog
-        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-            DIALOG_MODE=$ERROR_PREV_MODE
-            _DIALOG_ESC_PENDING=0
-            _DIALOG_DIRTY=1
-            return
-        fi
-
-        # Only redraw when dirty
-        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
-        _DIALOG_DIRTY=0
-
-        # Get terminal size
-        TERM_LINES=$(tput lines)
-        TERM_COLS=$(tput cols)
-
-        # Calculate dialog position (centered)
-        dialog_calc_position
-
-        # Wrap message text to fit dialog width
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local -a wrapped_lines=()
-        local word line=""
-
-        # Split message into words and wrap
-        for word in $ERROR_MESSAGE; do
-            if [[ -z "$line" ]]; then
-                line="$word"
-            elif [[ $((${#line} + 1 + ${#word})) -le $inner_width ]]; then
-                line="$line $word"
-            else
-                wrapped_lines+=("$line")
-                line="$word"
-            fi
-        done
-        [[ -n "$line" ]] && wrapped_lines+=("$line")
-
-        # Ensure at least one line
-        [[ ${#wrapped_lines[@]} -eq 0 ]] && wrapped_lines+=("")
-
-        # Calculate dialog height: title + blank + message lines + blank + button + borders
-        local msg_lines=${#wrapped_lines[@]}
-        local dialog_height=$((msg_lines + 6))  # 2 borders + title + 2 blanks + button row
-
-        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
-        [[ $start_row -lt 1 ]] && start_row=1
-
-        # Clear dialog area
-        dialog_clear "$start_row" "$((dialog_height + 1))"
-
-        # Draw dialog box
-        local row=$start_row
-        dialog_draw_hline "$row" "┌" "─" "┐"
-        ((row++))
-
-        # Title (in red for error)
-        local title_display="${ERROR_TITLE:0:$inner_width}"
-        printf '\e[%d;%dH│ \e[31m%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$inner_width" "$title_display"
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Message lines
-        local msg_line
-        for msg_line in "${wrapped_lines[@]}"; do
-            dialog_draw_line "$row" "$msg_line"
-            ((row++))
-        done
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # OK button (always focused)
-        local ok_btn=$(dialog_format_button "OK" "1")
-        local btn_visual_width=4  # [OK] = 4
-        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
-        local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$ok_btn" "$right_pad" ""
-        ((row++))
-
-        # Bottom border
-        dialog_draw_hline "$row" "└" "─" "┘"
-
-        # Footer hint
-        ((row++))
-        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
-        printf '%*s' "$DIALOG_WIDTH" ''
-        local hint="Enter/Esc: dismiss"
-        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
-    }
-
-    watch_dialog_key_error() {
-        local key="$1"
-        case "$key" in
-            $'\x1e'|' ')  # Enter or Space - dismiss
-                DIALOG_MODE=$ERROR_PREV_MODE
-                _DIALOG_DIRTY=1
-                ;;
-            $'\e')  # Escape
-                _DIALOG_ESC_PENDING=1
-                ;;
-            '[')  # Part of escape sequence
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-                    _DIALOG_ESC_PENDING=2
-                fi
-                ;;
-            'A'|'B'|'C'|'D'|'Z')  # Arrow keys or shift-tab - ignore in error dialog
-                _DIALOG_ESC_PENDING=0
-                ;;
-            *)
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-                    # Real escape - dismiss dialog
-                    DIALOG_MODE=$ERROR_PREV_MODE
-                    _DIALOG_DIRTY=1
-                fi
-                _DIALOG_ESC_PENDING=0
-                ;;
-        esac
-    }
-
-    # ==========================================================================
-    # End Error Dialog
-    # ==========================================================================
-
     # Render footer with help text, timing, and clock
     # Args: $1=footer_row, $2=frame_start_ms
     watch_render_footer() {
@@ -7084,10 +6978,20 @@ EOF
             # Denials mode: show filter explanation
             action_text="Viewing aggregated permission denials across all agents"
             action_text_visible_len=${#action_text}
+        elif [[ $RIGHT_PANE_MODE -eq 4 ]]; then
+            # Errors mode: show clear option
+            action_text="c: clear all    n/p: pane"
+            action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
             action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
             action_text_visible_len=${#action_text}
+            # Add errors indicator if there are unread errors (in red)
+            if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
+                action_text="$action_text    "$'\e[31m'"e: errors ($ERRORS_UNREAD_COUNT)"$'\e[0m'
+                local err_text="    e: errors ($ERRORS_UNREAD_COUNT)"
+                action_text_visible_len=$((action_text_visible_len + ${#err_text}))
+            fi
             # Add hooks warning if not installed (in yellow)
             if [[ $HOOKS_INSTALLED -eq 2 ]]; then
                 action_text="$action_text    "$'\e[33m'"h: hooks"$'\e[0m'
@@ -7345,6 +7249,95 @@ EOF
                     if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
                         # Truncate to terminal width
                         local display_line="${tree_lines[$array_idx]:0:$content_width}"
+                        printf '%-*s\n' "$content_width" "$display_line"
+                    else
+                        # Empty line (no content)
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            fi
+
+            # Bottom separator
+            local separator=""
+            local i
+            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
+            printf '%s' "$separator"
+
+            # Store pane info for footer
+            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
+            _WATCH_PANE_HEIGHT=$content_height
+
+            return  # Skip normal split pane rendering
+        fi
+
+        # ===== ERRORS MODE (MODE 4) =====
+        if [[ $RIGHT_PANE_MODE -eq 4 ]]; then
+            # Mark errors as read when viewing errors pane
+            watch_mark_errors_read
+
+            # Full-width header for errors mode
+            local error_count=${#ERRORS_CACHE[@]}
+            local header="── ERRORS ($error_count) "
+            while [[ ${#header} -lt $TERM_COLS ]]; do
+                header="${header}─"
+            done
+            printf "%s\n" "$header"
+
+            # Render full-width errors pane (hide left tmux pane)
+            local content_height=$pane_height
+            local content_width=$TERM_COLS
+
+            # Build display lines from errors cache (newest first)
+            local -a error_lines=()
+            local i
+            for ((i=${#ERRORS_CACHE[@]}-1; i>=0; i--)); do
+                local entry="${ERRORS_CACHE[$i]}"
+                local timestamp="${entry%%|*}"
+                local rest="${entry#*|}"
+                local title="${rest%%|*}"
+                local message="${rest#*|}"
+                # Format: [HH:MM:SS] Title: Message
+                error_lines+=("[$timestamp] $title")
+                # Wrap message to width with indent
+                local indent="           "  # 11 spaces for timestamp alignment
+                local msg_width=$((content_width - ${#indent}))
+                while [[ ${#message} -gt $msg_width ]]; do
+                    error_lines+=("$indent${message:0:$msg_width}")
+                    message="${message:$msg_width}"
+                done
+                [[ -n "$message" ]] && error_lines+=("$indent$message")
+                error_lines+=("")  # Blank line between errors
+            done
+
+            local total_lines=${#error_lines[@]}
+
+            # Show "No errors" if empty
+            if [[ $total_lines -eq 0 ]]; then
+                local empty_msg="No errors recorded"
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$empty_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            else
+                # Calculate scroll parameters (scroll from top, newest first)
+                local max_scroll=$((total_lines - content_height))
+                [[ $max_scroll -lt 0 ]] && max_scroll=0
+                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+                local start_idx=$SCROLL_OFFSET
+
+                local line_num
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    local array_idx=$((start_idx + line_num))
+                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
+                        # Truncate to terminal width
+                        local display_line="${error_lines[$array_idx]:0:$content_width}"
                         printf '%-*s\n' "$content_width" "$display_line"
                     else
                         # Empty line (no content)
@@ -7757,7 +7750,6 @@ EOF
                 4) watch_dialog_key_new_agent "$key" ;;
                 5) watch_dialog_key_jump "$key" ;;
                 6) watch_dialog_key_hooks "$key" ;;
-                7) watch_dialog_key_error "$key" ;;
             esac
             return
         fi
@@ -7896,6 +7888,19 @@ EOF
                     DIALOG_MODE=5
                 fi
                 ;;
+            e)
+                _WATCH_ESC_PENDING=0
+                # Switch to errors pane
+                RIGHT_PANE_MODE=4
+                SCROLL_OFFSET=0
+                ;;
+            c)
+                _WATCH_ESC_PENDING=0
+                # Clear all errors (only when in errors pane)
+                if [[ $RIGHT_PANE_MODE -eq 4 ]]; then
+                    watch_clear_errors
+                fi
+                ;;
             h)
                 _WATCH_ESC_PENDING=0
                 # Open Hooks dialog
@@ -7931,12 +7936,14 @@ EOF
     local log_cache_dir=$(mktemp -d)
     local log_width_file=$(mktemp)
     local heartbeat_file=$(mktemp)
+    local errors_file=$(mktemp)
     echo "80" > "$log_width_file"  # Default width
     SESSIONS_FILE="$sessionfile"  # Global for build_agent_data_file to read
     TMUX_CACHE_DIR="$tmux_cache_dir"  # Global for reading cached tmux output
     LOG_CACHE_DIR="$log_cache_dir"  # Global for reading cached wrapped logs
     LOG_WIDTH_FILE="$log_width_file"  # Global for main loop to update wrap width
     HEARTBEAT_FILE="$heartbeat_file"  # Global for health monitoring
+    ERRORS_FILE="$errors_file"  # Global for async error reporting
     (
         local agents_dir="$PWD/.ittybitty/agents"
         local hb_file="$heartbeat_file"
@@ -7983,13 +7990,14 @@ EOF
     watch_cleanup_reader() {
         kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
-        rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file"
+        rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file" "$errors_file"
         rm -rf "$tmux_cache_dir" "$log_cache_dir"
         SESSIONS_FILE=""
         TMUX_CACHE_DIR=""
         LOG_CACHE_DIR=""
         LOG_WIDTH_FILE=""
         HEARTBEAT_FILE=""
+        ERRORS_FILE=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
@@ -7997,6 +8005,9 @@ EOF
     # Main loop
     while true; do
         local frame_start_ms=$(get_ms)
+
+        # Load any new errors from background processes
+        watch_load_errors_from_file
 
         # Render frame (dialog or normal)
         if [[ $DIALOG_MODE -ne 0 ]]; then
@@ -8008,7 +8019,6 @@ EOF
                 4) watch_dialog_render_new_agent ;;
                 5) watch_dialog_render_jump ;;
                 6) watch_dialog_render_hooks ;;
-                7) watch_dialog_render_error ;;
             esac
             set -e
         else
