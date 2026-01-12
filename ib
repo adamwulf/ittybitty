@@ -4873,6 +4873,254 @@ cmd_test_pretooluse() {
 }
 
 # =============================================================================
+# COMMAND: test-build-settings
+# =============================================================================
+
+# Test build_agent_settings() function with input
+# This command allows testing the settings generation logic without a real agent
+# Input format: First line is agent type ('manager' or 'worker')
+#               Optional second line is custom config JSON (for testing custom allow/deny)
+cmd_test_build_settings() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+    local validate=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-build-settings [options] [file]
+
+Test the build_agent_settings() function that generates settings.local.json.
+
+Reads from stdin if no file is provided, or from the specified file.
+Input format:
+  Line 1: Agent type ('manager' or 'worker')
+  Line 2: Optional custom config JSON (simulates .ittybitty.json content)
+
+Outputs the generated JSON settings, or validation result with --validate.
+
+Options:
+  -v, --verbose   Show allow/deny lists and hook configurations
+  --validate      Output 'valid' or 'invalid' instead of full JSON
+  -h, --help      Show this help
+
+Examples:
+  echo "manager" | ib test-build-settings
+  echo "worker" | ib test-build-settings --validate
+  ib test-build-settings tests/fixtures/build-settings/valid-manager.txt
+  echo -e "manager\n{\"permissions\":{\"manager\":{\"allow\":[\"Read\"]}}}" | ib test-build-settings -v
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --validate)
+                validate=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-build-settings [file] or echo 'manager' | ib test-build-settings" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse input: first line is agent type, optional second line is config JSON
+    local agent_type
+    local config_json=""
+    agent_type=$(echo "$input" | head -1)
+
+    # Get remaining lines as config JSON (if any)
+    local remaining
+    remaining=$(echo "$input" | tail -n +2)
+    if [[ -n "$remaining" ]]; then
+        config_json="$remaining"
+    fi
+
+    # Validate agent type
+    if [[ "$agent_type" != "manager" && "$agent_type" != "worker" ]]; then
+        if $validate; then
+            echo "invalid"
+        else
+            echo "Error: agent type must be 'manager' or 'worker', got: '$agent_type'" >&2
+        fi
+        exit 1
+    fi
+
+    # If custom config JSON provided, create a temporary config file
+    local temp_config=""
+    if [[ -n "$config_json" ]]; then
+        temp_config=$(mktemp)
+        echo "$config_json" > "$temp_config"
+        # Override load_config to use our temp file
+        # We need to source the config manually
+        if ! jq empty "$temp_config" 2>/dev/null; then
+            rm -f "$temp_config"
+            if $validate; then
+                echo "invalid"
+            else
+                echo "Error: invalid JSON in config: $config_json" >&2
+            fi
+            exit 1
+        fi
+    fi
+
+    # Temporarily override load_config if we have custom config
+    if [[ -n "$temp_config" ]]; then
+        # Manually load config values from temp file
+        CONFIG_MANAGER_ALLOW=$(jq -r '.permissions.manager.allow // [] | @json' "$temp_config" 2>/dev/null)
+        CONFIG_MANAGER_DENY=$(jq -r '.permissions.manager.deny // [] | @json' "$temp_config" 2>/dev/null)
+        CONFIG_WORKER_ALLOW=$(jq -r '.permissions.worker.allow // [] | @json' "$temp_config" 2>/dev/null)
+        CONFIG_WORKER_DENY=$(jq -r '.permissions.worker.deny // [] | @json' "$temp_config" 2>/dev/null)
+        CONFIG_CREATE_PRS=$(jq -r '.createPullRequests // false' "$temp_config" 2>/dev/null)
+        CONFIG_MAX_AGENTS=$(jq -r '.maxAgents // 10' "$temp_config" 2>/dev/null)
+        CONFIG_MODEL=$(jq -r '.model // ""' "$temp_config" 2>/dev/null)
+        [[ "$CONFIG_MODEL" == "null" ]] && CONFIG_MODEL=""
+        CONFIG_FPS=$(jq -r '.fps // 10' "$temp_config" 2>/dev/null)
+        CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$temp_config" 2>/dev/null)
+        rm -f "$temp_config"
+
+        # Now call build_agent_settings with a modified version that doesn't call load_config
+        # We'll inline the logic here to avoid calling load_config again
+        local base_settings="{}"
+
+        # Determine which permissions to use
+        local allow_json="[]"
+        local deny_json="[]"
+
+        if [[ "$agent_type" == "worker" && "$CONFIG_WORKER_ALLOW" != "[]" && "$CONFIG_WORKER_ALLOW" != "" ]]; then
+            allow_json="$CONFIG_WORKER_ALLOW"
+            deny_json="${CONFIG_WORKER_DENY:-[]}"
+        elif [[ "$CONFIG_MANAGER_ALLOW" != "[]" && "$CONFIG_MANAGER_ALLOW" != "" ]]; then
+            allow_json="$CONFIG_MANAGER_ALLOW"
+            deny_json="${CONFIG_MANAGER_DENY:-[]}"
+        fi
+
+        # Always include ib and git permissions
+        local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)"]'
+
+        # Always deny plan mode tools
+        local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
+
+        # Build the PermissionRequest hook command
+        local hook_cmd="jq -r '\"[PermissionRequest] Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
+
+        # Merge everything together and add hooks
+        local result
+        result=$(echo "$base_settings" | jq --argjson ib "$ib_perms" \
+            --argjson blocked "$blocked_tools" \
+            --argjson cfg_allow "$allow_json" \
+            --argjson cfg_deny "$deny_json" \
+            --arg perm_hook "$hook_cmd" '
+            .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
+            .permissions.deny = ((.permissions.deny // []) + $blocked + $cfg_deny | unique) |
+            .hooks.Stop = [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": "ib hook-status __AGENT_ID__"
+                }]
+            }] |
+            .hooks.PermissionRequest = [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": $perm_hook
+                }]
+            }] |
+            .hooks.PreToolUse = [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": "ib hook-check-path __AGENT_ID__"
+                }]
+            }]
+        ')
+    else
+        # No custom config - call the actual build_agent_settings function
+        local result
+        result=$(build_agent_settings "$agent_type")
+    fi
+
+    # Check if result is valid JSON
+    if ! echo "$result" | jq empty 2>/dev/null; then
+        if $validate; then
+            echo "invalid"
+        else
+            echo "Error: build_agent_settings produced invalid JSON" >&2
+            echo "$result" >&2
+        fi
+        exit 1
+    fi
+
+    if $validate; then
+        # Validate required fields
+        local has_permissions has_hooks has_allow has_deny
+        has_permissions=$(echo "$result" | jq 'has("permissions")' 2>/dev/null)
+        has_hooks=$(echo "$result" | jq 'has("hooks")' 2>/dev/null)
+        has_allow=$(echo "$result" | jq '.permissions | has("allow")' 2>/dev/null)
+        has_deny=$(echo "$result" | jq '.permissions | has("deny")' 2>/dev/null)
+
+        if [[ "$has_permissions" == "true" && "$has_hooks" == "true" && "$has_allow" == "true" && "$has_deny" == "true" ]]; then
+            echo "valid"
+        else
+            echo "invalid"
+            exit 1
+        fi
+    elif $verbose; then
+        # Verbose output - show breakdown
+        echo "Agent type: $agent_type"
+        echo ""
+        echo "Allow list:"
+        echo "$result" | jq -r '.permissions.allow[]' 2>/dev/null | sed 's/^/  /'
+        echo ""
+        echo "Deny list:"
+        echo "$result" | jq -r '.permissions.deny[]' 2>/dev/null | sed 's/^/  /'
+        echo ""
+        echo "Hooks configured:"
+        echo "$result" | jq -r '.hooks | keys[]' 2>/dev/null | sed 's/^/  /'
+        echo ""
+        echo "Full JSON:"
+        echo "$result" | jq '.'
+    else
+        # Normal output - just the JSON
+        echo "$result" | jq '.'
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -9150,6 +9398,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-build-settings)
+        shift
+        cmd_test_build_settings "$@"
         ;;
     log)
         shift
