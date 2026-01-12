@@ -3196,6 +3196,82 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: info
+# =============================================================================
+
+cmd_info() {
+    local ID=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib info <id>
+
+Display the meta.json contents for an agent.
+
+Shows agent metadata including:
+- Agent name and session ID
+- Manager relationship
+- Model configuration
+- Creation timestamp
+- Prompt and other configuration
+
+Arguments:
+  id              Agent identifier
+
+Examples:
+  ib info task-a1b2
+  ib info myagent
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib info <id>" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local META_FILE="$AGENT_DIR/meta.json"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Check if meta.json exists
+    if [[ ! -f "$META_FILE" ]]; then
+        echo "Error: meta.json not found for agent '$ID'" >&2
+        exit 1
+    fi
+
+    # Output the meta.json contents
+    cat "$META_FILE"
+}
+
+# =============================================================================
 # COMMAND: kill
 # =============================================================================
 
@@ -7957,6 +8033,10 @@ case "${1:-help}" in
         shift
         cmd_diff "$@"
         ;;
+    info)
+        shift
+        cmd_info "$@"
+        ;;
     merge)
         shift
         cmd_merge "$@"
@@ -8040,6 +8120,7 @@ Monitoring:
   look        View an agent's recent output
   status      Show agent's git commits and changes
   diff        Show full diff of agent's work vs main
+  info        Show agent's meta.json configuration
 
 Communication:
   send        Send input to an agent
