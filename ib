@@ -2697,7 +2697,8 @@ cmd_diff() {
                 cat <<EOF
 Usage: ib diff <id> [options]
 
-Show the full diff of an agent's work compared to main branch.
+Show the full diff of an agent's work compared to the merge-base with main.
+This shows only the agent's changes, not unrelated changes from main branch.
 
 Arguments:
   id              Agent identifier
@@ -2762,10 +2763,14 @@ EOF
         exit 1
     fi
 
+    # Find merge-base to avoid showing unrelated changes from target branch
+    local MERGE_BASE
+    MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+
     if [[ "$STAT_ONLY" == true ]]; then
-        git diff --stat "$TARGET_BRANCH..$BRANCH_NAME"
+        git diff --stat "$MERGE_BASE..$BRANCH_NAME"
     else
-        git diff "$TARGET_BRANCH..$BRANCH_NAME"
+        git diff "$MERGE_BASE..$BRANCH_NAME"
     fi
 }
 
