@@ -1,0 +1,15 @@
+      tests/fixtures/running-arrow-keys-5.txt && ./ib
+      parse-state tests/fixtures/running-arrow-keys-10.txt)
+  ⎿  running
+     running
+
+✢ Verifying arrow-keys fixtures… (5m 22s · ↑ 3.6k tokens)
+
+────────────────────────────────────────────────────────────
+❯ Try "how does <filepath> work?"
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/fix-thinking-state
+  Session: 77% (1h 0m) Weekly: 11% (6d 20h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+
