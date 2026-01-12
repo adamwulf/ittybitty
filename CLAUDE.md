@@ -61,24 +61,6 @@ Each spawned agent automatically gets Claude Code hooks configured in their `set
 |------|---------|
 | `Stop` | Calls `ib hook-status <id>` when agent stops to update state tracking |
 | `PermissionRequest` | Logs denied tool requests to agent.log and auto-denies them |
-| `PreToolUse` | Enforces path isolation - blocks access outside agent's worktree |
-
-### PreToolUse Hook (Path Isolation)
-
-The `PreToolUse` hook runs before Read, Write, and Edit tools execute. It enforces that agents can only access files within their own worktree:
-
-**Allowed paths:**
-- Agent's worktree: `.ittybitty/agents/<id>/repo/*`
-- Agent's log: `.ittybitty/agents/<id>/agent.log`
-
-**Blocked paths:**
-- Other agents' directories: `.ittybitty/agents/<other-id>/*`
-- Main repository files (outside the worktree)
-
-When a path is blocked, the hook:
-1. Logs the attempt to `agent.log`
-2. Returns exit code 2 to block the tool
-3. Claude receives an error message explaining the restriction
 
 ### PermissionRequest Hook
 
@@ -94,20 +76,7 @@ This provides visibility into what tools agents are attempting to use without sh
 
 Each tool input parameter is truncated to 20 characters with `...` appended for readability.
 
-### Two Types of Permission Prompts
-
-Claude Code has two distinct permission systems:
-
-| Type | Example | PermissionRequest Hook | Solution |
-|------|---------|----------------------|----------|
-| **Tool permissions** | "Allow WebSearch?" | ✓ Hook fires, auto-denies | Configure in `allow` list |
-| **Location permissions** | "Allow access to /tmp/?" | ✗ Hook bypassed | Use `additionalDirectories` or `--yolo` |
-
-**Tool permission prompts** ask whether an agent can use a specific tool (Bash, WebSearch, etc.). The PermissionRequest hook handles these by auto-denying tools not in the allow list.
-
-**Location permission prompts** ask whether an allowed tool can access a specific directory. These bypass the PermissionRequest hook entirely. To prevent these:
-- The agent's settings include `additionalDirectories` with the root repo path
-- For external directories (like `/tmp/`), use `--yolo` mode or manually approve
+**Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
 
 To review denied permissions for an agent:
 ```bash
