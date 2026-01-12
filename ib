@@ -4921,7 +4921,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=error
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -4954,6 +4954,11 @@ EOF
     # Hooks dialog state
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local HOOKS_FOCUS=0  # 0=Install/Uninstall button, 1=Close button
+
+    # Error dialog state (reusable overlay dialog)
+    local ERROR_TITLE=""       # Title for the error dialog
+    local ERROR_MESSAGE=""     # Message to display (will be wrapped)
+    local ERROR_PREV_MODE=0    # Previous DIALOG_MODE to restore after OK
 
     # Check if main repo hooks are installed
     watch_check_hooks_status() {
@@ -5727,7 +5732,7 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=16  # Total dialog height (increased from 15 for worker checkbox)
+        local dialog_height=16  # Total dialog height
         local prompt_area_height=3  # Lines in the prompt area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
@@ -5943,8 +5948,7 @@ EOF
                     # Cancel button
                     DIALOG_MODE=0
                 elif [[ $NEW_AGENT_FOCUS -eq 5 && $can_create == "1" ]]; then
-                    # Create button
-                    DIALOG_MODE=0
+                    # Create button - run synchronously to capture errors
                     local model_arg=""
                     if [[ "${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}" != "default" ]]; then
                         model_arg="--model ${NEW_AGENT_MODELS[$NEW_AGENT_MODEL_INDEX]}"
@@ -5955,7 +5959,28 @@ EOF
                     fi
                     # Use user-provided name, or the pre-generated default
                     local final_name="${NEW_AGENT_NAME:-$NEW_AGENT_DEFAULT_NAME}"
-                    cmd_new_agent --name "$final_name" $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
+
+                    # Run synchronously and capture stderr for error messages
+                    local error_output
+                    if error_output=$(cmd_new_agent --name "$final_name" $model_arg $worker_arg "$NEW_AGENT_PROMPT" 2>&1 >/dev/null); then
+                        # Success - close dialog
+                        DIALOG_MODE=0
+                    else
+                        # Failed - show error dialog with user-friendly message
+                        # Extract the actual error line
+                        local error_line
+                        error_line=$(echo "$error_output" | grep -m1 "^Error:" || echo "$error_output" | head -1)
+
+                        # Build user-friendly message
+                        local user_msg="$error_line"
+
+                        # Add hint about valid names if it looks like a name-related error
+                        if [[ "$error_line" == *"session"* ]] || [[ "$error_line" == *"branch"* ]]; then
+                            user_msg="$user_msg Agent names can only contain letters, numbers, and hyphens."
+                        fi
+
+                        watch_show_error "Failed to Create Agent" "$user_msg"
+                    fi
                 fi
                 ;;
             'j'|'J')  # j - next model (when on model field)
@@ -6418,6 +6443,149 @@ EOF
 
     # ==========================================================================
     # End Hooks Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # Error Dialog (DIALOG_MODE=7) - Reusable overlay dialog
+    # ==========================================================================
+
+    # Show an error dialog overlay
+    # Args: $1=title, $2=message
+    watch_show_error() {
+        ERROR_TITLE="$1"
+        ERROR_MESSAGE="$2"
+        ERROR_PREV_MODE=$DIALOG_MODE
+        DIALOG_MODE=7
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    watch_dialog_render_error() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=$ERROR_PREV_MODE
+            _DIALOG_ESC_PENDING=0
+            _DIALOG_DIRTY=1
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+
+        # Wrap message text to fit dialog width
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local -a wrapped_lines=()
+        local word line=""
+
+        # Split message into words and wrap
+        for word in $ERROR_MESSAGE; do
+            if [[ -z "$line" ]]; then
+                line="$word"
+            elif [[ $((${#line} + 1 + ${#word})) -le $inner_width ]]; then
+                line="$line $word"
+            else
+                wrapped_lines+=("$line")
+                line="$word"
+            fi
+        done
+        [[ -n "$line" ]] && wrapped_lines+=("$line")
+
+        # Ensure at least one line
+        [[ ${#wrapped_lines[@]} -eq 0 ]] && wrapped_lines+=("")
+
+        # Calculate dialog height: title + blank + message lines + blank + button + borders
+        local msg_lines=${#wrapped_lines[@]}
+        local dialog_height=$((msg_lines + 6))  # 2 borders + title + 2 blanks + button row
+
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title (in red for error)
+        local title_display="${ERROR_TITLE:0:$inner_width}"
+        printf '\e[%d;%dH│ \e[31m%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$inner_width" "$title_display"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Message lines
+        local msg_line
+        for msg_line in "${wrapped_lines[@]}"; do
+            dialog_draw_line "$row" "$msg_line"
+            ((row++))
+        done
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # OK button (always focused)
+        local ok_btn=$(dialog_format_button "OK" "1")
+        local btn_visual_width=4  # [OK] = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$ok_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Enter/Esc: dismiss"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
+    }
+
+    watch_dialog_key_error() {
+        local key="$1"
+        case "$key" in
+            $'\x1e'|' ')  # Enter or Space - dismiss
+                DIALOG_MODE=$ERROR_PREV_MODE
+                _DIALOG_DIRTY=1
+                ;;
+            $'\e')  # Escape
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            'A'|'B'|'C'|'D'|'Z')  # Arrow keys or shift-tab - ignore in error dialog
+                _DIALOG_ESC_PENDING=0
+                ;;
+            *)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Real escape - dismiss dialog
+                    DIALOG_MODE=$ERROR_PREV_MODE
+                    _DIALOG_DIRTY=1
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Error Dialog
     # ==========================================================================
 
     # Render footer with help text, timing, and clock
@@ -7132,6 +7300,7 @@ EOF
                 4) watch_dialog_key_new_agent "$key" ;;
                 5) watch_dialog_key_jump "$key" ;;
                 6) watch_dialog_key_hooks "$key" ;;
+                7) watch_dialog_key_error "$key" ;;
             esac
             return
         fi
@@ -7323,6 +7492,7 @@ EOF
                 4) watch_dialog_render_new_agent ;;
                 5) watch_dialog_render_jump ;;
                 6) watch_dialog_render_hooks ;;
+                7) watch_dialog_render_error ;;
             esac
             set -e
         else
