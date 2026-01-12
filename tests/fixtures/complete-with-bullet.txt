@@ -1,0 +1,50 @@
+      6174               # Footer
+      6175 -            local footer_row=$((5 + 1 +
+           -pane_height + 1))
+      6175 +            local footer_row=$((5 + 1 +
+           +pane_height + 2))  # tree(5) + header(1)
+           + + panes + separator(1)
+           + = start after separator
+      6176               watch_render_footer
+            "$footer_row" "$t_frame_start"
+      6177
+      6178               return  # tmpfile cleanup
+            handled by RETURN trap
+
+⏺ Now let me commit this fix:
+
+⏺ Bash(git status)
+  ⎿ On branch agent/empty-watch
+    Changes not staged for commit:
+      (use "git add <file>..." to update what will be c
+    ... +7 lines (ctrl+o to expand)
+
+
+⏺ Bash(git diff ib)
+  ⎿  diff --git a/ib b/ib
+     index 6cad4cd..9552242 100755
+     --- a/ib
+     ... +32 lines (ctrl+o to expand)
+
+⏺ Bash(git add ib && git commit -m "Fix watch footer row
+      calculation when no agents are running...)
+  ⎿ [agent/empty-watch 8c30cbc] Fix watch footer row ca
+    lculation when no agents are running
+     1 file changed, 2 insertions(+), 2 deletions(-)
+
+
+⏺ I HAVE COMPLETED THE GOAL
+
+  Summary of the fix:
+
+  The bug was in the cmd_watch function's no-agents renderin
+g path. When there are zero agents, the footer_row calculati
+on was:
+  local footer_row=$((5 + 1 + pane_height + 1))  # = 7 + pan
+e_height
+
+  But it should be:
+  local footer_row=$((5 + 1 + pane_height + 2))  # = 8 + pan
+e_height
+
+  The layout breakdown:

@@ -1,0 +1,4 @@
+Let me check the current state of the code.
+
+⏺ Read(/Users/adamwulf/Developer/bash/ittybitty/ib)
+  ⎿  Running (esc to interrupt)

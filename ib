@@ -772,6 +772,80 @@ capture_tmux() {
     LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
 }
 
+# Parse state from tmux output text
+# States: running, waiting, complete, unknown
+# Input: Text content (passed as first argument or stdin if no argument)
+# Output: State string to stdout
+#
+# Priority order:
+# 1. Strong running - definitive execution indicators (esc to interrupt, ⎿ Running, etc.)
+#    These mean something is ACTIVELY running right now, overrides everything
+# 2. Complete - agent explicitly said "I HAVE COMPLETED THE GOAL" in last 15 lines
+# 3. Waiting - agent explicitly said "WAITING" as standalone in last 15 lines
+# 4. Unknown - session exists but no clear state indicators
+#
+# Note: Strong running indicators take priority because they indicate active execution
+# that happens AFTER any completion phrase in the output.
+parse_state() {
+    local input
+    if [[ -n "$1" ]]; then
+        input="$1"
+    else
+        input=$(cat)
+    fi
+
+    # Empty input = unknown (caller handles stopped for tmux sessions)
+    if [[ -z "$input" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    # Check for STRONG running indicators FIRST (active tool execution)
+    # These indicate something is definitely executing right now:
+    # - "esc to interrupt" / "ctrl+c to interrupt" - shown during tool execution
+    # - "ctrl+b ctrl+b" - tmux passthrough indicator during execution
+    # - "⎿  Running" - explicit running status indicator
+    # - "thinking)" - model thinking indicator
+    # These override completion phrases because they represent current state
+    if [[ "$input" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running|thinking\) ]]; then
+        echo "running"
+        return
+    fi
+
+    # Get last 15 lines for completion/waiting detection
+    local last_lines
+    last_lines=$(echo "$input" | tail -15)
+
+    # Check for completion signal
+    # The agent saying "I HAVE COMPLETED THE GOAL" is the definitive completion signal
+    if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
+        echo "complete"
+        return
+    fi
+
+    # Check for explicit waiting message
+    # Look for WAITING as a standalone word (not in instruction text)
+    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+        echo "waiting"
+        return
+    fi
+
+    # Check for tool invocation patterns (weaker running signal)
+    # ⏺ followed by a tool name and opening paren indicates tool use
+    # This is weaker than the strong indicators because tool output can remain
+    # visible after completion, but if there's no completion/waiting phrase,
+    # it suggests the agent might still be processing
+    if [[ "$input" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
+        echo "running"
+        return
+    fi
+
+    # No explicit state indicators found
+    echo "unknown"
+}
+
 # Detect agent state from tmux
 # States: running, waiting, stopped, complete, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
@@ -789,32 +863,8 @@ get_state() {
         return
     fi
 
-    # Check for Claude Code processing indicators (running) FIRST
-    # These indicate active work even if completion phrase exists in context
-    # Using bash pattern matching instead of grep to avoid subprocess spawning
-    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running|thinking\)|⏺ ]]; then
-        echo "running"
-        return
-    fi
-
-    # Check for completion signal (agents say this when done)
-    # Use last 15 lines to see past status bar but avoid matching instructions
-    local last_lines
-    last_lines=$(echo "$recent" | tail -15)
-    if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
-        echo "complete"
-        return
-    fi
-
-    # Check for explicit waiting message (but not in instructions)
-    # Look for WAITING as a standalone word, not as part of instruction text
-    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n')|⏺.*WAITING ]]; then
-        echo "waiting"
-        return
-    fi
-
-    # Idle but no explicit state message = unknown
-    echo "unknown"
+    # Use parse_state for the actual state detection logic
+    parse_state "$recent"
 }
 
 # Wait for Claude to start - logo OR permissions screen appears
@@ -3759,6 +3809,131 @@ cmd_hook_check_path() {
 }
 
 # =============================================================================
+# COMMAND: parse-state
+# =============================================================================
+
+# Parse state from text input (stdin or file)
+# This command exposes parse_state() for testing and debugging
+cmd_parse_state() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib parse-state [options] [file]
+
+Parse agent state from tmux output text.
+
+Reads from stdin if no file is provided, or from the specified file.
+Outputs one of: running, waiting, complete, unknown
+
+This command is primarily for testing state detection logic.
+
+Options:
+  -v, --verbose  Show which pattern matched
+  -h, --help     Show this help
+
+States (in priority order):
+  complete  - "I HAVE COMPLETED THE GOAL" found in last 15 lines
+  waiting   - "WAITING" found as standalone word in last 15 lines
+  running   - Active tool execution indicators present
+  unknown   - No clear state indicators
+
+Examples:
+  echo "⏺ I HAVE COMPLETED THE GOAL" | ib parse-state
+  ib parse-state tests/fixtures/complete.txt
+  cat /path/to/output.log | ib parse-state -v
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        input=$(cat)
+    fi
+
+    if $verbose; then
+        # Check STRONG running indicators first (matches parse_state logic)
+        if [[ "$input" =~ esc\ to\ interrupt ]]; then
+            echo "running (matched: esc to interrupt)"
+            return
+        fi
+
+        if [[ "$input" =~ ctrl\+c\ to\ interrupt ]]; then
+            echo "running (matched: ctrl+c to interrupt)"
+            return
+        fi
+
+        if [[ "$input" =~ ctrl\+b\ ctrl\+b ]]; then
+            echo "running (matched: ctrl+b ctrl+b)"
+            return
+        fi
+
+        if [[ "$input" =~ ⎿\ \ Running ]]; then
+            echo "running (matched: ⎿  Running)"
+            return
+        fi
+
+        if [[ "$input" =~ thinking\) ]]; then
+            echo "running (matched: thinking))"
+            return
+        fi
+
+        # Get last 15 lines for completion/waiting
+        local last_lines
+        last_lines=$(echo "$input" | tail -15)
+
+        if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
+            echo "complete (matched: I HAVE COMPLETED THE GOAL)"
+            return
+        fi
+
+        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
+            echo "waiting (matched: standalone WAITING)"
+            return
+        fi
+
+        if [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+            echo "waiting (matched: ⏺...WAITING)"
+            return
+        fi
+
+        # Weak running indicator (tool invocation without strong indicator)
+        if [[ "$input" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
+            echo "running (matched: ⏺ ToolName()"
+            return
+        fi
+
+        echo "unknown (no patterns matched)"
+    else
+        parse_state "$input"
+    fi
+}
+
+# =============================================================================
 # COMMAND: log
 # =============================================================================
 
@@ -6660,6 +6835,10 @@ case "${1:-help}" in
     hook-check-path)
         shift
         cmd_hook_check_path "$@"
+        ;;
+    parse-state)
+        shift
+        cmd_parse_state "$@"
         ;;
     log)
         shift

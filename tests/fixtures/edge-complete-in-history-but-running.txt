@@ -1,0 +1,6 @@
+Previous agent output that mentioned I HAVE COMPLETED THE GOAL
+
+But then new instructions came in and now we're working again.
+
+⏺ Bash(git status)
+  ⎿  Running (esc to interrupt)
