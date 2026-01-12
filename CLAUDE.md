@@ -394,13 +394,6 @@ ib new-agent --yolo "research latest React patterns and update our components"
 | Cannot spawn children | Can manage sub-agents    |
 | Lost on crash         | Resumable via session ID |
 
-<ittybitty-status>
-## Current Agents (4 active)
-
-hooks-refactor   complete  22m    Implement the plan in plans/main-repo...
-prompt-trim      running   24m    In the new agent dialog
-stop-hook-debug  complete  22m    Investigate why the stop hook didn't ...
-test-expansion   waiting   3m     Research and propose additional parse...
-</ittybitty-status>
+@.ittybitty/STATUS.md
 
 </ittybitty>
