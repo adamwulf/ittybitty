@@ -1,0 +1,11 @@
+{
+  "tool_name": "WebSearch",
+  "tool_input": {
+    "query": "search term"
+  },
+  "settings": {
+    "permissions": {
+      "allow": ["Read", "Write", "Edit"]
+    }
+  }
+}

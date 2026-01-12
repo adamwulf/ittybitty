@@ -1,0 +1,11 @@
+{
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/some/path/to/file.txt"
+  },
+  "settings": {
+    "permissions": {
+      "allow": []
+    }
+  }
+}

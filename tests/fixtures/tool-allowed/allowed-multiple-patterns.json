@@ -1,0 +1,12 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status",
+    "description": "Show git status"
+  },
+  "settings": {
+    "permissions": {
+      "allow": ["Read", "Bash(ib:*)", "Bash(git:*)", "Edit"]
+    }
+  }
+}
