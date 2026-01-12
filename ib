@@ -767,7 +767,11 @@ capture_tmux() {
 
     # Fallback: capture directly from tmux
     # Note: || true prevents set -e from exiting when session doesn't exist
-    LAST_TMUX_CAPTURE=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
+    local raw_capture
+    raw_capture=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
+    # Strip ANSI codes for consistent pattern matching (matches background cache behavior)
+    _strip_ansi "$raw_capture"
+    LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
 }
 
 # Detect agent state from tmux
