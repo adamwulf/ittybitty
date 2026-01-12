@@ -5939,6 +5939,13 @@ EOF
                 local prompt_content
                 prompt_content=$(<"$prompt_file") 2>/dev/null || true
                 if [[ -n "$prompt_content" ]]; then
+                    # Trim to [USER TASK] marker if present (removes repetitive prefix)
+                    local user_task_marker="[USER TASK]"
+                    if [[ "$prompt_content" == *"$user_task_marker"* ]]; then
+                        prompt_content="${prompt_content#*"$user_task_marker"}"
+                        # Remove leading newlines after the marker
+                        prompt_content="${prompt_content#$'\n'}"
+                    fi
                     # Wrap prompt to right pane width using fold
                     local wrapped
                     wrapped=$(echo "$prompt_content" | fold -s -w "$right_pane_width")
