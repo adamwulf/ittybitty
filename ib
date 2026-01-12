@@ -3360,6 +3360,13 @@ EOF
         exit 1
     fi
 
+    # Check if we're trying to merge from within the agent's own worktree
+    local CURRENT_DIR=$(pwd)
+    if [[ "$CURRENT_DIR" == "$WORKTREE_PATH"* ]]; then
+        echo "Error: Cannot merge agent from within its own worktree. The merge will delete the directory you are currently in. Please run this command from outside the agent worktree." >&2
+        exit 1
+    fi
+
     # Check for uncommitted changes in the worktree
     if [[ -n $(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null) ]]; then
         echo "Error: agent '$ID' has uncommitted changes:" >&2
