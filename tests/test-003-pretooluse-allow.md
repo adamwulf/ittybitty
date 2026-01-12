@@ -198,18 +198,62 @@ This is a location-access prompt that bypasses PermissionRequest hooks.
 
 ## Implementation Checklist
 
-- [ ] Modify `cmd_hooks_agent_path()` to output JSON instead of just exit codes
-- [ ] Add function to read agent's allow list from settings.local.json
-- [ ] Add function to match tool against allow patterns
-- [ ] Handle pattern types: exact match, `Bash(prefix:*)`
-- [ ] Output `permissionDecision: "allow"` for allowed tools that pass path check
-- [ ] Output `permissionDecision: "deny"` for blocked paths with specific reason
-- [ ] Output `permissionDecision: "deny"` for tools not in allow list
-- [ ] Update tests/test-003-pretooluse-allow.md with results
+- [x] Modify `cmd_hooks_agent_path()` to output JSON instead of just exit codes
+- [x] Add function to read agent's allow list from settings.local.json
+- [x] Add function to match tool against allow patterns
+- [x] Handle pattern types: exact match, `Bash(prefix:*)`
+- [x] Output `permissionDecision: "allow"` for allowed tools that pass path check
+- [x] Output `permissionDecision: "deny"` for blocked paths with specific reason
+- [x] Output `permissionDecision: "deny"` for tools not in allow list
+- [x] Update tests/test-003-pretooluse-allow.md with results
+
+## Implementation Notes
+
+### New Helper Functions Added (ib lines 472-530)
+
+1. **`tool_matches_pattern(tool_name, tool_input, pattern)`** - Checks if a tool matches an allow pattern
+   - Handles exact tool name matches (e.g., `"Edit"` matches tool_name `"Edit"`)
+   - Handles Bash prefix patterns (e.g., `"Bash(git:*)"` matches Bash tool where command starts with "git")
+   - Returns 0 (true) if matches, 1 (false) if not
+
+2. **`tool_in_allow_list(tool_name, tool_input, settings_file)`** - Checks if tool is in the allow list
+   - Reads `.permissions.allow[]` from the agent's settings.local.json
+   - Iterates through all patterns and checks for matches
+   - Returns 0 (true) if allowed, 1 (false) if not
+
+### Modified `cmd_hooks_agent_path()` (ib lines 4234-4393)
+
+The function now outputs JSON with `permissionDecision` instead of using exit codes:
+
+1. **Flow Change**: First checks allow list, THEN checks path isolation
+   - If tool NOT in allow list → deny immediately (with logging)
+   - If tool IS in allow list → proceed to path checks
+
+2. **JSON Output Format**:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Tool in allow list"
+  }
+}
+```
+
+3. **Permission Decisions**:
+   - `allow`: Tool in allow list AND passes path checks
+   - `deny`: Tool not in allow list OR path violation
+
+4. **Logging**:
+   - Tool denials are logged in same format as PermissionRequest: `Permission denied: ToolName (key1: val1, key2: val2)`
+   - Path violations are logged as: `Path violation: ToolName tried to access main repo: /path`
+
+5. **Exit Codes**: All paths now use `exit 0` (hook completed successfully). The decision is communicated via JSON output, not exit code.
 
 ## References
 
-- Claude Code hooks documentation: https://code.claude.com/docs/en/hooks
-- Current implementation: `ib` lines 4174-4294 (`cmd_hooks_agent_path`)
-- Settings builder: `ib` lines 474-541 (`build_agent_settings`)
+- Claude Code hooks documentation: https://docs.anthropic.com/en/docs/claude-code/hooks
+- Current implementation: `ib` lines 4234-4393 (`cmd_hooks_agent_path`)
+- Helper functions: `ib` lines 472-530 (`tool_matches_pattern`, `tool_in_allow_list`)
+- Settings builder: `ib` lines 532-600 (`build_agent_settings`)
 - Pattern matching used by Claude: Similar to shell glob patterns
