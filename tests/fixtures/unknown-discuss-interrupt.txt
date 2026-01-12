@@ -1,0 +1,4 @@
+When you see "esc to interrupt" in Claude's output, it means
+a tool is currently executing. You can press Escape to stop it.
+
+The agent is now idle and waiting for instructions.

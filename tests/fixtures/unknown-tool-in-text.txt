@@ -1,0 +1,2 @@
+I used the Bash(npm test) command earlier to run tests.
+Now I'm reviewing the results and thinking about next steps.
