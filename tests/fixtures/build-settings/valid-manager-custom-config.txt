@@ -1,0 +1,2 @@
+manager
+{"permissions":{"manager":{"allow":["Read","Write","Edit"],"deny":["WebSearch"]}}}
