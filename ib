@@ -4873,6 +4873,135 @@ cmd_test_pretooluse() {
 }
 
 # =============================================================================
+# COMMAND: test-load-config
+# =============================================================================
+
+# Test load_config() function with JSON input
+# This command allows testing the config parsing logic without a real .ittybitty.json file
+# Input: JSON config (same format as .ittybitty.json)
+# Output: Parsed configuration values in key: value format
+cmd_test_load_config() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-load-config [options] [file]
+
+Test the load_config() function with JSON input.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs parsed configuration values in key: value format.
+
+This command is for testing config parsing logic.
+
+Options:
+  -v, --verbose  Show raw JSON values before processing
+  -h, --help     Show this help
+
+Output format:
+  manager_allow: ["Read", "Write"]
+  manager_deny: []
+  worker_allow: []
+  worker_deny: []
+  create_prs: false
+  max_agents: 10
+  model:
+  fps: 10
+
+Examples:
+  echo '{"permissions": {"manager": {"allow": ["Read"]}}}' | ib test-load-config
+  ib test-load-config tests/fixtures/load-config/minimal.json
+  cat config.json | ib test-load-config -v
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-load-config [file] or echo '{...}' | ib test-load-config" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Validate that input is valid JSON
+    if ! echo "$input" | jq . >/dev/null 2>&1; then
+        echo "Error: invalid JSON input" >&2
+        exit 1
+    fi
+
+    # Parse config values using jq (same logic as load_config but from input instead of file)
+    local manager_allow manager_deny worker_allow worker_deny
+    local create_prs max_agents model fps allow_agent_questions
+
+    manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null)
+    manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null)
+    worker_allow=$(echo "$input" | jq -r '.permissions.worker.allow // [] | @json' 2>/dev/null)
+    worker_deny=$(echo "$input" | jq -r '.permissions.worker.deny // [] | @json' 2>/dev/null)
+    create_prs=$(echo "$input" | jq -r '.createPullRequests // false' 2>/dev/null)
+    max_agents=$(echo "$input" | jq -r '.maxAgents // 10' 2>/dev/null)
+    model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null)
+    fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null)
+    allow_agent_questions=$(echo "$input" | jq -r '.allowAgentQuestions // true' 2>/dev/null)
+
+    # Handle null model (same as load_config)
+    if [[ "$model" == "null" ]]; then
+        model=""
+    fi
+
+    if $verbose; then
+        echo "=== Raw JSON values ==="
+        echo "input: $input"
+        echo ""
+        echo "=== Parsed values ==="
+    fi
+
+    # Output in the specified format
+    echo "manager_allow: $manager_allow"
+    echo "manager_deny: $manager_deny"
+    echo "worker_allow: $worker_allow"
+    echo "worker_deny: $worker_deny"
+    echo "create_prs: $create_prs"
+    echo "max_agents: $max_agents"
+    echo "model: $model"
+    echo "fps: $fps"
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -9150,6 +9279,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-load-config)
+        shift
+        cmd_test_load_config "$@"
         ;;
     log)
         shift
