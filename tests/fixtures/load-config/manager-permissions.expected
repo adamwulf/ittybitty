@@ -1,0 +1,8 @@
+manager_allow: ["Read","Write","Bash(ib:*)"]
+manager_deny: ["WebSearch"]
+worker_allow: []
+worker_deny: []
+create_prs: false
+max_agents: 10
+model: 
+fps: 10

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "manager": {
+      "allow": ["Read", "Write", "Bash(ib:*)"],
+      "deny": ["WebSearch"]
+    }
+  }
+}

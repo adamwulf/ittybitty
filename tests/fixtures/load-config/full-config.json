@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "manager": {
+      "allow": ["Read", "Write", "Edit", "Bash(git:*)"],
+      "deny": ["WebFetch"]
+    },
+    "worker": {
+      "allow": ["Read", "Write"],
+      "deny": ["Bash"]
+    }
+  },
+  "createPullRequests": true,
+  "maxAgents": 20,
+  "model": "sonnet",
+  "fps": 15,
+  "allowAgentQuestions": false
+}

@@ -1,0 +1,8 @@
+manager_allow: ["Read","Write","Edit","Bash(git:*)"]
+manager_deny: ["WebFetch"]
+worker_allow: ["Read","Write"]
+worker_deny: ["Bash"]
+create_prs: true
+max_agents: 20
+model: sonnet
+fps: 15

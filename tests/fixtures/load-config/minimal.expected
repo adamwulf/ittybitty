@@ -1,0 +1,8 @@
+manager_allow: []
+manager_deny: []
+worker_allow: []
+worker_deny: []
+create_prs: false
+max_agents: 5
+model: 
+fps: 10
