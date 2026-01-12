@@ -5679,6 +5679,7 @@ EOF
 
     watch_dialog_init_new_agent() {
         NEW_AGENT_NAME=""
+        NEW_AGENT_DEFAULT_NAME="agent-$(openssl rand -hex 4)"  # Pre-generate default name
         NEW_AGENT_PROMPT=""
         NEW_AGENT_WORKER=0  # 0=unchecked, 1=checked
         NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=worker, 3=prompt, 4=Cancel, 5=Create
@@ -5741,15 +5742,27 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Name field
+        # Name field - show dim placeholder when empty
         local name_focused=$([[ $NEW_AGENT_FOCUS -eq 0 ]] && echo 1 || echo 0)
         local name_display="$NEW_AGENT_NAME"
-        [[ $name_focused == "1" ]] && name_display="${name_display}_"
+        local show_placeholder=$([[ -z "$NEW_AGENT_NAME" ]] && echo 1 || echo 0)
+        [[ $name_focused == "1" && -n "$NEW_AGENT_NAME" ]] && name_display="${name_display}_"
+        [[ $name_focused == "1" && -z "$NEW_AGENT_NAME" ]] && name_display="_"
         printf '\e[%d;%dH│ Name:  ' "$row" "$_DIALOG_START_COL"
         if [[ $name_focused == "1" ]]; then
-            printf '\e[7m%-20s\e[0m' "$name_display"
+            if [[ $show_placeholder == "1" ]]; then
+                # Show cursor followed by dim placeholder
+                printf '\e[7m_\e[0m\e[2m%-19s\e[0m' "${NEW_AGENT_DEFAULT_NAME:0:19}"
+            else
+                printf '\e[7m%-20s\e[0m' "$name_display"
+            fi
         else
-            printf '%-20s' "$name_display"
+            if [[ $show_placeholder == "1" ]]; then
+                # Show dim placeholder when not focused and empty
+                printf '\e[2m%-20s\e[0m' "$NEW_AGENT_DEFAULT_NAME"
+            else
+                printf '%-20s' "$name_display"
+            fi
         fi
         local remaining=$((DIALOG_WIDTH - 30))
         printf '%*s│' "$remaining" ""
@@ -5858,8 +5871,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Buttons - Create disabled if name or prompt empty
-        local create_disabled=$([[ -z "$NEW_AGENT_NAME" || -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+        # Buttons - Create disabled if prompt empty (name uses default if not provided)
+        local create_disabled=$([[ -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
         local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
         local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
         local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
@@ -5881,7 +5894,7 @@ EOF
 
     watch_dialog_key_new_agent() {
         local key="$1"
-        local can_create=$([[ -n "$NEW_AGENT_NAME" && -n "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+        local can_create=$([[ -n "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)  # Name uses default if empty
 
         case "$key" in
             $'\t')  # Tab - forward
@@ -5934,11 +5947,9 @@ EOF
                     if [[ $NEW_AGENT_WORKER -eq 1 ]]; then
                         worker_arg="--worker"
                     fi
-                    if [[ -n "$NEW_AGENT_NAME" ]]; then
-                        cmd_new_agent --name "$NEW_AGENT_NAME" $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
-                    else
-                        cmd_new_agent $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
-                    fi
+                    # Use user-provided name, or the pre-generated default
+                    local final_name="${NEW_AGENT_NAME:-$NEW_AGENT_DEFAULT_NAME}"
+                    cmd_new_agent --name "$final_name" $model_arg $worker_arg "$NEW_AGENT_PROMPT" >/dev/null 2>&1 &
                 fi
                 ;;
             'j'|'J')  # j - next model (when on model field)
