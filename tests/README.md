@@ -53,3 +53,4 @@ ib status test-NNN
 | Test | Description | Status |
 |------|-------------|--------|
 | 001  | Plan mode exit bug | 🔴 FAILING |
+| 002  | Path isolation hook | 🟡 PENDING (requires merge) |

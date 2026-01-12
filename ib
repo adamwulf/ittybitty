@@ -529,6 +529,14 @@ build_agent_settings() {
                 "type": "command",
                 "command": $perm_hook
             }]
+        }] |
+        .hooks.PreToolUse = [{
+            "matcher": "Read|Write|Edit",
+            "hooks": [{
+                "type": "command",
+                "command": "ib",
+                "args": ["hook-check-path", "__AGENT_ID__"]
+            }]
         }]
     '
 }
@@ -3584,6 +3592,94 @@ cmd_hook_status() {
 }
 
 # =============================================================================
+# COMMAND: hook-check-path
+# =============================================================================
+
+# PreToolUse hook to enforce agent path isolation
+# Blocks file access outside the agent's worktree
+cmd_hook_check_path() {
+    local ID="$1"
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        exit 1
+    fi
+
+    # Read JSON input from stdin
+    local json_input
+    json_input=$(cat)
+
+    # Extract tool name and file path from input
+    local tool_name
+    local file_path
+    tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
+    file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+
+    # If no file path found, allow (might be a non-file tool)
+    if [[ -z "$file_path" ]]; then
+        exit 0
+    fi
+
+    # Resolve to absolute path
+    if [[ "$file_path" != /* ]]; then
+        local cwd
+        cwd=$(echo "$json_input" | jq -r '.cwd // ""')
+        if [[ -n "$cwd" ]]; then
+            file_path="$cwd/$file_path"
+        fi
+    fi
+
+    # Normalize path (resolve . and ..)
+    file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
+
+    # Resolve AGENTS_DIR to absolute path for proper comparison
+    local ABS_AGENTS_DIR
+    if [[ -d "$AGENTS_DIR" ]]; then
+        ABS_AGENTS_DIR=$(cd "$AGENTS_DIR" && pwd)
+    else
+        ABS_AGENTS_DIR="$AGENTS_DIR"
+    fi
+
+    # Get agent's worktree path (absolute)
+    local AGENT_DIR="$ABS_AGENTS_DIR/$ID"
+    local WORKTREE_PATH="$AGENT_DIR/repo"
+
+    # Resolve worktree to absolute path
+    if [[ -d "$WORKTREE_PATH" ]]; then
+        WORKTREE_PATH=$(cd "$WORKTREE_PATH" && pwd)
+    fi
+
+    # Check 1: Allow access within agent's own worktree
+    if [[ "$file_path" == "$WORKTREE_PATH"* ]]; then
+        exit 0  # Allow
+    fi
+
+    # Check 2: Allow access to agent's own log file
+    if [[ "$file_path" == "$AGENT_DIR/agent.log" ]]; then
+        exit 0  # Allow
+    fi
+
+    # Check 3: Block access to other agents' directories
+    if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
+        log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access other agent's data: $file_path" --quiet
+        echo "Access denied: cannot access other agents' files" >&2
+        exit 2  # Block
+    fi
+
+    # Check 4: Block access to main repo (outside worktree)
+    local ROOT_REPO
+    ROOT_REPO=$(git -C "$WORKTREE_PATH" rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* ]]; then
+        log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access main repo: $file_path" --quiet
+        echo "Access denied: work in your worktree, not the main repo" >&2
+        exit 2  # Block
+    fi
+
+    # All other paths: allow (system files, etc. - let Claude Code handle those)
+    exit 0
+}
+
+# =============================================================================
 # COMMAND: log
 # =============================================================================
 
@@ -6479,6 +6575,10 @@ case "${1:-help}" in
         shift
         cmd_hook_status "$@"
         ;;
+    hook-check-path)
+        shift
+        cmd_hook_check_path "$@"
+        ;;
     log)
         shift
         cmd_log "$@"
@@ -6526,7 +6626,8 @@ EOF
 
 Undocumented Commands:
   nuke        EMERGENCY STOP: Kill all agents, or a manager and all descendants
-  hook-status Internal: Check agent state and nudge if unknown (used by hooks)
+  hook-status     Internal: Check agent state and nudge if unknown (used by hooks)
+  hook-check-path Internal: Enforce path isolation for file tools (used by hooks)
   log         Write timestamped message to agent's log file (auto-detects agent ID)
 
 Undocumented Options:
