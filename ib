@@ -531,7 +531,7 @@ build_agent_settings() {
             }]
         }] |
         .hooks.PreToolUse = [{
-            "matcher": "Read|Write|Edit",
+            "matcher": "Read|Write|Edit|Bash",
             "hooks": [{
                 "type": "command",
                 "command": "ib",
@@ -3615,6 +3615,37 @@ cmd_hook_check_path() {
     tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
     file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
 
+    # Special handling for Bash tool - check for cd commands
+    if [[ "$tool_name" == "Bash" ]]; then
+        local bash_command
+        bash_command=$(echo "$json_input" | jq -r '.tool_input.command // ""')
+
+        # Check if command is a cd command (handle various forms: cd, cd dir, cd "dir", cd 'dir')
+        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
+            # Extract the target directory from cd command
+            # Remove 'cd ' prefix and handle quotes
+            local cd_target="${bash_command#cd }"
+            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
+
+            # Remove quotes if present
+            cd_target="${cd_target#\"}"
+            cd_target="${cd_target%\"}"
+            cd_target="${cd_target#\'}"
+            cd_target="${cd_target%\'}"
+
+            # If cd target is empty or just whitespace, allow (cd to home)
+            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+                exit 0
+            fi
+
+            # Use cd_target as the file_path for further checks
+            file_path="$cd_target"
+        else
+            # Not a cd command, allow all other Bash commands
+            exit 0
+        fi
+    fi
+
     # If no file path found, allow (might be a non-file tool)
     if [[ -z "$file_path" ]]; then
         exit 0
@@ -3661,8 +3692,13 @@ cmd_hook_check_path() {
 
     # Check 3: Block access to other agents' directories
     if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
-        log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access other agent's data: $file_path" --quiet
-        echo "Access denied: cannot access other agents' files" >&2
+        if [[ "$tool_name" == "Bash" ]]; then
+            log_agent "$ID" "[hook-check-path] Blocked: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
+            echo "Access denied: cannot cd into other agents' worktrees. Work in your own worktree." >&2
+        else
+            log_agent "$ID" "[hook-check-path] Blocked: $tool_name tried to access other agent's data: $file_path" --quiet
+            echo "Access denied: cannot access other agents' files" >&2
+        fi
         exit 2  # Block
     fi
 
