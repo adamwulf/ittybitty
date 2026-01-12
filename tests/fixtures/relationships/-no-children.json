@@ -1,0 +1,8 @@
+{
+  "agents": [
+    {"id": "m1", "manager": null},
+    {"id": "w1", "manager": "other"},
+    {"id": "w2", "manager": "another"}
+  ],
+  "query": {"manager": "m1"}
+}

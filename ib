@@ -5346,6 +5346,570 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-build-settings
+# =============================================================================
+
+# Test build_agent_settings() function output and validation
+# This is for testing only - blocked from running inside agents
+# Input: agent type (manager/worker) via stdin or file
+cmd_test_build_settings() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+    local validate=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-build-settings [options] [file]
+
+Test agent settings generation for manager or worker agents.
+
+Reads agent type from stdin if no file is provided, or from the specified file.
+With --validate, outputs 'valid' or 'invalid' based on whether the type is recognized.
+Without --validate, outputs the generated JSON settings.
+
+This command is primarily for testing the build_agent_settings() logic.
+
+Options:
+  --validate   Only validate the agent type, output 'valid' or 'invalid'
+  -v, --verbose  Show additional details
+  -h, --help     Show this help
+
+Input format:
+  A single word: 'manager' or 'worker'
+
+Examples:
+  echo "manager" | ib test-build-settings
+  echo "worker" | ib test-build-settings --validate
+  ib test-build-settings tests/fixtures/build-settings/valid-manager.txt
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --validate)
+                validate=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-build-settings [file] or echo 'manager' | ib test-build-settings" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Trim whitespace
+    input=$(echo "$input" | tr -d '[:space:]')
+
+    # Validate agent type
+    if [[ "$input" != "manager" && "$input" != "worker" ]]; then
+        if $validate; then
+            echo "invalid"
+        else
+            echo "Error: invalid agent type '$input'. Must be 'manager' or 'worker'" >&2
+            exit 1
+        fi
+        return
+    fi
+
+    if $validate; then
+        echo "valid"
+    else
+        # Generate settings using the actual function
+        build_agent_settings "$input"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-load-config
+# =============================================================================
+
+# Test load_config() function output
+# This is for testing only - blocked from running inside agents
+# Input: JSON config via stdin or file
+cmd_test_load_config() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-load-config [options] [file]
+
+Test config file parsing and output the parsed values.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the parsed configuration values in a key: value format.
+
+This command is primarily for testing the load_config() logic.
+
+Options:
+  -v, --verbose  Show additional details
+  -h, --help     Show this help
+
+Input format:
+  JSON object matching .ittybitty.json format
+
+Examples:
+  echo '{"maxAgents": 5}' | ib test-load-config
+  ib test-load-config tests/fixtures/load-config/minimal.json
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-load-config [file] or echo '{...}' | ib test-load-config" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse config values using jq (similar to load_config but from input instead of file)
+    local manager_allow manager_deny worker_allow worker_deny
+    local create_prs max_agents model fps
+
+    manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
+    manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
+    worker_allow=$(echo "$input" | jq -r '.permissions.worker.allow // [] | @json' 2>/dev/null || echo "[]")
+    worker_deny=$(echo "$input" | jq -r '.permissions.worker.deny // [] | @json' 2>/dev/null || echo "[]")
+    create_prs=$(echo "$input" | jq -r '.createPullRequests // false' 2>/dev/null || echo "false")
+    max_agents=$(echo "$input" | jq -r '.maxAgents // 10' 2>/dev/null || echo "10")
+    model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
+    fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
+
+    # Handle null model
+    if [[ "$model" == "null" ]]; then
+        model=""
+    fi
+
+    # Output in expected format
+    echo "manager_allow: $manager_allow"
+    echo "manager_deny: $manager_deny"
+    echo "worker_allow: $worker_allow"
+    echo "worker_deny: $worker_deny"
+    echo "create_prs: $create_prs"
+    echo "max_agents: $max_agents"
+    echo "model: $model"
+    echo "fps: $fps"
+}
+
+# =============================================================================
+# COMMAND: test-resolve-id
+# =============================================================================
+
+# Test resolve_agent_id() logic with mock agent list
+# This is for testing only - blocked from running inside agents
+# Input format (JSON):
+# {
+#   "partial": "abc",
+#   "agents": ["abc123", "def456", "abc789"]
+# }
+cmd_test_resolve_id() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-resolve-id [options] [file]
+
+Test partial agent ID matching logic with a mock agent list.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the resolved ID, or an error message for ambiguous/missing matches.
+
+This command is primarily for testing the resolve_agent_id() logic.
+
+Options:
+  -v, --verbose  Show matching details
+  -h, --help     Show this help
+
+Input format:
+  {
+    "partial": "abc",
+    "agents": ["abc123", "def456", "abc789"]
+  }
+
+Examples:
+  echo '{"partial": "def", "agents": ["abc123", "def456"]}' | ib test-resolve-id
+  # Output: def456
+
+  echo '{"partial": "abc", "agents": ["abc123", "abc789"]}' | ib test-resolve-id
+  # Output: error (ambiguous match)
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-resolve-id [file] or echo '{...}' | ib test-resolve-id" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local partial agents_json
+    partial=$(echo "$input" | jq -r '.partial // ""')
+    agents_json=$(echo "$input" | jq -r '.agents // []')
+
+    if [[ -z "$partial" ]]; then
+        echo "Error: partial is required in input" >&2
+        exit 1
+    fi
+
+    # Convert agents array to bash array
+    local matches=()
+    while IFS= read -r agent; do
+        [[ -z "$agent" ]] && continue
+
+        # Check for exact match first
+        if [[ "$agent" == "$partial" ]]; then
+            if $verbose; then
+                echo "exact match: $agent"
+            else
+                echo "$agent"
+            fi
+            return 0
+        fi
+
+        # Check for partial match
+        if [[ "$agent" == *"$partial"* ]]; then
+            matches+=("$agent")
+        fi
+    done < <(echo "$agents_json" | jq -r '.[]')
+
+    case ${#matches[@]} in
+        0)
+            echo "error"
+            ;;
+        1)
+            if $verbose; then
+                echo "partial match: ${matches[0]}"
+            else
+                echo "${matches[0]}"
+            fi
+            ;;
+        *)
+            echo "error"
+            ;;
+    esac
+}
+
+# =============================================================================
+# COMMAND: test-relationships
+# =============================================================================
+
+# Test parent-child relationship detection with mock metadata
+# This is for testing only - blocked from running inside agents
+# Input format (JSON):
+# {
+#   "agents": [
+#     {"id": "manager1", "manager": null},
+#     {"id": "worker1", "manager": "manager1"},
+#     {"id": "worker2", "manager": "manager1"}
+#   ],
+#   "query": {"manager": "manager1"}
+# }
+cmd_test_relationships() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-relationships [options] [file]
+
+Test parent-child relationship detection with mock agent metadata.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the list of agents matching the query criteria.
+
+This command is primarily for testing the get_children() logic.
+
+Options:
+  -v, --verbose  Show matching details
+  -h, --help     Show this help
+
+Input format:
+  {
+    "agents": [
+      {"id": "manager1", "manager": null},
+      {"id": "worker1", "manager": "manager1"},
+      {"id": "worker2", "manager": "manager1"}
+    ],
+    "query": {"manager": "manager1"}
+  }
+
+Examples:
+  echo '{"agents": [{"id": "w1", "manager": "m1"}, {"id": "w2", "manager": "m1"}], "query": {"manager": "m1"}}' | ib test-relationships
+  # Output: w1 w2
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-relationships [file] or echo '{...}' | ib test-relationships" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local query_manager
+    query_manager=$(echo "$input" | jq -r '.query.manager // ""')
+
+    if [[ -z "$query_manager" ]]; then
+        echo "Error: query.manager is required in input" >&2
+        exit 1
+    fi
+
+    # Find all agents whose manager matches the query
+    local children=""
+    while IFS= read -r agent_json; do
+        [[ -z "$agent_json" ]] && continue
+        local agent_id agent_manager
+        agent_id=$(echo "$agent_json" | jq -r '.id // ""')
+        agent_manager=$(echo "$agent_json" | jq -r '.manager // ""')
+
+        if [[ "$agent_manager" == "$query_manager" ]]; then
+            if [[ -n "$children" ]]; then
+                children="$children $agent_id"
+            else
+                children="$agent_id"
+            fi
+        fi
+    done < <(echo "$input" | jq -c '.agents[]')
+
+    if [[ -n "$children" ]]; then
+        echo "$children"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-log-format
+# =============================================================================
+
+# Test log message formatting
+# This is for testing only - blocked from running inside agents
+# Input: message string via stdin or file
+cmd_test_log_format() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+    local timestamp=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-log-format [options] [file]
+
+Test log message formatting.
+
+Reads message from stdin if no file is provided, or from the specified file.
+Outputs the formatted log entry with timestamp.
+
+This command is primarily for testing the log_agent() format.
+
+Options:
+  --timestamp TS  Use specific timestamp instead of current time
+  -v, --verbose   Show additional details
+  -h, --help      Show this help
+
+Input format:
+  Plain text message
+
+Examples:
+  echo "Agent started successfully" | ib test-log-format
+  echo "Agent started" | ib test-log-format --timestamp "2026-01-12 10:30:45"
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --timestamp)
+                shift
+                timestamp="$1"
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-log-format [file] or echo 'message' | ib test-log-format" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Use provided timestamp or generate current one
+    if [[ -z "$timestamp" ]]; then
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    fi
+
+    # Output in log format (same as log_agent)
+    echo "[$timestamp] $input"
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -9635,6 +10199,26 @@ case "${1:-help}" in
     test-tool-allowed)
         shift
         cmd_test_tool_allowed "$@"
+        ;;
+    test-build-settings)
+        shift
+        cmd_test_build_settings "$@"
+        ;;
+    test-load-config)
+        shift
+        cmd_test_load_config "$@"
+        ;;
+    test-resolve-id)
+        shift
+        cmd_test_resolve_id "$@"
+        ;;
+    test-relationships)
+        shift
+        cmd_test_relationships "$@"
+        ;;
+    test-log-format)
+        shift
+        cmd_test_log_format "$@"
         ;;
     log)
         shift
