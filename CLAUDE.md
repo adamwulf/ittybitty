@@ -349,6 +349,9 @@ When agent spawns child agent (agent-to-agent):
 | `ib resume <id>`      | Restart a stopped agent's session                            |
 | `ib log "msg"`        | Write timestamped message to agent's log (auto-detects agent) |
 | `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
+| `ib ask "question"`   | Ask the user-level Claude a question (top-level managers only) |
+| `ib questions`        | List pending questions from agents                           |
+| `ib acknowledge <id>` | Mark a question as handled (then use `ib send` to respond)   |
 
 ### Spawn Options
 
@@ -403,6 +406,26 @@ ib new-agent --yolo "research latest React patterns and update our components"
 | No git isolation      | Own branch + worktree    |
 | Cannot spawn children | Can manage sub-agents    |
 | Lost on crash         | Resumable via session ID |
+
+### User Questions (Agent-to-User Communication)
+
+Top-level manager agents can ask questions of the user-level Claude using `ib ask`. Questions are stored in `.ittybitty/user-questions.json` and appear in STATUS.md via the @import.
+
+**Communication hierarchy:**
+- **Workers/sub-managers** → must ask their manager (via `ib send <manager> "question"`)
+- **Top-level managers** → can ask the user directly (via `ib ask "question"`)
+
+**Workflow for agents asking questions:**
+```bash
+# Top-level manager asks the user
+ib ask "Should I proceed with option A or B?"
+# Then enter WAITING mode until the user responds
+```
+
+**Workflow for user-level Claude responding:**
+1. See pending questions in STATUS.md (via @import)
+2. `ib acknowledge <question-id>` to mark as handled
+3. `ib send <agent-id> "your answer"` to respond to the agent
 
 @.ittybitty/STATUS.md
 
