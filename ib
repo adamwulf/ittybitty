@@ -2486,6 +2486,13 @@ $PR_INSTRUCTIONS"
 
     local IB_INSTRUCTIONS=""
     if [[ "$WORKER_MODE" != true ]]; then
+        # Build base manager instructions
+        local ASK_INSTRUCTION=""
+        if [[ -z "$MANAGER" ]]; then
+            # Root-level managers can ask questions to the user
+            ASK_INSTRUCTION="
+  ib ask \"question\"                              Ask the user a question (top-level managers only)"
+        fi
         IB_INSTRUCTIONS="
 You have access to the 'ib' tool for multi-agent coordination.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
@@ -2496,7 +2503,7 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib send <agent-id> \"message\"                  Send input to an agent
   ib status <agent-id>                           Check agent's git commits
   ib merge <agent-id>                            Merge agent's work and close it
-  ib kill <agent-id>                             Stop an agent without merging
+  ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
 
 TASK SIZING STRATEGY:
 When you receive a task, think about what is needed to accomplish it, then decide:
@@ -2528,6 +2535,15 @@ If \`ib merge\` fails due to conflicts, choose the best strategy:
 2. Spawn a WORKER sub-agent to handle the merge resolution, then monitor it to completion
 3. If the merge is no longer needed, skip it and note this in your final report
 "
+        # Add ib ask guidance for root-level managers
+        if [[ -z "$MANAGER" ]]; then
+            IB_INSTRUCTIONS+="
+ASKING THE USER QUESTIONS:
+As a top-level manager, you can ask the user questions using \`ib ask \"question\"\`.
+After asking, enter WAITING mode - you'll be notified when the user responds.
+Use this when you need clarification on requirements or approval for a decision.
+"
+        fi
     else
         # Worker agents: simple communication with manager only
         IB_INSTRUCTIONS="
