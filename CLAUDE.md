@@ -81,15 +81,15 @@ In `ib watch`, press `h` to open the hooks dialog for easy install/uninstall.
 
 When an agent tries to use a tool not in its `allow` list, the `PermissionRequest` hook:
 1. Reads the tool name and input from JSON stdin (`tool_name` and `tool_input` fields)
-2. Logs the denied request to `agent.log` via `ib log --quiet`, including truncated tool parameters
+2. Logs the denied request to `agent.log` via `ib log --quiet`, including full tool parameters
 3. Returns the proper hook output format to auto-deny the tool
 
 This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
 ```
-[2026-01-10T15:05:06-06:00] Permission denied: Bash (command: curl https://this-is..., description: Execute curl request...)
+[2026-01-10T15:05:06-06:00] Permission denied: Bash (command: curl https://example.com/api/data, description: Execute curl request to fetch data)
 ```
 
-Each tool input parameter is truncated to 20 characters with `...` appended for readability.
+Full tool parameters are logged to help debug which tools need to be allowed.
 
 **Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
 
