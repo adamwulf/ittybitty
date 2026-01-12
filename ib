@@ -4706,6 +4706,173 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-pretooluse
+# =============================================================================
+
+# Test PreToolUse hook logic with a JSON fixture file
+# This command allows testing the PreToolUse decision logic without a real agent
+# Fixture JSON format:
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "cat file.txt"},
+#   "cwd": "/path/to/cwd",
+#   "allow_list": ["Bash(cat:*)", "Edit"],
+#   "worktree_path": "/path/to/worktree",
+#   "agents_dir": "/path/to/agents",
+#   "root_repo": "/path/to/root"
+# }
+cmd_test_pretooluse() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        echo "Usage: ib test-pretooluse <fixture.json>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: fixture file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    # Read fixture
+    local fixture
+    fixture=$(cat "$fixture_file")
+
+    # Extract test parameters
+    local tool_name tool_input cwd allow_list worktree_path agents_dir root_repo
+    tool_name=$(echo "$fixture" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$fixture" | jq -c '.tool_input // {}')
+    cwd=$(echo "$fixture" | jq -r '.cwd // ""')
+    allow_list=$(echo "$fixture" | jq -r '.allow_list // []')
+    worktree_path=$(echo "$fixture" | jq -r '.worktree_path // ""')
+    agents_dir=$(echo "$fixture" | jq -r '.agents_dir // ""')
+    root_repo=$(echo "$fixture" | jq -r '.root_repo // ""')
+
+    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
+    test_tool_matches_pattern() {
+        local t_name="$1"
+        local t_input="$2"
+        local pattern="$3"
+
+        # Check for Bash(prefix:*) pattern
+        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$t_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$t_input" | jq -r '.command // ""')
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    return 0
+                fi
+            fi
+            return 1
+        fi
+
+        # Exact tool name match
+        if [[ "$pattern" == "$t_name" ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Check if tool is in allow list
+    local in_allow_list=false
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+            in_allow_list=true
+            break
+        fi
+    done < <(echo "$allow_list" | jq -r '.[]')
+
+    if [[ "$in_allow_list" == "false" ]]; then
+        echo "deny"
+        exit 0
+    fi
+
+    # Tool is in allow list - now check path isolation
+
+    # Extract file path from input
+    local file_path
+    file_path=$(echo "$tool_input" | jq -r '.file_path // .path // ""')
+
+    # Special handling for Bash tool - check for cd commands
+    if [[ "$tool_name" == "Bash" ]]; then
+        local bash_command
+        bash_command=$(echo "$tool_input" | jq -r '.command // ""')
+
+        # Check if command is a cd command
+        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
+            # Extract the target directory from cd command
+            local cd_target="${bash_command#cd }"
+            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
+
+            # Remove quotes if present
+            cd_target="${cd_target#\"}"
+            cd_target="${cd_target%\"}"
+            cd_target="${cd_target#\'}"
+            cd_target="${cd_target%\'}"
+
+            # If cd target is empty or just whitespace, allow (cd to home)
+            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+                echo "allow"
+                exit 0
+            fi
+
+            # Use cd_target as the file_path for further checks
+            file_path="$cd_target"
+        else
+            # Not a cd command - allowed by allow list, no path check needed for non-cd
+            echo "allow"
+            exit 0
+        fi
+    fi
+
+    # If no file path found, allow (might be a non-file tool or tool with no path param)
+    if [[ -z "$file_path" ]]; then
+        echo "allow"
+        exit 0
+    fi
+
+    # Resolve to absolute path if relative
+    if [[ "$file_path" != /* ]]; then
+        if [[ -n "$cwd" ]]; then
+            file_path="$cwd/$file_path"
+        fi
+    fi
+
+    # Normalize path (handle . and .. without needing real filesystem)
+    # Simple normalization: remove trailing slashes, collapse multiple slashes
+    file_path=$(echo "$file_path" | sed 's|//*|/|g; s|/$||')
+
+    # Check 1: Allow access within agent's own worktree
+    if [[ -n "$worktree_path" && "$file_path" == "$worktree_path"* ]]; then
+        echo "allow"
+        exit 0
+    fi
+
+    # Check 2: Block access to other agents' directories
+    if [[ -n "$agents_dir" && "$file_path" == "$agents_dir/"* ]]; then
+        # It's in agents_dir but not in worktree_path (which would have matched above)
+        echo "deny"
+        exit 0
+    fi
+
+    # Check 3: Block access to main repo (outside worktree)
+    if [[ -n "$root_repo" && "$file_path" == "$root_repo"* ]]; then
+        # Check if it's NOT in the worktree (worktree check already passed if it was)
+        if [[ -z "$worktree_path" || "$file_path" != "$worktree_path"* ]]; then
+            echo "deny"
+            exit 0
+        fi
+    fi
+
+    # All other paths: allow (system files, etc. - tool is in allow list)
+    echo "allow"
+    exit 0
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -8979,6 +9146,10 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
+        ;;
+    test-pretooluse)
+        shift
+        cmd_test_pretooluse "$@"
         ;;
     log)
         shift

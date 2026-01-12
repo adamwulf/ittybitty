@@ -1,0 +1,11 @@
+{
+  "tool_name": "WebSearch",
+  "tool_input": {
+    "query": "bash scripting tutorial"
+  },
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["WebSearch"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo"
+}
