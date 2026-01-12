@@ -6001,32 +6001,30 @@ EOF
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'A'|'D')  # Up or Left arrow - same as Shift+Tab (backward)
+            'A'|'B'|'C'|'D')  # Arrow keys (as part of escape sequence) or regular letters
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    if [[ -z "$SEND_TEXT" ]]; then
-                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
+                    # Arrow key sequence - navigate focus
+                    if [[ "$key" == "A" || "$key" == "D" ]]; then
+                        # Up or Left arrow - backward
+                        if [[ -z "$SEND_TEXT" ]]; then
+                            SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
+                        else
+                            SEND_FOCUS=$(( (SEND_FOCUS - 1 + 3) % 3 ))
+                        fi
                     else
-                        SEND_FOCUS=$(( (SEND_FOCUS - 1 + 3) % 3 ))
+                        # Down or Right arrow - forward
+                        if [[ -z "$SEND_TEXT" ]]; then
+                            SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
+                        else
+                            SEND_FOCUS=$(( (SEND_FOCUS + 1) % 3 ))
+                        fi
                     fi
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
-                    # Typing in text field - ignore arrow keys in escape sequence that wasn't detected
-                    :
-                fi
-                ;;
-            'B'|'C')  # Down or Right arrow - same as Tab (forward)
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    if [[ -z "$SEND_TEXT" ]]; then
-                        SEND_FOCUS=$(( SEND_FOCUS == 0 ? 1 : 0 ))
-                    else
-                        SEND_FOCUS=$(( (SEND_FOCUS + 1) % 3 ))
-                    fi
-                    _DIALOG_ESC_PENDING=0
+                    # Typing in text field - add the letter
+                    SEND_TEXT="${SEND_TEXT}${key}"
                     _DIALOG_DIRTY=1
-                elif [[ $SEND_FOCUS -eq 0 ]]; then
-                    # Typing in text field - ignore arrow keys in escape sequence that wasn't detected
-                    :
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
@@ -6217,32 +6215,32 @@ EOF
                     fi
                 fi
                 ;;
-            'A'|'D')  # Up or Left arrow - same as Shift+Tab (backward)
+            'A'|'B'|'C'|'D')  # Arrow keys (as part of escape sequence) or regular letters
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    if [[ "$NUKE_TEXT" == "NUKE" ]]; then
-                        NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 3) % 3 ))
+                    # Arrow key sequence - navigate focus
+                    if [[ "$key" == "A" || "$key" == "D" ]]; then
+                        # Up or Left arrow - backward
+                        if [[ "$NUKE_TEXT" == "NUKE" ]]; then
+                            NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 3) % 3 ))
+                        else
+                            NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 2) % 2 ))
+                        fi
                     else
-                        NUKE_FOCUS=$(( (NUKE_FOCUS - 1 + 2) % 2 ))
+                        # Down or Right arrow - forward
+                        if [[ "$NUKE_TEXT" == "NUKE" ]]; then
+                            NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 3 ))
+                        else
+                            NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 2 ))
+                        fi
                     fi
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 elif [[ $NUKE_FOCUS -eq 0 ]]; then
-                    # Typing in text field - ignore
-                    :
-                fi
-                ;;
-            'B'|'C')  # Down or Right arrow - same as Tab (forward)
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    if [[ "$NUKE_TEXT" == "NUKE" ]]; then
-                        NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 3 ))
-                    else
-                        NUKE_FOCUS=$(( (NUKE_FOCUS + 1) % 2 ))
+                    # Typing in text field (limit to 4 chars)
+                    if [[ ${#NUKE_TEXT} -lt 4 ]]; then
+                        NUKE_TEXT="${NUKE_TEXT}${key}"
+                        _DIALOG_DIRTY=1
                     fi
-                    _DIALOG_ESC_PENDING=0
-                    _DIALOG_DIRTY=1
-                elif [[ $NUKE_FOCUS -eq 0 ]]; then
-                    # Typing in text field - ignore
-                    :
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete all (single line input)
