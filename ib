@@ -790,7 +790,7 @@ get_state() {
     # Check for Claude Code processing indicators (running) FIRST
     # These indicate active work even if completion phrase exists in context
     # Using bash pattern matching instead of grep to avoid subprocess spawning
-    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running ]]; then
+    if [[ "$recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|ctrl\+b\ ctrl\+b|⎿\ \ Running|thinking\)|⏺ ]]; then
         echo "running"
         return
     fi
