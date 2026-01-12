@@ -4856,7 +4856,7 @@ EOF
         ((row++))
 
         # Parse prompt text into lines and display
-        local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 2 ]] && echo 1 || echo 0)
+        local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local display_text="$NEW_AGENT_PROMPT"
         [[ $prompt_focused == "1" ]] && display_text="${display_text}_"
 
