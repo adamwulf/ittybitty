@@ -324,7 +324,8 @@ When agent spawns child agent (agent-to-agent):
 3. **Wait for user**: The user will tell you when agents need attention or are complete
 4. **Check status**: Use `ib look <id>` to review output when the user notifies you
 5. **Interact**: If agent needs input, use `ib send <id> "answer"`
-6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
+6. **Respond to questions**: If agents ask questions (shown in STATUS.md), use `ib acknowledge <question-id>` then `ib send <agent-id> "answer"`
+7. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
 
 **If you are a background agent spawning sub-agents (automatic watchdog notifications):**
 1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects manager, watchdog auto-spawns
@@ -349,6 +350,9 @@ When agent spawns child agent (agent-to-agent):
 | `ib resume <id>`      | Restart a stopped agent's session                            |
 | `ib log "msg"`        | Write timestamped message to agent's log (auto-detects agent) |
 | `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
+| `ib ask "question"`   | Ask the user-level Claude a question (top-level managers only) |
+| `ib questions`        | List pending questions from agents                           |
+| `ib acknowledge <id>` | Mark a question as handled (primary agent only, alias: `ack`) |
 
 ### Spawn Options
 
@@ -403,6 +407,28 @@ ib new-agent --yolo "research latest React patterns and update our components"
 | No git isolation      | Own branch + worktree    |
 | Cannot spawn children | Can manage sub-agents    |
 | Lost on crash         | Resumable via session ID |
+
+### User Questions (Agent-to-User Communication)
+
+Top-level manager agents can ask questions of the user-level Claude using `ib ask`. Questions are stored in `.ittybitty/user-questions.json` and appear in STATUS.md via the @import.
+
+**Communication hierarchy:**
+- **Workers/sub-managers** → must ask their manager (via `ib send <manager> "question"`)
+- **Top-level managers** → can ask the user directly (via `ib ask "question"`)
+
+**Workflow for agents asking questions:**
+```bash
+# Top-level manager asks the user
+ib ask "Should I proceed with option A or B?"
+# Then enter WAITING mode until the user responds
+```
+
+**Workflow for user-level Claude responding (PRIMARY AGENT ONLY):**
+1. See pending questions in STATUS.md (via @import)
+2. `ib acknowledge <question-id>` to mark as handled
+3. `ib send <agent-id> "your answer"` to respond to the agent
+
+**Note**: Only the primary (user-level) Claude can use `ib acknowledge`. Background agents cannot acknowledge questions.
 
 @.ittybitty/STATUS.md
 

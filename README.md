@@ -127,7 +127,18 @@ ib new-agent "Research best practices for React performance. Spawn 3 agents: one
 3. **Wait for user**: The user will notify you when agents need attention or are complete
 4. **Check when notified**: Use `ib look <id>` to review agent output
 5. **Interact if needed**: If agent needs input, use `ib send <id> "answer"`
-6. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
+6. **Respond to questions**: If agents ask questions (shown in STATUS.md), use `ib acknowledge <question-id>` then `ib send <agent-id> "answer"`
+7. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
+
+### Responding to Agent Questions
+
+Top-level manager agents can ask you questions using `ib ask`. These questions appear in `.ittybitty/STATUS.md` (visible via @import). To respond:
+
+1. **See pending questions**: Check STATUS.md or run `ib questions`
+2. **Acknowledge**: `ib acknowledge <question-id>` — marks the question as handled
+3. **Respond**: `ib send <agent-id> "your answer"` — sends your answer to the agent
+
+**Note**: Only YOU (the primary agent) can acknowledge questions. Background agents cannot use `ib acknowledge`.
 
 ### When to Use
 
@@ -146,6 +157,7 @@ You were spawned via `ib new-agent` without the `--worker` flag. You run in a tm
 **Key capabilities:**
 - You CAN spawn child agents (manager or worker)
 - You DO get automatic watchdog notifications for your children
+- If you're a **top-level manager** (no manager above you), you can ask the user questions via `ib ask "question?"`
 - You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
 
 ### Manager Agent Workflow
@@ -154,6 +166,7 @@ You were spawned via `ib new-agent` without the `--worker` flag. You run in a tm
 2. **Decide your approach**:
    - **Simple task?** Do it yourself without spawning children
    - **Complex task?** Spawn child agents for sub-tasks
+   - **Need user input?** If you're a top-level manager, use `ib ask "question?"` then enter WAITING mode
 3. **If spawning children**:
    - Spawn each child with a clear, focused goal
    - Use `--worker` for workers that should just execute (no sub-agents)
@@ -166,6 +179,18 @@ You were spawned via `ib new-agent` without the `--worker` flag. You run in a tm
    - Use `ib merge <id> --force` to accept their work
    - Use `ib kill <id> --force` to reject and close them
 5. **Signal completion**: When all children are merged and your work is done, output "I HAVE COMPLETED THE GOAL"
+
+### Asking the User Questions (Top-Level Managers Only)
+
+If you have NO manager above you, you can ask the primary (user-level) Claude questions:
+
+```bash
+ib ask "Should I proceed with approach A or B?"
+```
+
+Then enter WAITING mode. The user will see your question and respond via `ib send`.
+
+**Note**: Sub-managers and workers cannot use `ib ask`. They should ask their manager via `ib send <manager-id> "question"`.
 
 ### Watchdog Notifications
 
@@ -209,6 +234,9 @@ You were spawned via `ib new-agent --worker`. You run in a tmux session with you
 | `ib kill <id>` | Permanently close agent without merging |
 | `ib resume <id>` | Restart a stopped agent's session |
 | `ib watchdog <id>` | Monitor agent and notify manager (auto-spawned for child agents) |
+| `ib ask "question"` | Ask user-level Claude a question (top-level managers only) |
+| `ib questions` | List pending questions from agents |
+| `ib acknowledge <id>` | Mark a question as handled (primary agent only, alias: `ack`) |
 
 ### Agent States
 
