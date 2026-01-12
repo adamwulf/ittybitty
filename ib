@@ -924,6 +924,297 @@ auto_accept_workspace_trust() {
 }
 
 # =============================================================================
+# CLAUDE.md STATUS HELPERS
+# =============================================================================
+
+# Generate status block content showing agent tree with status/age/prompt
+# Returns: formatted status block text for <ittybitty-status>
+generate_status_block() {
+    # Check if agents directory exists
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "No active agents"
+        return
+    fi
+
+    # Count agents
+    local agent_count=0
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] && agent_count=$((agent_count + 1))
+    done
+
+    if [[ $agent_count -eq 0 ]]; then
+        echo "No active agents"
+        return
+    fi
+
+    # Build agent data file using shared helper
+    local tmpfile=$(mktemp)
+    local now=$(date +%s)
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        local id="${agent_dir%/}"; id="${id##*/}"
+        local meta="$agent_dir/meta.json"
+        local manager="" created="" model="" prompt="" worker="false"
+
+        # Read metadata using simple parsing
+        local line key value
+        while IFS= read -r line; do
+            if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
+                key="${BASH_REMATCH[1]}"
+                value="${BASH_REMATCH[2]}"
+                case "$key" in
+                    prompt) prompt="${value//\\n/ }" ;;
+                    manager) manager="$value" ;;
+                    created_epoch) created="$value" ;;
+                    model) model="$value" ;;
+                    worker) worker="$value" ;;
+                esac
+            fi
+        done < "$meta"
+
+        # Handle nulls
+        [[ "$manager" == "null" ]] && manager=""
+        [[ "$model" == "null" || -z "$model" ]] && model="-"
+        [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
+
+        # Calculate age
+        local age=""
+        if [[ -n "$created" ]]; then
+            local diff=$((now - created))
+            if [[ $diff -lt 60 ]]; then age="${diff}s"
+            elif [[ $diff -lt 3600 ]]; then age="$((diff / 60))m"
+            elif [[ $diff -lt 86400 ]]; then age="$((diff / 3600))h"
+            else age="$((diff / 86400))d"
+            fi
+        else
+            age="-"
+        fi
+
+        # Get state
+        local state=$(get_state "$id")
+        [[ "$state" == "unknown" ]] && state="waiting"
+
+        # Write line: id|manager|state|age|model|prompt|worker
+        echo "$id|$manager|$state|$age|$model|$prompt|$worker" >> "$tmpfile"
+    done
+
+    # Print header
+    echo "## Current Agents ($agent_count active)"
+    echo ""
+
+    if [[ ! -s "$tmpfile" ]]; then
+        rm -f "$tmpfile"
+        return
+    fi
+
+    # Use build_tree_lines to format as tree (reuse existing logic)
+    # First, transform our data to match expected format: id|manager|state|age|model|prompt|worker
+    _BUILD_TREE_LINES=()
+
+    # Load all lines into arrays
+    local all_lines=()
+    local all_ids=()
+    while IFS= read -r line; do
+        all_lines+=("$line")
+        all_ids+=("${line%%|*}")
+    done < "$tmpfile"
+
+    # Helper to check if ID exists
+    _status_id_exists() {
+        local lookup_id="$1"
+        local id
+        for id in "${all_ids[@]}"; do
+            if [[ "$id" == "$lookup_id" ]]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    # Recursive function to print tree
+    _status_print_node() {
+        local id="$1"
+        local prefix="$2"
+        local is_last="$3"
+
+        # Find the line for this id
+        local found_line=""
+        for line in "${all_lines[@]}"; do
+            if [[ "$line" == "${id}|"* ]]; then
+                found_line="$line"
+                break
+            fi
+        done
+
+        [[ -z "$found_line" ]] && return
+
+        # Parse: id|manager|state|age|model|prompt|worker
+        local _id _manager state age model prompt worker
+        IFS='|' read -r _id _manager state age model prompt worker <<< "$found_line"
+
+        # Truncate prompt to ~40 chars
+        if [[ ${#prompt} -gt 40 ]]; then
+            prompt="${prompt:0:37}..."
+        fi
+
+        # Format tree connector
+        local display_id="$id"
+        if [[ ${#id} -gt 20 ]]; then
+            display_id="${id:0:17}..."
+        fi
+
+        local tree_part
+        if [[ -z "$prefix" ]]; then
+            tree_part="$display_id"
+        elif [[ "$prefix" == "." ]]; then
+            if [[ "$is_last" == "true" ]]; then
+                tree_part="└── $display_id"
+            else
+                tree_part="├── $display_id"
+            fi
+        else
+            if [[ "$is_last" == "true" ]]; then
+                tree_part="${prefix}└── $display_id"
+            else
+                tree_part="${prefix}├── $display_id"
+            fi
+        fi
+
+        # Store formatted line: tree_part | state | age | prompt
+        _BUILD_TREE_LINES+=("${tree_part}|${state}|${age}|${prompt}")
+
+        # Find and print children
+        local children=()
+        for line in "${all_lines[@]}"; do
+            local child_id="${line%%|*}"
+            local rest="${line#*|}"
+            local child_manager="${rest%%|*}"
+            if [[ "$child_manager" == "$id" ]]; then
+                children+=("$child_id")
+            fi
+        done
+
+        if [[ ${#children[@]} -gt 0 ]]; then
+            local child_prefix
+            if [[ -z "$prefix" ]]; then
+                child_prefix="."
+            elif [[ "$prefix" == "." ]]; then
+                if [[ "$is_last" == "true" ]]; then
+                    child_prefix="    "
+                else
+                    child_prefix="│   "
+                fi
+            else
+                if [[ "$is_last" == "true" ]]; then
+                    child_prefix="${prefix}    "
+                else
+                    child_prefix="${prefix}│   "
+                fi
+            fi
+
+            local child_count=${#children[@]}
+            local i=0
+            for child in "${children[@]}"; do
+                i=$((i + 1))
+                local child_is_last="false"
+                [[ $i -eq $child_count ]] && child_is_last="true"
+                _status_print_node "$child" "$child_prefix" "$child_is_last"
+            done
+        fi
+    }
+
+    # Find roots (agents with no parent or missing parent)
+    local roots=()
+    for line in "${all_lines[@]}"; do
+        local id="${line%%|*}"
+        local rest="${line#*|}"
+        local parent="${rest%%|*}"
+        if [[ -z "$parent" ]]; then
+            roots+=("$id")
+        elif ! _status_id_exists "$parent"; then
+            roots+=("$id")
+        fi
+    done
+
+    # Print each root and its tree
+    local root_count=${#roots[@]}
+    local i=0
+    for root in "${roots[@]}"; do
+        i=$((i + 1))
+        local is_last="false"
+        [[ $i -eq $root_count && $root_count -gt 1 ]] && is_last="true"
+        _status_print_node "$root" "" "$is_last"
+    done
+
+    # Format and output lines with column alignment
+    local max_tree_width=0
+    for line in "${_BUILD_TREE_LINES[@]}"; do
+        local tree_part="${line%%|*}"
+        [[ ${#tree_part} -gt $max_tree_width ]] && max_tree_width=${#tree_part}
+    done
+
+    for line in "${_BUILD_TREE_LINES[@]}"; do
+        local tree_part="${line%%|*}"
+        local rest="${line#*|}"
+        local state="${rest%%|*}"
+        rest="${rest#*|}"
+        local age="${rest%%|*}"
+        local prompt="${rest#*|}"
+
+        printf "%-${max_tree_width}s  %-8s  %-5s  %s\n" "$tree_part" "$state" "$age" "$prompt"
+    done
+
+    rm -f "$tmpfile"
+}
+
+# Update <ittybitty-status> block in CLAUDE.md if it exists
+# This is called from lifecycle events to keep the status current
+update_claude_status() {
+    local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
+
+    # Check if CLAUDE.md exists
+    [[ ! -f "$claude_md" ]] && return 0
+
+    # Check if <ittybitty-status> block exists
+    if ! grep -q '<ittybitty-status>' "$claude_md"; then
+        return 0  # Not installed, skip silently
+    fi
+
+    # Generate new status content to temp file
+    local content_file=$(mktemp)
+    generate_status_block > "$content_file"
+
+    # Create output temp file
+    local tmpfile=$(mktemp)
+
+    # Use awk to replace content between tags, reading new content from file
+    awk -v content_file="$content_file" '
+        /<ittybitty-status>/ {
+            print
+            while ((getline line < content_file) > 0) {
+                print line
+            }
+            close(content_file)
+            in_block = 1
+            next
+        }
+        /<\/ittybitty-status>/ {
+            in_block = 0
+        }
+        !in_block {
+            print
+        }
+    ' "$claude_md" > "$tmpfile"
+
+    # Atomic replace
+    mv "$tmpfile" "$claude_md"
+    rm -f "$content_file"
+}
+
+# =============================================================================
 # TREE HELPERS (shared by cmd_tree and cmd_watch)
 # =============================================================================
 
@@ -2154,6 +2445,9 @@ EOF
         ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
 
+    # Update CLAUDE.md status block (if installed)
+    update_claude_status
+
     # Output the agent ID
     echo "$ID"
 }
@@ -2887,6 +3181,9 @@ EOF
     teardown_agent "$ID" "" "Agent killed"
     echo "Closed agent: $ID"
 
+    # Update CLAUDE.md status block (if installed)
+    update_claude_status
+
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -3548,6 +3845,9 @@ EOF
 
     echo "Closed agent: $ID"
 
+    # Update CLAUDE.md status block (if installed)
+    update_claude_status
+
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -3625,6 +3925,9 @@ cmd_hook_status() {
         # State is running, stopped, or other - no action needed
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
+
+    # Update CLAUDE.md status block (if installed)
+    update_claude_status
 
     # Always print the state for debugging
     echo "$state"
@@ -4052,6 +4355,11 @@ cmd_watchdog() {
                 notify_interval=6  # Reset to initial interval
                 ;;
         esac
+
+        # Update CLAUDE.md status on state change
+        if [[ "$state" != "$prev_state" ]]; then
+            update_claude_status
+        fi
 
         prev_state="$state"
         sleep 5
