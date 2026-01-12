@@ -1707,6 +1707,12 @@ EOF
         MODEL="$CONFIG_MODEL"
     fi
 
+    # Fallback to sonnet if still no model specified
+    # This ensures model is never null in meta.json
+    if [[ -z "$MODEL" ]]; then
+        MODEL="sonnet"
+    fi
+
     # Check max agents limit
     local current_agent_count=$(count_agents)
     if [[ "$current_agent_count" -ge "$CONFIG_MAX_AGENTS" ]]; then
