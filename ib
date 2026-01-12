@@ -4877,6 +4877,10 @@ Usage: ib acknowledge <question-id>
 
 Mark a user question as acknowledged/handled.
 
+This command is for the PRIMARY (user-level) Claude agent only.
+Background agents cannot acknowledge questions - they should ask
+their manager or use 'ib ask' if they are top-level managers.
+
 After acknowledging, use 'ib send <agent-id> "answer"' to respond to
 the agent that asked the question.
 
@@ -4899,6 +4903,14 @@ EOF
                 ;;
         esac
     done
+
+    # Prevent agents from using this command - only user-level Claude should acknowledge
+    if is_running_as_agent; then
+        echo "Error: Only the primary (user-level) Claude can acknowledge questions." >&2
+        echo "Background agents should communicate via 'ib send' to their manager," >&2
+        echo "or use 'ib ask' if they are top-level managers needing user input." >&2
+        exit 1
+    fi
 
     if [[ -z "$QUESTION_ID" ]]; then
         echo "Error: Question ID required" >&2
