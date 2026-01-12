@@ -1753,8 +1753,18 @@ EOF
     # Create git worktree if requested
     if [[ "$USE_WORKTREE" == true ]]; then
         local BRANCH_NAME="agent/$ID"
-        # Create worktree from root repo, branching from current HEAD
-        git -C "$ROOT_REPO_PATH" worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" HEAD || {
+
+        # Determine which branch to fork from:
+        # - If spawned by a manager, branch from the manager's branch (agent/<manager-id>)
+        # - Otherwise, branch from main repo's HEAD
+        local BASE_REF="HEAD"
+        if [[ -n "$MANAGER" ]]; then
+            # Manager's branch is always agent/<manager-id>
+            BASE_REF="agent/$MANAGER"
+        fi
+
+        # Create worktree from root repo, branching from determined base
+        git -C "$ROOT_REPO_PATH" worktree add "$AGENT_DIR/repo" -b "$BRANCH_NAME" "$BASE_REF" || {
             echo "Error: could not create worktree" >&2
             rm -rf "$AGENT_DIR"
             exit 1
