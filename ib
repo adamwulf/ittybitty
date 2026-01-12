@@ -1221,48 +1221,21 @@ generate_status_block() {
     rm -f "$tmpfile"
 }
 
-# Update <ittybitty-status> block in CLAUDE.md if it exists
+# Update .ittybitty/STATUS.md with current agent status
 # This is called from lifecycle events to keep the status current
+# CLAUDE.md references this file via @.ittybitty/STATUS.md
 update_claude_status() {
-    local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
+    local status_file="$ROOT_REPO_PATH/.ittybitty/STATUS.md"
 
-    # Check if CLAUDE.md exists
-    [[ ! -f "$claude_md" ]] && return 0
+    # Ensure .ittybitty directory exists
+    mkdir -p "$ROOT_REPO_PATH/.ittybitty"
 
-    # Check if <ittybitty-status> block exists
-    if ! grep -q '<ittybitty-status>' "$claude_md"; then
-        return 0  # Not installed, skip silently
-    fi
-
-    # Generate new status content to temp file
-    local content_file=$(mktemp)
-    generate_status_block > "$content_file"
-
-    # Create output temp file
-    local tmpfile=$(mktemp)
-
-    # Use awk to replace content between tags, reading new content from file
-    awk -v content_file="$content_file" '
-        /<ittybitty-status>/ {
-            print
-            while ((getline line < content_file) > 0) {
-                print line
-            }
-            close(content_file)
-            in_block = 1
-            next
-        }
-        /<\/ittybitty-status>/ {
-            in_block = 0
-        }
-        !in_block {
-            print
-        }
-    ' "$claude_md" > "$tmpfile"
-
-    # Atomic replace
-    mv "$tmpfile" "$claude_md"
-    rm -f "$content_file"
+    # Generate status content with wrapper tags
+    {
+        echo "<ittybitty-status>"
+        generate_status_block
+        echo "</ittybitty-status>"
+    } > "$status_file"
 }
 
 # =============================================================================
@@ -2532,7 +2505,7 @@ EOF
         ib watchdog "$ID" > "$AGENT_DIR/watchdog.log" 2>&1 &
     fi
 
-    # Update CLAUDE.md status block (if installed)
+    # Update .ittybitty/STATUS.md for CLAUDE.md status display
     update_claude_status
 
     # Output the agent ID
@@ -3268,7 +3241,7 @@ EOF
     teardown_agent "$ID" "" "Agent killed"
     echo "Closed agent: $ID"
 
-    # Update CLAUDE.md status block (if installed)
+    # Update .ittybitty/STATUS.md for CLAUDE.md status display
     update_claude_status
 
     # Scan for any orphaned Claude processes after cleanup
@@ -3932,7 +3905,7 @@ EOF
 
     echo "Closed agent: $ID"
 
-    # Update CLAUDE.md status block (if installed)
+    # Update .ittybitty/STATUS.md for CLAUDE.md status display
     update_claude_status
 
     # Scan for any orphaned Claude processes after cleanup
@@ -4066,7 +4039,7 @@ cmd_hooks_agent_status() {
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
 
-    # Update CLAUDE.md status block (if installed)
+    # Update .ittybitty/STATUS.md for CLAUDE.md status display
     update_claude_status
 
     # Always print the state for debugging
@@ -4797,7 +4770,7 @@ cmd_watchdog() {
                 ;;
         esac
 
-        # Update CLAUDE.md status on state change
+        # Update .ittybitty/STATUS.md on state change
         if [[ "$state" != "$prev_state" ]]; then
             update_claude_status
         fi
