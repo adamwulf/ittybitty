@@ -465,8 +465,18 @@ fetch_claude_usage() {
     _USAGE_WEEKLY_PCT=""
 
     # Get OAuth access token from macOS Keychain
-    local token
-    token=$(security find-generic-password -s "claude-ai-oauth" -a "access_token" -w 2>/dev/null)
+    # The credentials are stored as JSON under "Claude Code-credentials"
+    local creds token
+    creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+    if [[ -z "$creds" ]]; then
+        return 1
+    fi
+
+    # Parse JSON to get the access token
+    if ! command -v jq &>/dev/null; then
+        return 1
+    fi
+    token=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
     if [[ -z "$token" ]]; then
         return 1
     fi
@@ -481,22 +491,16 @@ fetch_claude_usage() {
         return 1
     fi
 
-    # Parse response with jq
-    if ! command -v jq &>/dev/null; then
-        return 1
-    fi
+    local session_util weekly_util
+    session_util=$(echo "$response" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
+    weekly_util=$(echo "$response" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
 
-    local session_pct weekly_pct
-    session_pct=$(echo "$response" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
-    weekly_pct=$(echo "$response" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
-
-    # Convert to percentages (API returns 0-1 float)
-    if [[ -n "$session_pct" && "$session_pct" != "null" ]]; then
-        # Multiply by 100 and format as integer percentage
-        _USAGE_SESSION_PCT=$(echo "$session_pct" | awk '{printf "%.0f", $1 * 100}')
+    # API returns utilization as percentage (0-100), just round to integer
+    if [[ -n "$session_util" && "$session_util" != "null" ]]; then
+        _USAGE_SESSION_PCT=$(printf '%.0f' "$session_util" 2>/dev/null)
     fi
-    if [[ -n "$weekly_pct" && "$weekly_pct" != "null" ]]; then
-        _USAGE_WEEKLY_PCT=$(echo "$weekly_pct" | awk '{printf "%.0f", $1 * 100}')
+    if [[ -n "$weekly_util" && "$weekly_util" != "null" ]]; then
+        _USAGE_WEEKLY_PCT=$(printf '%.0f' "$weekly_util" 2>/dev/null)
     fi
 
     return 0
