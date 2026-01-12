@@ -2644,10 +2644,13 @@ EOF
         echo ""
         # Show branch commits if branch exists
         if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-            local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+            # Use merge-base to compare only agent's changes
+            local MERGE_BASE
+            MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+            local commit_count=$(git log "$MERGE_BASE..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
             if [[ "$commit_count" -gt 0 ]]; then
                 echo "Commits on $BRANCH_NAME (vs $TARGET_BRANCH):"
-                git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline
+                git log "$MERGE_BASE..$BRANCH_NAME" --oneline
             else
                 echo "No commits on $BRANCH_NAME relative to $TARGET_BRANCH"
             fi
@@ -2660,12 +2663,18 @@ EOF
     echo "Worktree: $WORKTREE_PATH"
     echo ""
 
+    # Find merge-base to avoid showing unrelated changes from target branch
+    local MERGE_BASE=""
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+    fi
+
     # Show commits
     if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-        local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+        local commit_count=$(git log "$MERGE_BASE..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$commit_count" -gt 0 ]]; then
             echo "═══ Commits ($commit_count) vs $TARGET_BRANCH ═══"
-            git log "$TARGET_BRANCH..$BRANCH_NAME" --format="  %h %s"
+            git log "$MERGE_BASE..$BRANCH_NAME" --format="  %h %s"
             echo ""
         else
             echo "═══ No commits vs $TARGET_BRANCH ═══"
@@ -2682,8 +2691,8 @@ EOF
     fi
 
     # Show file change summary
-    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-        local files_changed=$(git diff --stat "$TARGET_BRANCH..$BRANCH_NAME" 2>/dev/null | tail -1)
+    if [[ -n "$MERGE_BASE" ]]; then
+        local files_changed=$(git diff --stat "$MERGE_BASE..$BRANCH_NAME" 2>/dev/null | tail -1)
         if [[ -n "$files_changed" && "$files_changed" != *"0 files changed"* ]]; then
             echo "═══ Files Changed ═══"
             echo "  $files_changed"
