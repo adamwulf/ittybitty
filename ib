@@ -807,11 +807,12 @@ parse_state() {
 
     # Check for ACTIVE running indicators FIRST in very recent output
     # These indicate something is definitely executing RIGHT NOW:
-    # - "esc to interrupt" / "ctrl+c to interrupt" - shown during tool execution
+    # - "(esc to interrupt)" / "(ctrl+c to interrupt)" - shown during tool execution (in parens)
     # - "⎿  Running" - explicit running status indicator
     # Active indicators in the last 5 lines override completion because the
     # agent may have resumed work after saying they completed
-    if [[ "$very_recent" =~ esc\ to\ interrupt|ctrl\+c\ to\ interrupt|⎿\ \ Running ]]; then
+    # Note: We require parentheses around interrupt phrases to distinguish from discussion text
+    if [[ "$very_recent" =~ \(esc\ to\ interrupt\)|\(ctrl\+c\ to\ interrupt\)|⎿\ \ Running ]]; then
         echo "running"
         return
     fi
@@ -4270,13 +4271,14 @@ EOF
         last_lines=$(echo "$input" | tail -15)
 
         # Check for ACTIVE running indicators FIRST in very recent output
-        if [[ "$very_recent" =~ esc\ to\ interrupt ]]; then
-            echo "running (matched: esc to interrupt in last 5 lines)"
+        # Note: We require parentheses around interrupt phrases to distinguish from discussion text
+        if [[ "$very_recent" =~ \(esc\ to\ interrupt\) ]]; then
+            echo "running (matched: (esc to interrupt) in last 5 lines)"
             return
         fi
 
-        if [[ "$very_recent" =~ ctrl\+c\ to\ interrupt ]]; then
-            echo "running (matched: ctrl+c to interrupt in last 5 lines)"
+        if [[ "$very_recent" =~ \(ctrl\+c\ to\ interrupt\) ]]; then
+            echo "running (matched: (ctrl+c to interrupt) in last 5 lines)"
             return
         fi
 
