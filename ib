@@ -927,14 +927,16 @@ auto_accept_workspace_trust() {
 # TREE HELPERS (shared by cmd_tree and cmd_watch)
 # =============================================================================
 
-# Global cache for meta.json data (never changes after agent creation)
+# Global cache for meta.json data (invalidated when meta.json file changes)
 # Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
+# META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
 META_CACHE_IDS=()
 META_CACHE_DATA=()
+META_CACHE_MTIME=()
 
-# Global cache for tree order (invalidated when agent set changes)
+# Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
-# TREE_ORDER_KEY = sorted "|"-joined string of all agent IDs (for cache invalidation)
+# TREE_ORDER_KEY = "count:id_hash:manager_hash" (for cache invalidation)
 TREE_ORDER_CACHE=()
 TREE_ORDER_KEY=""
 
@@ -1059,7 +1061,21 @@ build_agent_data_file() {
             fi
         done
 
+        # Get current meta.json mtime for cache validation
+        local meta="$agent_dir/meta.json"
+        local current_mtime
+        current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0
+
+        # Check if cache is valid (exists and mtime matches)
+        local cache_valid=0
         if [[ "$cache_idx" -ge 0 ]]; then
+            local cached_mtime="${META_CACHE_MTIME[$cache_idx]}"
+            if [[ "$cached_mtime" == "$current_mtime" ]]; then
+                cache_valid=1
+            fi
+        fi
+
+        if [[ "$cache_valid" -eq 1 ]]; then
             # Use cached data: manager|created_epoch|model|prompt|worker
             local cached="${META_CACHE_DATA[$cache_idx]}"
             manager="${cached%%|*}"
@@ -1071,8 +1087,7 @@ build_agent_data_file() {
             prompt="${rest%%|*}"
             worker="${rest#*|}"
         else
-            # Read from disk and cache
-            local meta="$agent_dir/meta.json"
+            # Read from disk and cache (meta variable already set above)
             local line key value
             while IFS= read -r line; do
                 if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
@@ -1093,9 +1108,17 @@ build_agent_data_file() {
             [[ "$model" == "null" || -z "$model" ]] && model="-"
             [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
 
-            # Add to cache
-            META_CACHE_IDS+=("$id")
-            META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
+            # Update or add to cache
+            if [[ "$cache_idx" -ge 0 ]]; then
+                # Update existing cache entry (agent was restarted with same name)
+                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
+                META_CACHE_MTIME[$cache_idx]="$current_mtime"
+            else
+                # Add new cache entry
+                META_CACHE_IDS+=("$id")
+                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
+                META_CACHE_MTIME+=("$current_mtime")
+            fi
         fi
 
         # Calculate age (must be fresh each time)
@@ -1121,20 +1144,33 @@ build_agent_data_file() {
 
 
     # === Compute tree order (with caching) ===
-    # Build cache key from agent IDs using count + hash sum (order-independent)
+    # Build cache key from agent IDs and manager relationships
     # This avoids false cache misses from filesystem glob order changes
+    # and ensures tree order is recomputed when manager relationships change
     local id_hash=0
-    local _id
-    for _id in "${all_ids[@]}"; do
-        # Simple hash: sum of first 4 char ASCII values
+    local manager_hash=0
+    local _idx
+    for ((_idx=0; _idx<${#all_ids[@]}; _idx++)); do
+        local _id="${all_ids[$_idx]}"
+        local _data="${all_data[$_idx]}"
+        local _mgr="${_data%%|*}"
+        # Simple hash: sum of first 4 char ASCII values for ID
         local _c1 _c2 _c3 _c4
         printf -v _c1 '%d' "'${_id:0:1}" 2>/dev/null || _c1=0
         printf -v _c2 '%d' "'${_id:1:1}" 2>/dev/null || _c2=0
         printf -v _c3 '%d' "'${_id:2:1}" 2>/dev/null || _c3=0
         printf -v _c4 '%d' "'${_id:3:1}" 2>/dev/null || _c4=0
         ((id_hash += _c1 + _c2 + _c3 + _c4))
+        # Also hash manager relationship (first 4 chars of manager)
+        if [[ -n "$_mgr" ]]; then
+            printf -v _c1 '%d' "'${_mgr:0:1}" 2>/dev/null || _c1=0
+            printf -v _c2 '%d' "'${_mgr:1:1}" 2>/dev/null || _c2=0
+            printf -v _c3 '%d' "'${_mgr:2:1}" 2>/dev/null || _c3=0
+            printf -v _c4 '%d' "'${_mgr:3:1}" 2>/dev/null || _c4=0
+            ((manager_hash += _c1 + _c2 + _c3 + _c4))
+        fi
     done
-    local id_key="${#all_ids[@]}:$id_hash"
+    local id_key="${#all_ids[@]}:$id_hash:$manager_hash"
 
     local tree_ids=()
     if [[ "$id_key" == "$TREE_ORDER_KEY" && ${#TREE_ORDER_CACHE[@]} -gt 0 ]]; then
