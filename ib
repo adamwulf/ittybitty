@@ -5113,7 +5113,7 @@ EOF
         ((row++))
         printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
         printf '%*s' "$DIALOG_WIDTH" ''
-        local hint="Tab: next   j/k: model   Enter: select"
+        local hint="Tab: next   j/k: model   Space/Enter: select"
         printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
@@ -5131,6 +5131,13 @@ EOF
                     [[ $NEW_AGENT_FOCUS -eq 5 ]] && NEW_AGENT_FOCUS=0
                 fi
                 _DIALOG_DIRTY=1
+                ;;
+            ' ')  # Spacebar - toggle checkbox when on worker checkbox
+                if [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
+                    # Worker checkbox - toggle
+                    NEW_AGENT_WORKER=$(( 1 - NEW_AGENT_WORKER ))
+                    _DIALOG_DIRTY=1
+                fi
                 ;;
             $'\x1e')  # Enter
                 if [[ $NEW_AGENT_FOCUS -eq 2 ]]; then
