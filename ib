@@ -789,7 +789,7 @@ capture_tmux() {
 # that happens AFTER any completion phrase in the output.
 parse_state() {
     local input
-    if [[ -n "$1" ]]; then
+    if [[ $# -gt 0 ]]; then
         input="$1"
     else
         input=$(cat)
