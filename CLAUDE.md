@@ -84,18 +84,32 @@ When an agent tries to use a tool not in its `allow` list, the `PermissionReques
 2. Logs the denied request to `agent.log` via `ib log --quiet`, including full tool parameters
 3. Returns the proper hook output format to auto-deny the tool
 
-This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format:
+This provides visibility into what tools agents are attempting to use without showing permission dialogs. The log entry format includes the hook type for clear attribution:
 ```
-[2026-01-10T15:05:06-06:00] Permission denied: Bash (command: curl https://example.com/api/data, description: Execute curl request to fetch data)
+[2026-01-10T15:05:06-06:00] [PermissionRequest] Permission denied: Bash (command: curl https://example.com/api/data, description: Execute curl request to fetch data)
 ```
 
 Full tool parameters are logged to help debug which tools need to be allowed.
 
 **Note**: Folder/location permission prompts (e.g., "allow access to /tmp/") bypass PermissionRequest hooks. These are contextual permissions shown when an allowed tool needs file system access, not tool denials.
 
+### PreToolUse Hook Denials
+
+The PreToolUse hook (`ib hooks agent-path`) enforces path isolation and also logs denials with its hook type:
+```
+[2026-01-10T15:05:06-06:00] [PreToolUse] Permission denied: Read (file_path: /etc/passwd)
+[2026-01-10T15:05:06-06:00] [PreToolUse] Path violation: Read tried to access main repo: /path/to/main/repo/file.txt
+```
+
 To review denied permissions for an agent:
 ```bash
-grep "Permission denied" .ittybitty/agents/<id>/agent.log
+grep "Permission denied\|Path violation" .ittybitty/agents/<id>/agent.log
+```
+
+To filter by hook type:
+```bash
+grep "\[PermissionRequest\]" .ittybitty/agents/<id>/agent.log  # Tool not in allow list
+grep "\[PreToolUse\]" .ittybitty/agents/<id>/agent.log         # Path isolation violations
 ```
 
 ## Logging System
@@ -117,7 +131,9 @@ log_agent "$ID" "message" --quiet   # logs only, no stdout
 | Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
 | Message received | `send` | "Received message from X: Y" (recipient's log) |
 | Message sent | `send` | "Sent message to X: Y" (sender's log) |
-| Permission denied | hook | "Permission denied: TOOL_NAME" |
+| Tool denied (not in allow list) | PermissionRequest hook | "[PermissionRequest] Permission denied: TOOL_NAME" |
+| Tool denied (path isolation) | PreToolUse hook | "[PreToolUse] Permission denied: TOOL_NAME" |
+| Path violation | PreToolUse hook | "[PreToolUse] Path violation: TOOL_NAME tried to access..." |
 | Kill initiated | `kill` | "Agent killed" |
 | Process terminated | `kill/merge` | "Terminated Claude process" |
 | Session killed | `kill/merge` | "Killed tmux session" |
