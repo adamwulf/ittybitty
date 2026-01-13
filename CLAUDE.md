@@ -267,6 +267,8 @@ This ensures:
 
 The repo ID is gitignored (inside `.ittybitty/`) so each clone gets its own unique ID.
 
+**Migration note**: Agents created before this change used the format `ittybitty-<agent-id>`. After upgrading, these old sessions will appear as orphaned tmux sessions (not recognized by `ib list`). Clean them up manually with `tmux kill-session -t <session-name>` or `tmux kill-server` if no other tmux sessions are in use.
+
 ### Process Hierarchy
 
 ```
