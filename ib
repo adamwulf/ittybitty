@@ -7332,6 +7332,22 @@ EOF
         ERRORS_UNREAD_COUNT=0
     }
 
+    # Calculate next pane mode, skipping errors pane (mode 4) if no errors
+    # Args: $1=direction (1 for next, -1 for previous)
+    # Sets: _NEXT_PANE_MODE
+    watch_calc_next_pane() {
+        local direction="$1"
+        local pane_count=${#RIGHT_PANE_NAMES[@]}
+        local next_mode=$(( (RIGHT_PANE_MODE + direction + pane_count) % pane_count ))
+
+        # Skip errors pane (mode 4) if there are no errors
+        if [[ $next_mode -eq 4 && ${#ERRORS_CACHE[@]} -eq 0 ]]; then
+            next_mode=$(( (next_mode + direction + pane_count) % pane_count ))
+        fi
+
+        _NEXT_PANE_MODE=$next_mode
+    }
+
     # Cleanup function for exit
     watch_cleanup() {
         stty echo    # Restore terminal echo
@@ -10180,16 +10196,18 @@ EOF
                 ;;
             'C')  # Right arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
-                    # Right arrow = same as n (next pane)
-                    RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE + 1) % ${#RIGHT_PANE_NAMES[@]} ))
+                    # Right arrow = same as n (next pane, skip errors if empty)
+                    watch_calc_next_pane 1
+                    RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
                 ;;
             'D')  # Left arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
-                    # Left arrow = same as p (previous pane)
-                    RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
+                    # Left arrow = same as p (previous pane, skip errors if empty)
+                    watch_calc_next_pane -1
+                    RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
@@ -10225,14 +10243,16 @@ EOF
                 ;;
             n)
                 _WATCH_ESC_PENDING=0
-                # Next right pane mode
-                RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE + 1) % ${#RIGHT_PANE_NAMES[@]} ))
+                # Next right pane mode (skip errors pane if empty)
+                watch_calc_next_pane 1
+                RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             p)
                 _WATCH_ESC_PENDING=0
-                # Previous right pane mode
-                RIGHT_PANE_MODE=$(( (RIGHT_PANE_MODE - 1 + ${#RIGHT_PANE_NAMES[@]}) % ${#RIGHT_PANE_NAMES[@]} ))
+                # Previous right pane mode (skip errors pane if empty)
+                watch_calc_next_pane -1
+                RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             s)
