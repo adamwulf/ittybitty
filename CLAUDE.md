@@ -332,8 +332,186 @@ The `auto_accept_workspace_trust` function (ib:525):
 
 ## Testing
 
-No formal test suite. Test manually by spawning agents:
+The `ib` script has a unit test suite in `tests/` for testing internal helper functions. These tests are fixture-driven and test pure logic functions in isolation.
 
+### Running Tests
+
+```bash
+# Run all test suites
+./tests/test-all.sh
+
+# Run a specific test suite
+./tests/test-parse-state.sh
+./tests/test-format-age.sh
+./tests/test-pretooluse.sh
+
+# Test a single fixture directly
+ib parse-state tests/fixtures/complete-simple.txt
+
+# Verbose mode (shows which pattern matched)
+ib parse-state -v tests/fixtures/complete-with-bullet.txt
+```
+
+### Test Structure
+
+```
+tests/
+├── test-all.sh              # Master runner - executes all test-*.sh scripts
+├── test-parse-state.sh      # Tests state detection logic
+├── test-format-age.sh       # Tests age formatting (5s, 2h, 1d)
+├── test-pretooluse.sh       # Tests path isolation hook logic
+├── test-tool-allowed.sh     # Tests tool permission matching
+├── test-tool-match.sh       # Tests tool pattern matching
+├── test-load-config.sh      # Tests config file parsing
+├── test-build-settings.sh   # Tests settings.json generation
+├── test-resolve-id.sh       # Tests agent ID resolution
+├── test-relationships.sh    # Tests manager/worker relationships
+├── test-log-format.sh       # Tests log message formatting
+└── fixtures/                # Test input files
+    ├── complete-*.txt       # State detection: complete states
+    ├── running-*.txt        # State detection: running states
+    ├── waiting-*.txt        # State detection: waiting states
+    ├── unknown-*.txt        # State detection: unknown states
+    ├── format-age/          # Age formatting test cases
+    ├── pretooluse/          # Path isolation test cases
+    ├── load-config/         # Config parsing test cases
+    └── ...
+```
+
+### Fixture Naming Convention
+
+Test fixtures encode expected output in the filename:
+
+```
+{expected-output}-{description}.txt
+{expected-output}-{description}.json
+```
+
+Examples:
+- `complete-simple.txt` → expects `complete` state
+- `running-bash.txt` → expects `running` state
+- `allow-read-in-worktree.json` → expects `allow` decision
+- `deny-cd-main-repo.json` → expects `deny` decision
+- `1h-boundary-60-minutes.txt` → expects `1h` output
+
+The test runner extracts the expected output from the filename prefix (before first hyphen), runs the test command with the fixture file, and compares.
+
+### Test Commands in `ib`
+
+The `ib` script exposes internal functions as `test-*` subcommands for testing:
+
+| Command | Tests | Example |
+|---------|-------|---------|
+| `ib parse-state FILE` | `get_state` logic | `ib parse-state tests/fixtures/running-bash.txt` |
+| `ib test-format-age FILE` | `format_age` function | `ib test-format-age tests/fixtures/format-age/5m-basic.txt` |
+| `ib test-pretooluse FILE` | PreToolUse hook logic | `ib test-pretooluse tests/fixtures/pretooluse/allow-cd-in-worktree.json` |
+| `ib test-tool-allowed FILE` | Tool permission matching | `ib test-tool-allowed tests/fixtures/tool-allowed/allowed-exact.json` |
+| `ib test-tool-match FILE` | Tool pattern matching | `ib test-tool-match tests/fixtures/tool-match/match-wildcard.json` |
+| `ib test-load-config FILE` | Config parsing | `ib test-load-config tests/fixtures/load-config/full-config.json` |
+| `ib test-build-settings FILE` | Settings generation | `ib test-build-settings --validate tests/fixtures/build-settings/valid-manager.txt` |
+
+### Writing New Tests
+
+1. **Create a fixture file** with the expected output encoded in the filename:
+   ```bash
+   # For a new running state test
+   echo "⏺ Bash(npm test)
+     ⎿  Running (ctrl+c to interrupt)" > tests/fixtures/running-npm-test.txt
+   ```
+
+2. **Run the test** to verify:
+   ```bash
+   ./tests/test-parse-state.sh
+   # Should show: PASS [running] npm test
+   ```
+
+3. **For new test suites**, create `tests/test-<feature>.sh` following the existing pattern:
+   - Set `FIXTURES_DIR` to the appropriate subdirectory
+   - Loop through fixture files, extract expected value from filename
+   - Call `ib test-<feature>` and compare output
+
+### Writing Testable Code
+
+When adding new features to `ib`, structure code for testability:
+
+**DO: Extract logic into pure helper functions**
+```bash
+# Pure function - easy to test
+format_age() {
+    local seconds="$1"
+    if (( seconds < 60 )); then echo "${seconds}s"
+    elif (( seconds < 3600 )); then echo "$((seconds / 60))m"
+    elif (( seconds < 86400 )); then echo "$((seconds / 3600))h"
+    else echo "$((seconds / 86400))d"
+    fi
+}
+
+# Expose for testing
+cmd_test_format_age() {
+    local input=$(cat "$1")
+    format_age "$input"
+}
+```
+
+**DON'T: Embed logic in interactive code**
+```bash
+# Hard to test - mixes UI with logic
+show_agent_status() {
+    local state=$(get_state "$ID")
+    # If state detection logic were inline here,
+    # you'd need a running tmux session to test it
+    tput setaf 2  # colors
+    echo "State: $state"
+}
+```
+
+**Pattern: File-based testing for complex logic**
+```bash
+# Logic function reads from file or stdin
+parse_tmux_output() {
+    local content
+    if [[ -n "$1" && -f "$1" ]]; then
+        content=$(cat "$1")
+    else
+        content=$(cat)
+    fi
+    # ... detection logic ...
+    echo "$detected_state"
+}
+
+# Called with fixture file for testing
+ib parse-state tests/fixtures/running-bash.txt
+
+# Called with actual tmux output in production
+tmux capture-pane -t "$SESSION" -p | ib parse-state
+```
+
+### What TO Test
+
+Test these types of functions:
+
+| Category | Examples | Why Testable |
+|----------|----------|--------------|
+| **State parsing** | `get_state`, `parse_tmux_output` | Pure text processing, no side effects |
+| **Formatting** | `format_age`, `format_log_entry` | Deterministic input → output |
+| **Permission logic** | `is_tool_allowed`, `check_path_isolation` | Security-critical, well-defined rules |
+| **Config parsing** | `load_config`, `build_settings` | Complex transformations from JSON |
+| **ID resolution** | `resolve_agent_id` | Matching/disambiguation logic |
+| **Relationship logic** | `get_children`, `get_manager` | Graph traversal from JSON data |
+
+### What NOT TO Test
+
+Skip testing these:
+
+| Category | Examples | Why Not Tested |
+|----------|----------|----------------|
+| **Interactive UI** | `ib watch`, `show_dialog` | Requires terminal, visual inspection |
+| **tmux operations** | `send_keys`, `capture_pane` | External process, integration test |
+| **Process management** | `kill_agent_process`, `spawn_agent` | Side effects on system |
+| **Git operations** | `git checkout`, `git merge` | External tool, would need mock repo |
+| **Real agent behavior** | Agent completing tasks | Requires Claude, non-deterministic |
+
+For these, use manual testing:
 ```bash
 # Test basic spawn
 ib new-agent --name test "echo hello and exit"
@@ -344,6 +522,41 @@ ib look test
 
 # Cleanup
 ib kill test --force
+```
+
+### Adding Test Coverage for New Features
+
+When implementing a new feature:
+
+1. **Identify the testable logic** - What pure functions can be extracted?
+2. **Create the `test-*` command** - Add `cmd_test_<feature>` that wraps the logic
+3. **Create fixtures** - Add test cases to `tests/fixtures/`
+4. **Create the test script** - Add `tests/test-<feature>.sh`
+5. **Run tests** - Verify with `./tests/test-all.sh`
+
+Example for adding a new "duration parsing" feature:
+```bash
+# 1. Add the pure function to ib
+parse_duration() {
+    local input="$1"
+    # Convert "5m", "2h", "1d" to seconds
+    ...
+}
+
+cmd_test_parse_duration() {
+    local input=$(cat "$1")
+    parse_duration "$input"
+}
+
+# 2. Add fixtures
+echo "5m" > tests/fixtures/parse-duration/300-5-minutes.txt
+echo "2h" > tests/fixtures/parse-duration/7200-2-hours.txt
+
+# 3. Create test script
+# tests/test-parse-duration.sh (follow existing pattern)
+
+# 4. Run all tests
+./tests/test-all.sh
 ```
 
 **Note**: Always use `ib` (not `./ib`) to ensure you run the current version from PATH. This is especially important in worktrees where `./ib` would run a stale checkout.
