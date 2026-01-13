@@ -1,2 +1,1 @@
 worker
-{"permissions":{"worker":{"allow":["Read","Glob"],"deny":["Bash"]}}}

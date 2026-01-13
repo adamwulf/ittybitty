@@ -1,25 +1,11 @@
 {
-  "description": "Tool not in allow list should be denied",
-  "settings": {
-    "permissions": {
-      "allow": ["Edit", "Read"]
-    }
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://example.com"
   },
-  "input": {
-    "tool_name": "WebFetch",
-    "tool_input": {
-      "url": "https://example.com"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "deny",
-    "reason": "Tool not in allow list"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Edit", "Read"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }

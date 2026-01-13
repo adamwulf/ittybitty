@@ -1,26 +1,12 @@
 {
-  "description": "Bash tool with command not matching any pattern should be denied",
-  "settings": {
-    "permissions": {
-      "allow": ["Edit", "Bash(git:*)"]
-    }
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "curl https://example.com",
+    "description": "Fetch URL"
   },
-  "input": {
-    "tool_name": "Bash",
-    "tool_input": {
-      "command": "curl https://example.com",
-      "description": "Fetch URL"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "deny",
-    "reason": "Tool not in allow list"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Edit", "Bash(git:*)"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }
