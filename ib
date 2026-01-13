@@ -1001,6 +1001,19 @@ parse_state() {
         return
     fi
 
+    # Check for permission prompts in recent output - these block agent progress
+    # Workspace trust prompt: "Do you trust the files in this folder?"
+    # External imports prompt: "Allow external CLAUDE.md file imports?"
+    # Both show "Enter to confirm" and require user interaction
+    # Only check last 15 lines to avoid false positives from prompts in scroll history
+    if [[ "$last_lines" == *"Enter to confirm"* ]]; then
+        if [[ "$last_lines" == *"Do you trust the files"* ]] || \
+           [[ "$last_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
+            echo "creating"
+            return
+        fi
+    fi
+
     # No explicit state indicators found
     echo "unknown"
 }
@@ -1025,14 +1038,18 @@ get_state() {
     # Check if Claude hasn't started yet (creating state)
     # This happens when the agent is very new and either:
     # - Still showing permissions screen (hasn't been accepted yet)
+    # - Still showing external imports prompt (needs acceptance)
     # - Nothing meaningful showing yet (Claude still loading)
     # We capture more history to check for Claude logo
     local full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -50)
     if ! echo "$full_history" | grep -q "Claude Code v" && ! echo "$full_history" | grep -q "\[USER TASK\]"; then
-        # Check if permissions screen is showing
-        if echo "$full_history" | grep -qi "Enter to confirm" && echo "$full_history" | grep -qi "trust"; then
-            echo "creating"
-            return
+        # Check if permissions screen is showing (workspace trust OR external imports)
+        if echo "$full_history" | grep -qi "Enter to confirm"; then
+            if echo "$full_history" | grep -qi "trust" || \
+               echo "$full_history" | grep -qi "Allow external CLAUDE.md file imports"; then
+                echo "creating"
+                return
+            fi
         fi
         # Check if session is very new (minimal output, just bash starting up)
         local line_count=$(echo "$full_history" | wc -l | tr -d ' ')
@@ -1049,6 +1066,9 @@ get_state() {
 # Wait for Claude to start - logo OR permissions screen appears
 # When permissions are NOT needed: logo appears immediately
 # When permissions ARE needed: permissions screen appears first, logo after accepting
+# Two types of permission prompts:
+#   - Workspace trust: "Do you trust the files in this folder?"
+#   - External imports: "Allow external CLAUDE.md file imports?"
 # Args: $1 = tmux session name
 # Returns: 0 if Claude started (logo or permissions detected), 1 if timed out
 # Sets global CLAUDE_STARTED_WITH to "logo" or "permissions"
@@ -1070,10 +1090,15 @@ wait_for_claude_start() {
             return 0
         fi
 
-        # Check for permissions screen - indicates Claude started but needs trust
-        if echo "$top_output" | grep -qi "Enter to confirm" && echo "$top_output" | grep -qi "trust"; then
-            CLAUDE_STARTED_WITH="permissions"
-            return 0
+        # Check for permissions screens - indicate Claude started but needs acceptance
+        # Workspace trust prompt: "Do you trust the files" + "Enter to confirm"
+        # External imports prompt: "Allow external CLAUDE.md" + "Enter to confirm"
+        if echo "$top_output" | grep -qi "Enter to confirm"; then
+            if echo "$top_output" | grep -qi "trust" || \
+               echo "$top_output" | grep -qi "Allow external CLAUDE.md file imports"; then
+                CLAUDE_STARTED_WITH="permissions"
+                return 0
+            fi
         fi
     done
 
@@ -1103,7 +1128,11 @@ wait_for_claude_logo() {
     return 1
 }
 
-# Wait for and auto-accept workspace trust dialog
+# Wait for and auto-accept workspace trust and external imports dialogs
+# Handles both types of permission prompts:
+#   - Workspace trust: "Do you trust the files in this folder?"
+#   - External imports: "Allow external CLAUDE.md file imports?"
+# Both prompts may appear in sequence (trust first, then imports)
 # Args: $1 = tmux session name
 # Returns: 0 if successful, 1 if timed out
 auto_accept_workspace_trust() {
@@ -1124,7 +1153,8 @@ auto_accept_workspace_trust() {
         return 0
     fi
 
-    # Permissions screen detected - accept it
+    # Permissions screen detected - accept it (may need multiple Enter presses)
+    # Both workspace trust AND external imports prompts require Enter to accept
     while [[ $attempt -lt $max_attempts ]]; do
         echo "  [ib] Permissions screen detected, sending Enter (attempt $((attempt + 1))/$max_attempts)..." >&2
         tmux send-keys -t "$TMUX_SESSION" Enter
@@ -1133,12 +1163,20 @@ auto_accept_workspace_trust() {
         # Wait for Claude to process the Enter
         sleep 4
 
-        # Check RECENT output to see if permissions are still showing
+        # Check RECENT output to see if any permissions prompt is still showing
         local recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50 2>/dev/null)
 
-        # If permissions gone from recent output, wait for logo to confirm success
-        if ! (echo "$recent_output" | grep -qi "Enter to confirm" && echo "$recent_output" | grep -qi "trust"); then
-            # Permissions accepted - verify by waiting for logo
+        # Check if either type of permission prompt is still active
+        local has_permissions=false
+        if echo "$recent_output" | grep -qi "Enter to confirm"; then
+            if echo "$recent_output" | grep -qi "trust" || \
+               echo "$recent_output" | grep -qi "Allow external CLAUDE.md file imports"; then
+                has_permissions=true
+            fi
+        fi
+
+        # If no permissions prompts showing, wait for logo to confirm success
+        if [[ "$has_permissions" == "false" ]]; then
             if wait_for_claude_logo "$TMUX_SESSION"; then
                 echo "  [ib] Past permissions screen" >&2
                 return 0

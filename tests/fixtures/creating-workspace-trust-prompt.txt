@@ -1,0 +1,16 @@
+────────────────────────────────────────────────────────────
+ Do you trust the files in this folder?
+
+ /Users/adamwulf/Developer/project/.ittybitty/agents/test-agent/repo
+
+ Claude Code may read, write, or execute files contained in this directory. This can pose security risks, so only use files, hooks, and bash commands from trusted sources.
+
+ Execution allowed by:
+   • .claude/settings.local.json
+
+ Learn more
+
+ ❯ 1. Yes, proceed
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
