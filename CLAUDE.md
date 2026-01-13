@@ -46,6 +46,58 @@ The `ib` script is organized into commands, each implemented as a function:
 
 Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_agent_process`, `wait_for_claude_start`, `auto_accept_workspace_trust`, etc.
 
+## Bash Script Behavior (`set -e`)
+
+The `ib` script uses `set -e` (exit on error), which means **any command returning non-zero will terminate the entire script**. This is a common source of subtle bugs.
+
+### Common Pitfalls
+
+| Command | Problem | Solution |
+|---------|---------|----------|
+| `grep "pattern" file` | Returns 1 if no matches | `grep "pattern" file \|\| true` or use in conditional |
+| `(( count++ ))` | Returns 1 when count was 0 | `(( count++ )) \|\| true` or `count=$((count + 1))` |
+| `[[ "$var" == "x" ]]` | Returns 1 if false | Only use in `if` statements, not standalone |
+| `local var=$(cmd)` | Exit status is from `local`, not `cmd` | Declare first: `local var; var=$(cmd)` |
+| `read -t 0.1 key` | Returns 1 on timeout | `read -t 0.1 key \|\| true` |
+
+### Safe Patterns
+
+```bash
+# BAD: grep failure exits script
+matches=$(grep "pattern" file)
+
+# GOOD: handle no-match case
+matches=$(grep "pattern" file || true)
+
+# GOOD: use in conditional
+if grep -q "pattern" file; then
+    # found
+fi
+
+# BAD: arithmetic can fail
+(( index++ ))
+
+# GOOD: safe increment
+(( index++ )) || true
+# or
+index=$((index + 1))
+
+# BAD: standalone test
+[[ -n "$var" ]]
+
+# GOOD: test in conditional
+if [[ -n "$var" ]]; then
+    # var is set
+fi
+```
+
+### Debugging `set -e` Issues
+
+If the script exits unexpectedly:
+1. Add `set -x` temporarily to see which command failed
+2. Look for commands that might return non-zero in success cases
+3. Check recent changes to interactive input handling (read, grep in loops)
+
 ## Configuration
 
 `.ittybitty.json` configures permissions and behavior for spawned agents:
