@@ -6141,6 +6141,200 @@ cmd_hooks_uninstall() {
 }
 
 # =============================================================================
+# COMMAND: setup ib-instructions install
+# =============================================================================
+
+# The ittybitty instructions content to add to CLAUDE.md
+get_ittybitty_instructions() {
+    cat << 'ITTYBITTY_CONTENT'
+<ittybitty>
+## Multi-Agent Orchestration (ittybitty)
+
+You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), `ib` agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
+
+### Identify Your Role First
+
+**Check the very beginning of this conversation:**
+- If you see `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` → MANAGER AGENT (can spawn children, see below)
+- If you see `<ittybitty>You are an IttyBitty worker agent.</ittybitty>` → WORKER AGENT (cannot spawn children, must complete task yourself)
+- If you DON'T see either marker → PRIMARY AGENT (see below)
+
+---
+
+## For IttyBitty Manager Agents
+
+You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
+
+### CORRECT: Spawn multiple helpers
+These helpers will probably be --worker agents unless you think they will also need to subdivide work
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+
+### WRONG: Spawn ONE worker with complete task
+ib new-agent "do the full task that I was supposed to either do or delegate in parts"
+
+
+## For IttyBitty Worker Agents
+
+You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
+
+### CORRECT: Do the full task yourself
+Work on task and `ib send manager-id` a message if you get stuck
+
+
+## For Primary Agents (NOT IttyBitty agents)
+
+You're having a conversation with a human user. When using `ib`:
+- **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
+- You do NOT get automatic watchdog notifications
+- **Do NOT poll** with `ib list` - polling wastes tokens. Tell the user you've spawned agents and suggest they run `ib watch` in another terminal to monitor status. Wait for them to notify you when agents need attention.
+- Each spawned agent is a full Claude Code instance with all your capabilities
+- Agents can be manager agents (can spawn children) or worker agents (workers only)
+- Don't try to micromanage. Let agents spawn their own children.
+
+### WRONG: Don't spawn all agents yourself
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+ib new-agent "do part of task"
+
+### CORRECT: Spawn ONE root with complete task
+ib new-agent "full task description and goal"
+
+</ittybitty>
+ITTYBITTY_CONTENT
+}
+
+# Install <ittybitty> block to CLAUDE.md
+cmd_setup_ib_instructions_install() {
+    local claude_md="CLAUDE.md"
+
+    # Check if already installed
+    if [[ -f "$claude_md" ]]; then
+        if grep -q '<ittybitty>' "$claude_md" && grep -q '</ittybitty>' "$claude_md"; then
+            echo "ib instructions already installed in $claude_md"
+            return 0
+        fi
+    fi
+
+    # Get the instructions content
+    local instructions
+    instructions=$(get_ittybitty_instructions)
+
+    if [[ -f "$claude_md" ]]; then
+        # Append to existing file
+        echo "" >> "$claude_md"
+        echo "$instructions" >> "$claude_md"
+        echo "ib instructions added to $claude_md"
+    else
+        # Create new file
+        echo "# CLAUDE.md" > "$claude_md"
+        echo "" >> "$claude_md"
+        echo "$instructions" >> "$claude_md"
+        echo "Created $claude_md with ib instructions"
+    fi
+}
+
+# Uninstall <ittybitty> block from CLAUDE.md
+cmd_setup_ib_instructions_uninstall() {
+    local claude_md="CLAUDE.md"
+
+    if [[ ! -f "$claude_md" ]]; then
+        echo "No CLAUDE.md file found"
+        return 0
+    fi
+
+    # Check if installed
+    if ! grep -q '<ittybitty>' "$claude_md"; then
+        echo "ib instructions not found in $claude_md"
+        return 0
+    fi
+
+    # Remove the <ittybitty>...</ittybitty> block
+    # Use sed to delete from <ittybitty> to </ittybitty> inclusive
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    # Use awk to remove the block (handles multi-line properly)
+    awk '
+        /<ittybitty>/ { in_block=1; next }
+        /<\/ittybitty>/ { in_block=0; next }
+        !in_block { print }
+    ' "$claude_md" > "$tmpfile"
+
+    # Remove trailing blank lines
+    sed -i.bak -e :a -e '/^\s*$/{ $d; N; ba' -e '}' "$tmpfile" 2>/dev/null || \
+        sed -e :a -e '/^\s*$/{ $d; N; ba' -e '}' "$tmpfile" > "${tmpfile}.clean" && mv "${tmpfile}.clean" "$tmpfile"
+
+    mv "$tmpfile" "$claude_md"
+    rm -f "${tmpfile}.bak"
+
+    echo "ib instructions removed from $claude_md"
+}
+
+# =============================================================================
+# COMMAND: setup status-import install
+# =============================================================================
+
+# Install @.ittybitty/STATUS.md import inside <ittybitty> block
+cmd_setup_status_import_install() {
+    local claude_md="CLAUDE.md"
+
+    # Check if <ittybitty> block exists
+    if [[ ! -f "$claude_md" ]] || ! grep -q '<ittybitty>' "$claude_md"; then
+        echo "Error: ib instructions must be installed first"
+        return 1
+    fi
+
+    # Check if already installed
+    if grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+        echo "Status import already installed in $claude_md"
+        return 0
+    fi
+
+    # Insert @.ittybitty/STATUS.md right before </ittybitty>
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    awk '
+        /<\/ittybitty>/ {
+            print ""
+            print "@.ittybitty/STATUS.md"
+            print ""
+        }
+        { print }
+    ' "$claude_md" > "$tmpfile"
+
+    mv "$tmpfile" "$claude_md"
+    echo "Status import added to $claude_md"
+}
+
+# Uninstall @.ittybitty/STATUS.md import from CLAUDE.md
+cmd_setup_status_import_uninstall() {
+    local claude_md="CLAUDE.md"
+
+    if [[ ! -f "$claude_md" ]]; then
+        echo "No CLAUDE.md file found"
+        return 0
+    fi
+
+    # Check if installed
+    if ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+        echo "Status import not found in $claude_md"
+        return 0
+    fi
+
+    # Remove the @.ittybitty/STATUS.md line
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    grep -v '@\.ittybitty/STATUS\.md' "$claude_md" > "$tmpfile"
+
+    mv "$tmpfile" "$claude_md"
+    echo "Status import removed from $claude_md"
+}
+
+# =============================================================================
 # COMMAND: log
 # =============================================================================
 
@@ -6930,11 +7124,15 @@ EOF
     # Jump dialog state
     local JUMP_PATTERN=""
 
-    # Hooks dialog state
-    local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
-    local HOOKS_FOCUS=0  # 0=Install/Uninstall button, 1=Close button
+    # Setup dialog state
+    # Each: 0=unknown, 1=installed, 2=not installed
+    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (PreToolUse hook)
+    local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
+    local SETUP_STATUS_IMPORT=0       # @.ittybitty/STATUS.md inside <ittybitty> block
+    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=Close button
 
-    # STATUS.md integration state (for ib ask to work)
+    # Legacy aliases for compatibility
+    local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
 
     # Errors cache for async agent creation failures
@@ -6948,38 +7146,61 @@ EOF
     local USAGE_LAST_FETCH=0     # Timestamp of last successful fetch
     local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
 
-    # Check if main repo hooks are installed
+    # Check if main repo safety hooks are installed
     watch_check_hooks_status() {
         local status
         status=$(cmd_hooks_status 2>/dev/null)
         if [[ "$status" == "installed" ]]; then
-            HOOKS_INSTALLED=1
+            SETUP_HOOKS_INSTALLED=1
+            HOOKS_INSTALLED=1  # Legacy
         else
-            HOOKS_INSTALLED=2
+            SETUP_HOOKS_INSTALLED=2
+            HOOKS_INSTALLED=2  # Legacy
         fi
     }
 
-    # Check hooks on startup
-    watch_check_hooks_status
-
-    # Check if CLAUDE.md has STATUS.md integration (needed for ib ask)
-    watch_check_status_integration() {
+    # Check if <ittybitty>...</ittybitty> block exists in CLAUDE.md
+    watch_check_ib_instructions() {
         local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
         if [[ -f "$claude_md" ]]; then
-            # Check for either <ittybitty-status> block or @.ittybitty/STATUS.md import
-            if grep -q '<ittybitty-status>' "$claude_md" || grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-                STATUS_MD_INTEGRATED=1
+            if grep -q '<ittybitty>' "$claude_md" && grep -q '</ittybitty>' "$claude_md"; then
+                SETUP_IB_INSTRUCTIONS=1
             else
-                STATUS_MD_INTEGRATED=2
+                SETUP_IB_INSTRUCTIONS=2
             fi
         else
-            # No CLAUDE.md file
-            STATUS_MD_INTEGRATED=2
+            SETUP_IB_INSTRUCTIONS=2
         fi
     }
 
-    # Check STATUS.md integration on startup
-    watch_check_status_integration
+    # Check if @.ittybitty/STATUS.md import exists inside <ittybitty> block
+    watch_check_status_import() {
+        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
+        if [[ -f "$claude_md" ]]; then
+            # Check for @.ittybitty/STATUS.md anywhere in the file
+            # (ideally inside <ittybitty> but we accept it anywhere)
+            if grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+                SETUP_STATUS_IMPORT=1
+                STATUS_MD_INTEGRATED=1  # Legacy
+            else
+                SETUP_STATUS_IMPORT=2
+                STATUS_MD_INTEGRATED=2  # Legacy
+            fi
+        else
+            SETUP_STATUS_IMPORT=2
+            STATUS_MD_INTEGRATED=2  # Legacy
+        fi
+    }
+
+    # Check all setup items on startup
+    watch_check_all_setup() {
+        watch_check_hooks_status
+        watch_check_ib_instructions
+        watch_check_status_import
+    }
+
+    # Check all setup items on startup
+    watch_check_all_setup
 
     # Refresh usage data if interval has elapsed
     watch_refresh_usage() {
@@ -8488,17 +8709,17 @@ EOF
     # ==========================================================================
 
     # ==========================================================================
-    # Hooks Dialog (DIALOG_MODE=6)
+    # Setup Dialog (DIALOG_MODE=6)
     # ==========================================================================
 
-    watch_dialog_init_hooks() {
-        HOOKS_FOCUS=0
+    watch_dialog_init_setup() {
+        SETUP_FOCUS=0
         _DIALOG_DIRTY=1
-        # Refresh hooks status
-        watch_check_hooks_status
+        # Refresh all setup status
+        watch_check_all_setup
     }
 
-    watch_dialog_render_hooks() {
+    watch_dialog_render_setup() {
         # Only redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
@@ -8509,11 +8730,11 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 10) / 2 ))  # 10 lines tall
+        local start_row=$(( (TERM_LINES - 14) / 2 ))  # 14 lines tall
         [[ $start_row -lt 1 ]] && start_row=1
 
         # Clear dialog area
-        dialog_clear "$start_row" 11
+        dialog_clear "$start_row" 15
 
         # Draw dialog box
         local row=$start_row
@@ -8521,70 +8742,145 @@ EOF
         ((row++))
 
         # Title
-        dialog_draw_line "$row" "MAIN REPO HOOKS"
+        dialog_draw_line "$row" "SETUP"
         ((row++))
 
         # Blank line
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Status
-        local status_text
-        if [[ $HOOKS_INSTALLED -eq 1 ]]; then
-            status_text="Status: INSTALLED"
-        else
-            status_text="Status: NOT INSTALLED"
-        fi
-        dialog_draw_line "$row" "$status_text"
+        # Helper to format checkbox item
+        # Args: $1=installed (1=yes, 2=no), $2=label, $3=focused (0/1), $4=disabled (0/1)
+        format_checkbox_item() {
+            local installed=$1
+            local label=$2
+            local focused=$3
+            local disabled=${4:-0}
+
+            local checkbox
+            if [[ $installed -eq 1 ]]; then
+                checkbox="[x]"
+            else
+                checkbox="[ ]"
+            fi
+
+            local text="$checkbox $label"
+
+            if [[ $disabled -eq 1 ]]; then
+                # Dim/gray for disabled items
+                text=$'\e[2m'"$text"$'\e[0m'
+            fi
+
+            if [[ $focused -eq 1 ]]; then
+                # Highlight focused item
+                text=$'\e[7m'"$text"$'\e[0m'
+            fi
+
+            echo "$text"
+        }
+
+        # Option 1: Safety hooks
+        local item1
+        item1=$(format_checkbox_item "$SETUP_HOOKS_INSTALLED" "Safety hooks" "$([[ $SETUP_FOCUS -eq 0 ]] && echo 1 || echo 0)")
+        dialog_draw_line "$row" "$item1"
         ((row++))
 
-        # Description
-        dialog_draw_line "$row" ""
-        ((row++))
-        dialog_draw_line "$row" "Hooks prevent Claude from cd-ing into"
-        ((row++))
-        dialog_draw_line "$row" "agent worktrees (.ittybitty/agents/*/repo)"
+        # Description for safety hooks
+        dialog_draw_line "$row" "  Prevent cd into agent worktrees"
         ((row++))
 
         # Blank line
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Buttons
-        local action_label
-        if [[ $HOOKS_INSTALLED -eq 1 ]]; then
-            action_label="Uninstall"
-        else
-            action_label="Install"
+        # Option 2: ib instructions
+        local item2
+        item2=$(format_checkbox_item "$SETUP_IB_INSTRUCTIONS" "ib instructions" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        dialog_draw_line "$row" "$item2"
+        ((row++))
+
+        # Description for ib instructions
+        dialog_draw_line "$row" "  Add <ittybitty> block to CLAUDE.md"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Option 3: Agent status (disabled if ib instructions not installed)
+        local item3_disabled=0
+        local item3_note=""
+        if [[ $SETUP_IB_INSTRUCTIONS -ne 1 ]]; then
+            item3_disabled=1
+            item3_note="  (requires ib instructions)"
         fi
-        local action_btn=$(dialog_format_button "$action_label" "$([[ $HOOKS_FOCUS -eq 0 ]] && echo 1 || echo 0)")
-        local close_btn=$(dialog_format_button "Close" "$([[ $HOOKS_FOCUS -eq 1 ]] && echo 1 || echo 0)")
-        local buttons="$action_btn  $close_btn"
-        dialog_draw_line "$row" "$buttons"
+        local item3
+        item3=$(format_checkbox_item "$SETUP_STATUS_IMPORT" "Agent status" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$item3_disabled")
+        dialog_draw_line "$row" "$item3"
+        ((row++))
+
+        # Description/note for agent status
+        if [[ -n "$item3_note" ]]; then
+            dialog_draw_line "$row" "$item3_note"
+        else
+            dialog_draw_line "$row" "  Add @.ittybitty/STATUS.md import"
+        fi
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Close button
+        local close_btn=$(dialog_format_button "Close" "$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)")
+        dialog_draw_line "$row" "$close_btn"
         ((row++))
 
         # Bottom border
         dialog_draw_hline "$row" "└" "─" "┘"
     }
 
-    watch_dialog_key_hooks() {
+    watch_dialog_key_setup() {
         local key="$1"
         case "$key" in
-            $'\x1e')  # Enter
-                if [[ $HOOKS_FOCUS -eq 0 ]]; then
-                    # Install or uninstall
-                    if [[ $HOOKS_INSTALLED -eq 1 ]]; then
-                        cmd_hooks_uninstall >/dev/null 2>&1
-                    else
-                        cmd_hooks_install >/dev/null 2>&1
-                    fi
-                    # Refresh status
-                    watch_check_hooks_status
-                    _DIALOG_DIRTY=1
-                else
-                    # Close button
-                    DIALOG_MODE=0
-                fi
+            $'\x1e'|' ')  # Enter or Space - toggle current option
+                case $SETUP_FOCUS in
+                    0)  # Safety hooks
+                        if [[ $SETUP_HOOKS_INSTALLED -eq 1 ]]; then
+                            cmd_hooks_uninstall >/dev/null 2>&1
+                        else
+                            cmd_hooks_install >/dev/null 2>&1
+                        fi
+                        watch_check_hooks_status
+                        _DIALOG_DIRTY=1
+                        ;;
+                    1)  # ib instructions
+                        if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
+                            # Uninstalling ib instructions also removes status import
+                            cmd_setup_status_import_uninstall >/dev/null 2>&1
+                            cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
+                        else
+                            cmd_setup_ib_instructions_install >/dev/null 2>&1
+                        fi
+                        watch_check_ib_instructions
+                        watch_check_status_import
+                        _DIALOG_DIRTY=1
+                        ;;
+                    2)  # Agent status (only if ib instructions installed)
+                        if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
+                            if [[ $SETUP_STATUS_IMPORT -eq 1 ]]; then
+                                cmd_setup_status_import_uninstall >/dev/null 2>&1
+                            else
+                                cmd_setup_status_import_install >/dev/null 2>&1
+                            fi
+                            watch_check_status_import
+                            _DIALOG_DIRTY=1
+                        fi
+                        ;;
+                    3)  # Close button
+                        DIALOG_MODE=0
+                        ;;
+                esac
                 ;;
             $'\e')  # Escape - check for sequence
                 _DIALOG_ESC_PENDING=1
@@ -8594,20 +8890,24 @@ EOF
                     _DIALOG_ESC_PENDING=2
                 fi
                 ;;
-            $'\t')  # Tab - forward
-                HOOKS_FOCUS=$(( (HOOKS_FOCUS + 1) % 2 ))
+            $'\t'|'j')  # Tab or j - move down
+                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 4 ))
                 _DIALOG_DIRTY=1
                 ;;
-            'B'|'C')  # Down or Right arrow - forward (like Tab)
+            'B')  # Down arrow
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    HOOKS_FOCUS=$(( (HOOKS_FOCUS + 1) % 2 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 4 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'A'|'D'|'Z')  # Up or Left arrow or Shift+Tab - backward
+            'k')  # k - move up
+                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 4) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'A'|'Z')  # Up arrow or Shift+Tab - move up
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    HOOKS_FOCUS=$(( (HOOKS_FOCUS - 1 + 2) % 2 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 4) % 4 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
@@ -8622,8 +8922,13 @@ EOF
         esac
     }
 
+    # Legacy aliases for compatibility
+    watch_dialog_init_hooks() { watch_dialog_init_setup; }
+    watch_dialog_render_hooks() { watch_dialog_render_setup; }
+    watch_dialog_key_hooks() { watch_dialog_key_setup "$@"; }
+
     # ==========================================================================
-    # End Hooks Dialog
+    # End Setup Dialog
     # ==========================================================================
 
     # ==========================================================================
@@ -8916,15 +9221,15 @@ EOF
                 local err_text="    e: errors ($ERRORS_UNREAD_COUNT)"
                 action_text_visible_len=$((action_text_visible_len + ${#err_text}))
             fi
-            # Add hooks warning if not installed (in yellow)
-            if [[ $HOOKS_INSTALLED -eq 2 ]]; then
-                action_text="$action_text    "$'\e[33m'"h: hooks"$'\e[0m'
-                action_text_visible_len=$((action_text_visible_len + 12))  # "    h: hooks" = 12 chars
-            fi
-            # Add STATUS.md integration warning if not set up (in yellow)
-            if [[ $STATUS_MD_INTEGRATED -eq 2 ]]; then
-                action_text="$action_text    "$'\e[33m'"ib init needed"$'\e[0m'
-                action_text_visible_len=$((action_text_visible_len + 18))  # "    ib init needed" = 18 chars
+            # Add setup indicator (yellow if any setup item not installed, normal if all installed)
+            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 ]]; then
+                # At least one setup item is not installed - show in yellow
+                action_text="$action_text    "$'\e[33m'"h: setup"$'\e[0m'
+                action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
+            else
+                # All setup items installed - show in normal color
+                action_text="$action_text    h: setup"
+                action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
             fi
         fi
         # Use LAST_FRAME_MS from previous complete frame (includes sleep)
@@ -9853,8 +10158,8 @@ EOF
                 ;;
             h)
                 _WATCH_ESC_PENDING=0
-                # Open Hooks dialog
-                watch_dialog_init_hooks
+                # Open Setup dialog
+                watch_dialog_init_setup
                 DIALOG_MODE=6
                 ;;
             *)
