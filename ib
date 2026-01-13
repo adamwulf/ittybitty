@@ -172,6 +172,47 @@ is_running_as_agent() {
     return 1
 }
 
+# Check if a command is allowed for the current execution context
+# Args: $1 = command name (e.g., "hooks", "test-tool-match")
+#       $2 = subcommand (optional, for commands like "hooks install")
+# Exits with error if command is not allowed for agents
+# User terminal and primary Claude can run any command
+enforce_command_access() {
+    local cmd="$1"
+    local subcmd="${2:-}"
+
+    # User terminal and primary Claude can run anything
+    if ! is_running_as_agent; then
+        return 0
+    fi
+
+    # Agent restrictions: block undocumented/test commands
+    case "$cmd" in
+        # Test commands - development only, not for agents
+        parse-state|test-*)
+            echo "Error: '$cmd' is a development/test command not available to agents" >&2
+            exit 1
+            ;;
+        # Interactive commands - don't make sense for agents
+        watch)
+            echo "Error: '$cmd' is an interactive command not available to agents" >&2
+            exit 1
+            ;;
+        # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
+        hooks)
+            case "$subcmd" in
+                install|uninstall)
+                    echo "Error: 'ib hooks $subcmd' modifies main repo configuration" >&2
+                    echo "Agents cannot install or uninstall hooks" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
+    esac
+
+    return 0
+}
+
 # Get children of a manager agent with optional state filtering
 # Args: $1 = manager agent ID
 #       $2 = filter (optional): all|unfinished|running|waiting|complete|creating (default: all)
@@ -11348,6 +11389,10 @@ EOF
 
 # Initialize paths to use root repo (handles running from worktrees)
 init_paths
+
+# Enforce command access restrictions based on execution context
+# Pass command and subcommand (for hooks install/uninstall detection)
+enforce_command_access "${1:-help}" "${2:-}"
 
 case "${1:-help}" in
     new-agent|new)
