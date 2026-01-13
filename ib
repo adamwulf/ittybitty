@@ -762,6 +762,19 @@ init_paths() {
     fi
 }
 
+# Ensure .ittybitty directory structure exists
+# Creates .ittybitty/, .ittybitty/agents/, and .ittybitty/archive/ if they don't exist
+# Silent when directories already exist, idempotent (safe to call multiple times)
+# Must be called after init_paths() sets ROOT_REPO_PATH
+ensure_ittybitty_dirs() {
+    # Skip if not in a git repo or paths not initialized
+    [[ -z "$ROOT_REPO_PATH" ]] && return 0
+
+    # Create directories silently (mkdir -p is idempotent)
+    mkdir -p "$ROOT_REPO_PATH/$ITTYBITTY_DIR/agents" 2>/dev/null || true
+    mkdir -p "$ROOT_REPO_PATH/$ITTYBITTY_DIR/archive" 2>/dev/null || true
+}
+
 # Format age from ISO timestamp
 format_age() {
     local created="$1"
@@ -2205,6 +2218,9 @@ EOF
         exit 1
     fi
 
+    # Ensure .ittybitty directory structure exists
+    ensure_ittybitty_dirs
+
     # Auto-detect manager if not explicitly set and we're in an agent worktree
     if [[ -z "$MANAGER" ]]; then
         local current_dir=$(pwd)
@@ -2833,7 +2849,10 @@ EOF
         esac
     done
 
-    # Check if agents directory exists
+    # Ensure .ittybitty directory structure exists
+    ensure_ittybitty_dirs
+
+    # Check if agents directory exists (should exist after ensure_ittybitty_dirs, but may be empty)
     if [[ ! -d "$AGENTS_DIR" ]]; then
         if [[ "$JSON_OUTPUT" == true ]]; then
             echo "[]"
@@ -3645,7 +3664,10 @@ EOF
         esac
     done
 
-    # Check if agents directory exists
+    # Ensure .ittybitty directory structure exists
+    ensure_ittybitty_dirs
+
+    # Check if agents directory exists (should exist after ensure_ittybitty_dirs, but may be empty)
     if [[ ! -d "$AGENTS_DIR" ]]; then
         echo "No agents found."
         exit 0
@@ -6754,7 +6776,10 @@ EOF
         esac
     done
 
-    # Check if agents directory exists
+    # Ensure .ittybitty directory structure exists
+    ensure_ittybitty_dirs
+
+    # Check if agents directory exists (should exist after ensure_ittybitty_dirs, but may be empty)
     if [[ ! -d "$AGENTS_DIR" ]]; then
         echo "No agents found."
         exit 0
@@ -6821,6 +6846,9 @@ EOF
                 ;;
         esac
     done
+
+    # Ensure .ittybitty directory structure exists
+    ensure_ittybitty_dirs
 
     # Load configuration (for CONFIG_FPS, etc.)
     load_config
