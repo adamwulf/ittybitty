@@ -17,8 +17,23 @@ ARCHIVE_DIR=""
 ROOT_REPO_PATH=""
 
 # Convert agent ID to tmux session name
+# Checks meta.json first (for stored tmux_session), falls back to SESSION_PREFIX + id
+# This ensures consistency when SESSION_PREFIX changes between agent creation and lookup
 session_name() {
-    echo "${SESSION_PREFIX}$1"
+    local id="$1"
+
+    # Try to read tmux_session from meta.json if agent directory exists
+    if [[ -n "$AGENTS_DIR" && -f "$AGENTS_DIR/$id/meta.json" ]]; then
+        local stored_session
+        stored_session=$(grep -o '"tmux_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$AGENTS_DIR/$id/meta.json" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/')
+        if [[ -n "$stored_session" ]]; then
+            echo "$stored_session"
+            return
+        fi
+    fi
+
+    # Fallback: construct from current SESSION_PREFIX
+    echo "${SESSION_PREFIX}$id"
 }
 
 # =============================================================================
@@ -939,8 +954,8 @@ capture_tmux() {
     local lines="${2:-20}"
 
     # Try to read from background cache first (much faster)
-    if [[ -n "$TMUX_CACHE_DIR" && "$session" == ittybitty-* ]]; then
-        local agent_id="${session#ittybitty-}"
+    if [[ -n "$TMUX_CACHE_DIR" && "$session" == ${SESSION_PREFIX}* ]]; then
+        local agent_id="${session#${SESSION_PREFIX}}"
         local cache_file="$TMUX_CACHE_DIR/$agent_id"
         if [[ -f "$cache_file" ]]; then
             _tail_file "$cache_file" "$lines"
@@ -1854,7 +1869,7 @@ build_agent_data_file() {
                 fi
             done
 
-            local tmux_session="ittybitty-${id}"
+            local tmux_session=$(session_name "$id")
             # For new agents (not in cache), check tmux directly instead of relying on cached sessions
             local session_exists=false
             if [[ $state_cache_idx -lt 0 ]]; then
@@ -2539,6 +2554,7 @@ EOF
 {
   "id": "$ID",
   "session_id": "$SESSION_UUID",
+  "tmux_session": "$TMUX_SESSION",
   "prompt": $(echo "$PROMPT" | jq -Rs .),
   "manager": $(if [[ -n "$MANAGER" ]]; then echo "\"$MANAGER\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
@@ -10867,12 +10883,16 @@ EOF
 
             # Capture pane output for each ittybitty session (atomic write to avoid race)
             for session in $sessions; do
-                if [[ "$session" == ittybitty-* ]]; then
-                    local agent_id="${session#ittybitty-}"
-                    # Capture and strip ANSI codes in background (main loop just truncates)
-                    tmux capture-pane -t "$session" -p -S -500 2>/dev/null | \
-                        sed 's/\x1b\[[0-9;]*m//g' > "$tmux_cache_dir/$agent_id.tmp" && \
-                        mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                if [[ "$session" == ${SESSION_PREFIX}* ]]; then
+                    local agent_id="${session#${SESSION_PREFIX}}"
+                    # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
+                    local raw_capture
+                    raw_capture=$(tmux capture-pane -t "$session" -p -S -500 2>/dev/null) || true
+                    if [[ -n "$raw_capture" ]]; then
+                        _strip_ansi "$raw_capture"
+                        printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
+                            mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                    fi
                 fi
             done
 
