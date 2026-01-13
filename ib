@@ -7439,7 +7439,7 @@ Full-screen dashboard for monitoring all agents.
 Controls:
   j/k     Select next/previous agent
   /       Quick jump to agent by name
-  n/p     Cycle right pane mode (agent log / prompt / denials / tree)
+  p/n     Cycle right pane mode (agent log → prompt → denials → tree)
   ;/l     Scroll panes down/up
   Ctrl-C  Exit
 
@@ -10356,8 +10356,8 @@ EOF
                 ;;
             'C')  # Right arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
-                    # Right arrow = same as n (next pane, skip errors if empty)
-                    watch_calc_next_pane 1
+                    # Right arrow = same as n (previous pane, skip errors if empty)
+                    watch_calc_next_pane -1
                     RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
@@ -10365,8 +10365,8 @@ EOF
                 ;;
             'D')  # Left arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
-                    # Left arrow = same as p (previous pane, skip errors if empty)
-                    watch_calc_next_pane -1
+                    # Left arrow = same as p (next pane, skip errors if empty)
+                    watch_calc_next_pane 1
                     RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
@@ -10403,15 +10403,15 @@ EOF
                 ;;
             n)
                 _WATCH_ESC_PENDING=0
-                # Next right pane mode (skip errors pane if empty)
-                watch_calc_next_pane 1
+                # Previous right pane mode (skip errors pane if empty)
+                watch_calc_next_pane -1
                 RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             p)
                 _WATCH_ESC_PENDING=0
-                # Previous right pane mode (skip errors pane if empty)
-                watch_calc_next_pane -1
+                # Next right pane mode (skip errors pane if empty)
+                watch_calc_next_pane 1
                 RIGHT_PANE_MODE=$_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
