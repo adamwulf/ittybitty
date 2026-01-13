@@ -1,0 +1,4 @@
+{
+  "partial": "xyz",
+  "agents": ["abc123", "def456", "ghi789"]
+}

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "worker": {
+      "allow": ["Read"],
+      "deny": ["Write", "Edit", "Bash"]
+    }
+  }
+}

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Test suite for ib test-pretooluse command
-# Run from repo root: ./tests/test-pretooluse.sh
+# Test suite for ib test-tool-allowed command
+# Run from repo root: ./tests/test-tool-allowed.sh
 #
 # Fixture naming convention: {expected-decision}-{description}.json
-# The expected decision (allow or deny) is extracted from the filename prefix (before first hyphen).
+# The expected decision (allowed or denied) is extracted from the filename prefix (before first hyphen).
 
 set -e
 
@@ -22,7 +22,7 @@ if [[ ! -x "$IB" ]]; then
     exit 1
 fi
 
-FIXTURES_DIR="$SCRIPT_DIR/fixtures/pretooluse"
+FIXTURES_DIR="$SCRIPT_DIR/fixtures/tool-allowed"
 
 if [[ ! -d "$FIXTURES_DIR" ]]; then
     echo -e "${RED}Error: fixtures directory not found at $FIXTURES_DIR${NC}"
@@ -32,7 +32,7 @@ fi
 PASSED=0
 FAILED=0
 
-echo "Running test-pretooluse tests..."
+echo "Running test-tool-allowed tests..."
 echo "========================================"
 echo ""
 
@@ -51,8 +51,8 @@ for fixture_path in "$FIXTURES_DIR"/*.json; do
     description="${description%.json}"
     description="${description//-/ }"
 
-    # Run ib test-pretooluse with fixture file
-    actual=$("$IB" test-pretooluse "$fixture_path" 2>&1) || true
+    # Run ib test-tool-allowed with fixture file
+    actual=$("$IB" test-tool-allowed "$fixture_path" 2>&1) || true
 
     if [[ "$actual" == "$expected" ]]; then
         echo -e "${GREEN}PASS${NC} [$expected] $description"

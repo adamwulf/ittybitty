@@ -1,9 +1,9 @@
 #!/bin/bash
-# Test suite for ib test-pretooluse command
-# Run from repo root: ./tests/test-pretooluse.sh
+# Test suite for ib test-log-format command
+# Run from repo root: ./tests/test-log-format.sh
 #
-# Fixture naming convention: {expected-decision}-{description}.json
-# The expected decision (allow or deny) is extracted from the filename prefix (before first hyphen).
+# This test uses a fixed timestamp for deterministic output.
+# Tests verify that messages are properly formatted with [timestamp] prefix.
 
 set -e
 
@@ -22,7 +22,7 @@ if [[ ! -x "$IB" ]]; then
     exit 1
 fi
 
-FIXTURES_DIR="$SCRIPT_DIR/fixtures/pretooluse"
+FIXTURES_DIR="$SCRIPT_DIR/fixtures/log-format"
 
 if [[ ! -d "$FIXTURES_DIR" ]]; then
     echo -e "${RED}Error: fixtures directory not found at $FIXTURES_DIR${NC}"
@@ -31,34 +31,35 @@ fi
 
 PASSED=0
 FAILED=0
+TEST_TIMESTAMP="2026-01-12 10:30:45"
 
-echo "Running test-pretooluse tests..."
+echo "Running test-log-format tests..."
 echo "========================================"
 echo ""
 
 # Loop through all fixture files
-for fixture_path in "$FIXTURES_DIR"/*.json; do
+for fixture_path in "$FIXTURES_DIR"/*.txt; do
     # Skip if no files found
     [[ -e "$fixture_path" ]] || continue
 
     filename=$(basename "$fixture_path")
-
-    # Extract expected decision from filename (everything before first hyphen)
-    expected="${filename%%-*}"
-
-    # Get description from filename (everything after first hyphen, minus .json)
-    description="${filename#*-}"
-    description="${description%.json}"
+    description="${filename%.txt}"
     description="${description//-/ }"
 
-    # Run ib test-pretooluse with fixture file
-    actual=$("$IB" test-pretooluse "$fixture_path" 2>&1) || true
+    # Read the message from fixture
+    message=$(cat "$fixture_path")
+
+    # Expected output is the message with timestamp prefix
+    expected="[$TEST_TIMESTAMP] $message"
+
+    # Run ib test-log-format with fixture file and fixed timestamp
+    actual=$("$IB" test-log-format --timestamp "$TEST_TIMESTAMP" "$fixture_path" 2>&1) || true
 
     if [[ "$actual" == "$expected" ]]; then
-        echo -e "${GREEN}PASS${NC} [$expected] $description"
+        echo -e "${GREEN}PASS${NC} $description"
         ((PASSED++))
     else
-        echo -e "${RED}FAIL${NC} [$expected] $description"
+        echo -e "${RED}FAIL${NC} $description"
         echo "       Expected: $expected"
         echo "       Got:      $actual"
         ((FAILED++))

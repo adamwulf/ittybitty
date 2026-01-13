@@ -1,25 +1,11 @@
 {
-  "description": "Edit tool with relative path resolving to worktree should be allowed",
-  "settings": {
-    "permissions": {
-      "allow": ["Edit"]
-    }
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "src/main.ts"
   },
-  "input": {
-    "tool_name": "Edit",
-    "tool_input": {
-      "file_path": "src/main.js"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "allow",
-    "reason": "Tool in allow list, path in worktree"
-  }
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["Read"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo"
 }

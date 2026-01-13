@@ -1,26 +1,11 @@
 {
-  "description": "Bash cd command with empty target (cd to home) should be allowed",
-  "settings": {
-    "permissions": {
-      "allow": ["Bash(cd:*)"]
-    }
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd "
   },
-  "input": {
-    "tool_name": "Bash",
-    "tool_input": {
-      "command": "cd   ",
-      "description": "Change to home directory"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "allow",
-    "reason": "Tool in allow list, cd to home"
-  }
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["Bash(cd:*)"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo"
 }

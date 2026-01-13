@@ -1,9 +1,9 @@
 #!/bin/bash
-# Test suite for ib test-pretooluse command
-# Run from repo root: ./tests/test-pretooluse.sh
+# Test suite for ib test-format-age command
+# Run from repo root: ./tests/test-format-age.sh
 #
-# Fixture naming convention: {expected-decision}-{description}.json
-# The expected decision (allow or deny) is extracted from the filename prefix (before first hyphen).
+# Fixture naming convention: {expected-output}-{description}.txt
+# The expected output is extracted from the filename prefix (before first hyphen).
 
 set -e
 
@@ -22,7 +22,7 @@ if [[ ! -x "$IB" ]]; then
     exit 1
 fi
 
-FIXTURES_DIR="$SCRIPT_DIR/fixtures/pretooluse"
+FIXTURES_DIR="$SCRIPT_DIR/fixtures/format-age"
 
 if [[ ! -d "$FIXTURES_DIR" ]]; then
     echo -e "${RED}Error: fixtures directory not found at $FIXTURES_DIR${NC}"
@@ -32,27 +32,27 @@ fi
 PASSED=0
 FAILED=0
 
-echo "Running test-pretooluse tests..."
+echo "Running test-format-age tests..."
 echo "========================================"
 echo ""
 
 # Loop through all fixture files
-for fixture_path in "$FIXTURES_DIR"/*.json; do
+for fixture_path in "$FIXTURES_DIR"/*.txt; do
     # Skip if no files found
     [[ -e "$fixture_path" ]] || continue
 
     filename=$(basename "$fixture_path")
 
-    # Extract expected decision from filename (everything before first hyphen)
+    # Extract expected output from filename (everything before first hyphen)
     expected="${filename%%-*}"
 
-    # Get description from filename (everything after first hyphen, minus .json)
+    # Get description from filename (everything after first hyphen, minus .txt)
     description="${filename#*-}"
-    description="${description%.json}"
+    description="${description%.txt}"
     description="${description//-/ }"
 
-    # Run ib test-pretooluse with fixture file
-    actual=$("$IB" test-pretooluse "$fixture_path" 2>&1) || true
+    # Run ib test-format-age with fixture file
+    actual=$("$IB" test-format-age "$fixture_path" 2>&1) || true
 
     if [[ "$actual" == "$expected" ]]; then
         echo -e "${GREEN}PASS${NC} [$expected] $description"

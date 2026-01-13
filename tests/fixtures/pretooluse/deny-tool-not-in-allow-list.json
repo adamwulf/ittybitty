@@ -1,10 +1,11 @@
 {
-  "tool_name": "Read",
+  "tool_name": "Bash",
   "tool_input": {
-    "file_path": "/repo/src/main.ts"
+    "command": "curl https://example.com",
+    "description": "Fetch URL"
   },
   "cwd": "/repo/agents/test-agent/repo",
-  "allow_list": ["Read"],
+  "allow_list": ["Edit", "Read"],
   "worktree_path": "/repo/agents/test-agent/repo",
   "agents_dir": "/repo/agents",
   "root_repo": "/repo"

@@ -1,7 +1,7 @@
 {
   "tool_name": "Read",
   "tool_input": {
-    "file_path": "/repo/src/main.ts"
+    "file_path": "/usr/local/bin/some-tool"
   },
   "cwd": "/repo/agents/test-agent/repo",
   "allow_list": ["Read"],

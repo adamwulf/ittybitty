@@ -4707,6 +4707,1210 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-tool-match
+# =============================================================================
+
+# Test tool_matches_pattern() with a JSON fixture file or stdin
+# This command allows testing the pattern matching logic in isolation
+# Input JSON format:
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "git status"},
+#   "pattern": "Bash(git:*)"
+# }
+# For testing against multiple patterns (returns first match):
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "ib list"},
+#   "patterns": ["Bash(git:*)", "Bash(ib:*)"]
+# }
+# Output: 'match' or 'no-match'
+# Verbose output shows why the match succeeded/failed
+cmd_test_tool_match() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-tool-match [options] [file]
+
+Test tool permission pattern matching logic.
+
+Reads from stdin if no file is provided, or from the specified file.
+Outputs 'match' or 'no-match'.
+
+This command is primarily for testing the tool_matches_pattern() function.
+
+Options:
+  -v, --verbose  Show why the match succeeded or failed
+  -h, --help     Show this help
+
+Input JSON format (single pattern):
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "git status"},
+    "pattern": "Bash(git:*)"
+  }
+
+Input JSON format (multiple patterns - returns first match):
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "ib list"},
+    "patterns": ["Bash(git:*)", "Bash(ib:*)"]
+  }
+
+Pattern formats:
+  - "Read"         Exact tool name match
+  - "Bash(git:*)"  Bash tool where command starts with "git"
+  - "Bash(ib:*)"   Bash tool where command starts with "ib"
+
+Examples:
+  echo '{"tool_name": "Read", "tool_input": {}, "pattern": "Read"}' | ib test-tool-match
+  ib test-tool-match tests/fixtures/tool-match/match-exact-tool.json
+  echo '{"tool_name": "Bash", "tool_input": {"command": "git status"}, "pattern": "Bash(git:*)"}' | ib test-tool-match -v
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-tool-match [file] or echo '{...}' | ib test-tool-match" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters
+    local tool_name tool_input pattern patterns
+    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
+    pattern=$(echo "$input" | jq -r '.pattern // ""')
+    patterns=$(echo "$input" | jq -c '.patterns // []')
+
+    # Validate required fields
+    if [[ -z "$tool_name" ]]; then
+        echo "Error: tool_name is required in JSON input" >&2
+        exit 1
+    fi
+
+    # Build list of patterns to test
+    local patterns_to_test=()
+    if [[ -n "$pattern" ]]; then
+        patterns_to_test+=("$pattern")
+    fi
+
+    # Add patterns from array if present
+    local patterns_len
+    patterns_len=$(echo "$patterns" | jq 'length')
+    if [[ "$patterns_len" -gt 0 ]]; then
+        while IFS= read -r p; do
+            [[ -n "$p" ]] && patterns_to_test+=("$p")
+        done < <(echo "$patterns" | jq -r '.[]')
+    fi
+
+    if [[ ${#patterns_to_test[@]} -eq 0 ]]; then
+        echo "Error: either pattern or patterns is required in JSON input" >&2
+        exit 1
+    fi
+
+    # Test each pattern
+    for p in "${patterns_to_test[@]}"; do
+        # Check for Bash(prefix:*) pattern
+        if [[ "$p" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$tool_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$tool_input" | jq -r '.command // ""')
+                # Check if command starts with prefix (with space or end of string)
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    if $verbose; then
+                        echo "match (pattern: $p, command: $command, prefix match: $prefix)"
+                    else
+                        echo "match"
+                    fi
+                    return 0
+                else
+                    if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                        echo "no-match (pattern: $p, tool: $tool_name, command: $command, expected prefix: $prefix)"
+                        return 0
+                    fi
+                fi
+            else
+                if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                    echo "no-match (pattern: $p, tool: $tool_name, pattern requires Bash tool)"
+                    return 0
+                fi
+            fi
+        # Exact tool name match
+        elif [[ "$p" == "$tool_name" ]]; then
+            if $verbose; then
+                echo "match (pattern: $p, exact tool match)"
+            else
+                echo "match"
+            fi
+            return 0
+        else
+            if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+                echo "no-match (pattern: $p, tool: $tool_name)"
+                return 0
+            fi
+        fi
+    done
+
+    # No pattern matched
+    if $verbose; then
+        local patterns_str
+        patterns_str=$(printf '%s, ' "${patterns_to_test[@]}")
+        patterns_str="${patterns_str%, }"  # Remove trailing comma and space
+        echo "no-match (tool: $tool_name, tested patterns: $patterns_str)"
+    else
+        echo "no-match"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-pretooluse
+# =============================================================================
+
+# Test PreToolUse hook logic with a JSON fixture file
+# This command allows testing the PreToolUse decision logic without a real agent
+# Fixture JSON format:
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "cat file.txt"},
+#   "cwd": "/path/to/cwd",
+#   "allow_list": ["Bash(cat:*)", "Edit"],
+#   "worktree_path": "/path/to/worktree",
+#   "agents_dir": "/path/to/agents",
+#   "root_repo": "/path/to/root"
+# }
+cmd_test_pretooluse() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        echo "Usage: ib test-pretooluse <fixture.json>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: fixture file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    # Read fixture
+    local fixture
+    fixture=$(cat "$fixture_file")
+
+    # Extract test parameters
+    local tool_name tool_input cwd allow_list worktree_path agents_dir root_repo
+    tool_name=$(echo "$fixture" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$fixture" | jq -c '.tool_input // {}')
+    cwd=$(echo "$fixture" | jq -r '.cwd // ""')
+    allow_list=$(echo "$fixture" | jq -r '.allow_list // []')
+    worktree_path=$(echo "$fixture" | jq -r '.worktree_path // ""')
+    agents_dir=$(echo "$fixture" | jq -r '.agents_dir // ""')
+    root_repo=$(echo "$fixture" | jq -r '.root_repo // ""')
+
+    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
+    test_tool_matches_pattern() {
+        local t_name="$1"
+        local t_input="$2"
+        local pattern="$3"
+
+        # Check for Bash(prefix:*) pattern
+        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$t_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$t_input" | jq -r '.command // ""')
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    return 0
+                fi
+            fi
+            return 1
+        fi
+
+        # Exact tool name match
+        if [[ "$pattern" == "$t_name" ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Check if tool is in allow list
+    local in_allow_list=false
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+            in_allow_list=true
+            break
+        fi
+    done < <(echo "$allow_list" | jq -r '.[]')
+
+    if [[ "$in_allow_list" == "false" ]]; then
+        echo "deny"
+        exit 0
+    fi
+
+    # Tool is in allow list - now check path isolation
+
+    # Extract file path from input
+    local file_path
+    file_path=$(echo "$tool_input" | jq -r '.file_path // .path // ""')
+
+    # Special handling for Bash tool - check for cd commands
+    if [[ "$tool_name" == "Bash" ]]; then
+        local bash_command
+        bash_command=$(echo "$tool_input" | jq -r '.command // ""')
+
+        # Check if command is a cd command
+        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
+            # Extract the target directory from cd command
+            local cd_target="${bash_command#cd }"
+            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
+
+            # Remove quotes if present
+            cd_target="${cd_target#\"}"
+            cd_target="${cd_target%\"}"
+            cd_target="${cd_target#\'}"
+            cd_target="${cd_target%\'}"
+
+            # If cd target is empty or just whitespace, allow (cd to home)
+            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+                echo "allow"
+                exit 0
+            fi
+
+            # Use cd_target as the file_path for further checks
+            file_path="$cd_target"
+        else
+            # Not a cd command - allowed by allow list, no path check needed for non-cd
+            echo "allow"
+            exit 0
+        fi
+    fi
+
+    # If no file path found, allow (might be a non-file tool or tool with no path param)
+    if [[ -z "$file_path" ]]; then
+        echo "allow"
+        exit 0
+    fi
+
+    # Resolve to absolute path if relative
+    if [[ "$file_path" != /* ]]; then
+        if [[ -n "$cwd" ]]; then
+            file_path="$cwd/$file_path"
+        fi
+    fi
+
+    # Normalize path (handle . and .. without needing real filesystem)
+    # Simple normalization: remove trailing slashes, collapse multiple slashes
+    file_path=$(echo "$file_path" | sed 's|//*|/|g; s|/$||')
+
+    # Check 1: Allow access within agent's own worktree
+    if [[ -n "$worktree_path" && "$file_path" == "$worktree_path"* ]]; then
+        echo "allow"
+        exit 0
+    fi
+
+    # Check 2: Block access to other agents' directories
+    if [[ -n "$agents_dir" && "$file_path" == "$agents_dir/"* ]]; then
+        # It's in agents_dir but not in worktree_path (which would have matched above)
+        echo "deny"
+        exit 0
+    fi
+
+    # Check 3: Block access to main repo (outside worktree)
+    if [[ -n "$root_repo" && "$file_path" == "$root_repo"* ]]; then
+        # Check if it's NOT in the worktree (worktree check already passed if it was)
+        if [[ -z "$worktree_path" || "$file_path" != "$worktree_path"* ]]; then
+            echo "deny"
+            exit 0
+        fi
+    fi
+
+    # All other paths: allow (system files, etc. - tool is in allow list)
+    echo "allow"
+    exit 0
+}
+
+# =============================================================================
+# COMMAND: test-format-age
+# =============================================================================
+
+# Test format_age() function with deterministic timestamps
+# Input format: '<timestamp> [<now_timestamp>]' (two timestamps, space-separated; second is optional)
+# If only one timestamp provided, uses current time as 'now'
+# Output: formatted age string (e.g., '5s', '5m', '2h', '1d')
+cmd_test_format_age() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-format-age [options] [file]
+
+Test the format_age() function with deterministic timestamps.
+
+Reads from stdin if no file is provided, or from the specified file.
+Input format: '<timestamp> [<now_timestamp>]'
+  - First timestamp: the "created" time to format
+  - Second timestamp (optional): the "now" reference time
+  - If only one timestamp, uses current time as "now"
+
+Timestamps should be Unix epoch seconds.
+
+Output: Formatted age string (e.g., '5s', '5m', '2h', '1d')
+
+Options:
+  -v, --verbose  Show diff in seconds and both timestamps
+  -h, --help     Show this help
+
+Examples:
+  # Using explicit now timestamp for deterministic testing
+  echo "1704067200 1704067205" | ib test-format-age
+  # Output: 5s
+
+  # From file
+  ib test-format-age tests/fixtures/format-age/5s-basic.txt
+
+  # Verbose output
+  echo "1704067200 1704067260" | ib test-format-age -v
+  # Output: 1m (diff: 60 seconds, from: 1704067200, to: 1704067260)
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-format-age [file] or echo 'timestamp [now]' | ib test-format-age" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse the input - expect "timestamp [now_timestamp]"
+    # Trim whitespace and handle both single and double values
+    input=$(echo "$input" | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    local created_ts now_ts
+    if [[ "$input" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
+        # Two timestamps provided
+        created_ts="${BASH_REMATCH[1]}"
+        now_ts="${BASH_REMATCH[2]}"
+    elif [[ "$input" =~ ^([0-9]+)$ ]]; then
+        # Single timestamp - use current time
+        created_ts="${BASH_REMATCH[1]}"
+        now_ts=$(date +%s)
+    else
+        echo "Error: invalid input format. Expected 'timestamp [now_timestamp]'" >&2
+        echo "Got: $input" >&2
+        exit 1
+    fi
+
+    # Calculate the diff
+    local diff=$((now_ts - created_ts))
+
+    # Format the age (same logic as format_age but without ISO parsing)
+    local result
+    if [[ $diff -lt 60 ]]; then
+        result="${diff}s"
+    elif [[ $diff -lt 3600 ]]; then
+        result="$((diff / 60))m"
+    elif [[ $diff -lt 86400 ]]; then
+        result="$((diff / 3600))h"
+    else
+        result="$((diff / 86400))d"
+    fi
+
+    if $verbose; then
+        echo "$result (diff: $diff seconds, from: $created_ts, to: $now_ts)"
+    else
+        echo "$result"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-tool-allowed
+# =============================================================================
+
+# Test tool_in_allow_list() logic directly
+# This is for testing only - blocked from running inside agents
+# Input format (JSON via stdin or file):
+# {
+#   "tool_name": "Bash",
+#   "tool_input": {"command": "ib list"},
+#   "settings": {"permissions": {"allow": ["Bash(ib:*)"]}}
+# }
+cmd_test_tool_allowed() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-tool-allowed [options] [file]
+
+Test tool permission checking against allow list patterns.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs 'allowed' or 'denied' based on whether the tool matches the allow list.
+
+This command is primarily for testing the tool_in_allow_list() logic.
+
+Options:
+  -v, --verbose  Show which pattern matched (if any)
+  -h, --help     Show this help
+
+Input format:
+  {
+    "tool_name": "Bash",
+    "tool_input": {"command": "ib list"},
+    "settings": {"permissions": {"allow": ["Bash(ib:*)"]}}
+  }
+
+Pattern types:
+  - Exact tool name: "Read", "Edit", "Write"
+  - Bash prefix: "Bash(git:*)" matches git commands
+  - Bash prefix: "Bash(ib:*)" matches ib commands
+
+Examples:
+  echo '{"tool_name": "Read", "tool_input": {}, "settings": {"permissions": {"allow": ["Read"]}}}' | ib test-tool-allowed
+  ib test-tool-allowed tests/fixtures/tool-allowed/allowed-exact-tool.json
+  ib test-tool-allowed -v tests/fixtures/tool-allowed/allowed-bash-prefix.json
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-tool-allowed [file] or echo '{...}' | ib test-tool-allowed" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local tool_name tool_input allow_list
+    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
+    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
+    allow_list=$(echo "$input" | jq -r '.settings.permissions.allow // []')
+
+    if [[ -z "$tool_name" ]]; then
+        echo "Error: tool_name is required in input" >&2
+        exit 1
+    fi
+
+    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
+    test_tool_matches_pattern() {
+        local t_name="$1"
+        local t_input="$2"
+        local pattern="$3"
+
+        # Check for Bash(prefix:*) pattern
+        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
+            local prefix="${BASH_REMATCH[1]}"
+            if [[ "$t_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$t_input" | jq -r '.command // ""')
+                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
+                    return 0
+                fi
+            fi
+            return 1
+        fi
+
+        # Exact tool name match
+        if [[ "$pattern" == "$t_name" ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Check if tool is in allow list
+    local matched_pattern=""
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+            matched_pattern="$pattern"
+            break
+        fi
+    done < <(echo "$allow_list" | jq -r '.[]')
+
+    if [[ -n "$matched_pattern" ]]; then
+        if $verbose; then
+            if [[ "$tool_name" == "Bash" ]]; then
+                local command
+                command=$(echo "$tool_input" | jq -r '.command // ""')
+                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name, command: $command)"
+            else
+                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name)"
+            fi
+        else
+            echo "allowed"
+        fi
+    else
+        if $verbose; then
+            local allow_list_str
+            allow_list_str=$(echo "$allow_list" | jq -r '. | join(", ")')
+            echo "denied (tool: $tool_name, allow list: [$allow_list_str])"
+        else
+            echo "denied"
+        fi
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-build-settings
+# =============================================================================
+
+# Test build_agent_settings() function output and validation
+# This is for testing only - blocked from running inside agents
+# Input: agent type (manager/worker) via stdin or file
+cmd_test_build_settings() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+    local validate=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-build-settings [options] [file]
+
+Test agent settings generation for manager or worker agents.
+
+Reads agent type from stdin if no file is provided, or from the specified file.
+With --validate, outputs 'valid' or 'invalid' based on whether the type is recognized.
+Without --validate, outputs the generated JSON settings.
+
+This command is primarily for testing the build_agent_settings() logic.
+
+Options:
+  --validate   Only validate the agent type, output 'valid' or 'invalid'
+  -v, --verbose  Show additional details
+  -h, --help     Show this help
+
+Input format:
+  A single word: 'manager' or 'worker'
+
+Examples:
+  echo "manager" | ib test-build-settings
+  echo "worker" | ib test-build-settings --validate
+  ib test-build-settings tests/fixtures/build-settings/valid-manager.txt
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --validate)
+                validate=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-build-settings [file] or echo 'manager' | ib test-build-settings" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Trim whitespace
+    input=$(echo "$input" | tr -d '[:space:]')
+
+    # Validate agent type
+    if [[ "$input" != "manager" && "$input" != "worker" ]]; then
+        if $validate; then
+            echo "invalid"
+        else
+            echo "Error: invalid agent type '$input'. Must be 'manager' or 'worker'" >&2
+            exit 1
+        fi
+        return
+    fi
+
+    if $validate; then
+        echo "valid"
+    else
+        # Generate settings using the actual function
+        build_agent_settings "$input"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-load-config
+# =============================================================================
+
+# Test load_config() function output
+# This is for testing only - blocked from running inside agents
+# Input: JSON config via stdin or file
+cmd_test_load_config() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-load-config [options] [file]
+
+Test config file parsing and output the parsed values.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the parsed configuration values in a key: value format.
+
+This command is primarily for testing the load_config() logic.
+
+Options:
+  -v, --verbose  Show additional details
+  -h, --help     Show this help
+
+Input format:
+  JSON object matching .ittybitty.json format
+
+Examples:
+  echo '{"maxAgents": 5}' | ib test-load-config
+  ib test-load-config tests/fixtures/load-config/minimal.json
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-load-config [file] or echo '{...}' | ib test-load-config" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse config values using jq (similar to load_config but from input instead of file)
+    local manager_allow manager_deny worker_allow worker_deny
+    local create_prs max_agents model fps
+
+    manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
+    manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
+    worker_allow=$(echo "$input" | jq -r '.permissions.worker.allow // [] | @json' 2>/dev/null || echo "[]")
+    worker_deny=$(echo "$input" | jq -r '.permissions.worker.deny // [] | @json' 2>/dev/null || echo "[]")
+    create_prs=$(echo "$input" | jq -r '.createPullRequests // false' 2>/dev/null || echo "false")
+    max_agents=$(echo "$input" | jq -r '.maxAgents // 10' 2>/dev/null || echo "10")
+    model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
+    fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
+
+    # Handle null model
+    if [[ "$model" == "null" ]]; then
+        model=""
+    fi
+
+    # Output in expected format
+    echo "manager_allow: $manager_allow"
+    echo "manager_deny: $manager_deny"
+    echo "worker_allow: $worker_allow"
+    echo "worker_deny: $worker_deny"
+    echo "create_prs: $create_prs"
+    echo "max_agents: $max_agents"
+    echo "model: $model"
+    echo "fps: $fps"
+}
+
+# =============================================================================
+# COMMAND: test-resolve-id
+# =============================================================================
+
+# Test resolve_agent_id() logic with mock agent list
+# This is for testing only - blocked from running inside agents
+# Input format (JSON):
+# {
+#   "partial": "abc",
+#   "agents": ["abc123", "def456", "abc789"]
+# }
+cmd_test_resolve_id() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-resolve-id [options] [file]
+
+Test partial agent ID matching logic with a mock agent list.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the resolved ID, or an error message for ambiguous/missing matches.
+
+This command is primarily for testing the resolve_agent_id() logic.
+
+Options:
+  -v, --verbose  Show matching details
+  -h, --help     Show this help
+
+Input format:
+  {
+    "partial": "abc",
+    "agents": ["abc123", "def456", "abc789"]
+  }
+
+Examples:
+  echo '{"partial": "def", "agents": ["abc123", "def456"]}' | ib test-resolve-id
+  # Output: def456
+
+  echo '{"partial": "abc", "agents": ["abc123", "abc789"]}' | ib test-resolve-id
+  # Output: error (ambiguous match)
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-resolve-id [file] or echo '{...}' | ib test-resolve-id" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local partial agents_json
+    partial=$(echo "$input" | jq -r '.partial // ""')
+    agents_json=$(echo "$input" | jq -r '.agents // []')
+
+    if [[ -z "$partial" ]]; then
+        echo "Error: partial is required in input" >&2
+        exit 1
+    fi
+
+    # Convert agents array to bash array
+    local matches=()
+    while IFS= read -r agent; do
+        [[ -z "$agent" ]] && continue
+
+        # Check for exact match first
+        if [[ "$agent" == "$partial" ]]; then
+            if $verbose; then
+                echo "exact match: $agent"
+            else
+                echo "$agent"
+            fi
+            return 0
+        fi
+
+        # Check for partial match
+        if [[ "$agent" == *"$partial"* ]]; then
+            matches+=("$agent")
+        fi
+    done < <(echo "$agents_json" | jq -r '.[]')
+
+    case ${#matches[@]} in
+        0)
+            echo "error"
+            ;;
+        1)
+            if $verbose; then
+                echo "partial match: ${matches[0]}"
+            else
+                echo "${matches[0]}"
+            fi
+            ;;
+        *)
+            echo "error"
+            ;;
+    esac
+}
+
+# =============================================================================
+# COMMAND: test-relationships
+# =============================================================================
+
+# Test parent-child relationship detection with mock metadata
+# This is for testing only - blocked from running inside agents
+# Input format (JSON):
+# {
+#   "agents": [
+#     {"id": "manager1", "manager": null},
+#     {"id": "worker1", "manager": "manager1"},
+#     {"id": "worker2", "manager": "manager1"}
+#   ],
+#   "query": {"manager": "manager1"}
+# }
+cmd_test_relationships() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-relationships [options] [file]
+
+Test parent-child relationship detection with mock agent metadata.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs the list of agents matching the query criteria.
+
+This command is primarily for testing the get_children() logic.
+
+Options:
+  -v, --verbose  Show matching details
+  -h, --help     Show this help
+
+Input format:
+  {
+    "agents": [
+      {"id": "manager1", "manager": null},
+      {"id": "worker1", "manager": "manager1"},
+      {"id": "worker2", "manager": "manager1"}
+    ],
+    "query": {"manager": "manager1"}
+  }
+
+Examples:
+  echo '{"agents": [{"id": "w1", "manager": "m1"}, {"id": "w2", "manager": "m1"}], "query": {"manager": "m1"}}' | ib test-relationships
+  # Output: w1 w2
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-relationships [file] or echo '{...}' | ib test-relationships" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters from JSON
+    local query_manager
+    query_manager=$(echo "$input" | jq -r '.query.manager // ""')
+
+    if [[ -z "$query_manager" ]]; then
+        echo "Error: query.manager is required in input" >&2
+        exit 1
+    fi
+
+    # Find all agents whose manager matches the query
+    local children=""
+    while IFS= read -r agent_json; do
+        [[ -z "$agent_json" ]] && continue
+        local agent_id agent_manager
+        agent_id=$(echo "$agent_json" | jq -r '.id // ""')
+        agent_manager=$(echo "$agent_json" | jq -r '.manager // ""')
+
+        if [[ "$agent_manager" == "$query_manager" ]]; then
+            if [[ -n "$children" ]]; then
+                children="$children $agent_id"
+            else
+                children="$agent_id"
+            fi
+        fi
+    done < <(echo "$input" | jq -c '.agents[]')
+
+    if [[ -n "$children" ]]; then
+        echo "$children"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-log-format
+# =============================================================================
+
+# Test log message formatting
+# This is for testing only - blocked from running inside agents
+# Input: message string via stdin or file
+cmd_test_log_format() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+    local timestamp=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-log-format [options] [file]
+
+Test log message formatting.
+
+Reads message from stdin if no file is provided, or from the specified file.
+Outputs the formatted log entry with timestamp.
+
+This command is primarily for testing the log_agent() format.
+
+Options:
+  --timestamp TS  Use specific timestamp instead of current time
+  -v, --verbose   Show additional details
+  -h, --help      Show this help
+
+Input format:
+  Plain text message
+
+Examples:
+  echo "Agent started successfully" | ib test-log-format
+  echo "Agent started" | ib test-log-format --timestamp "2026-01-12 10:30:45"
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --timestamp)
+                shift
+                timestamp="$1"
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-log-format [file] or echo 'message' | ib test-log-format" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Use provided timestamp or generate current one
+    if [[ -z "$timestamp" ]]; then
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    fi
+
+    # Output in log format (same as log_agent)
+    echo "[$timestamp] $input"
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -8988,6 +10192,42 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
+        ;;
+    test-tool-match)
+        shift
+        cmd_test_tool_match "$@"
+        ;;
+    test-pretooluse)
+        shift
+        cmd_test_pretooluse "$@"
+        ;;
+    test-format-age)
+        shift
+        cmd_test_format_age "$@"
+        ;;
+    test-tool-allowed)
+        shift
+        cmd_test_tool_allowed "$@"
+        ;;
+    test-build-settings)
+        shift
+        cmd_test_build_settings "$@"
+        ;;
+    test-load-config)
+        shift
+        cmd_test_load_config "$@"
+        ;;
+    test-resolve-id)
+        shift
+        cmd_test_resolve_id "$@"
+        ;;
+    test-relationships)
+        shift
+        cmd_test_relationships "$@"
+        ;;
+    test-log-format)
+        shift
+        cmd_test_log_format "$@"
         ;;
     log)
         shift

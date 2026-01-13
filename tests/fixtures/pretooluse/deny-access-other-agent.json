@@ -1,25 +1,11 @@
 {
-  "description": "Edit tool accessing file in another agent's directory should be denied",
-  "settings": {
-    "permissions": {
-      "allow": ["Edit", "Read", "Write"]
-    }
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/repo/agents/other-agent/repo/secret.txt"
   },
-  "input": {
-    "tool_name": "Edit",
-    "tool_input": {
-      "file_path": "/test/agents/other-agent/repo/src/main.js"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "deny",
-    "reason": "Access denied: cannot access other agents' files"
-  }
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["Read"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo"
 }

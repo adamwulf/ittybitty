@@ -1,0 +1,1 @@
+[PermissionRequest] Permission denied: Bash (command: curl https://example.com)

@@ -1,10 +1,10 @@
 {
-  "tool_name": "Read",
+  "tool_name": "WebSearch",
   "tool_input": {
-    "file_path": "/repo/src/main.ts"
+    "query": "bash scripting tutorial"
   },
   "cwd": "/repo/agents/test-agent/repo",
-  "allow_list": ["Read"],
+  "allow_list": ["WebSearch"],
   "worktree_path": "/repo/agents/test-agent/repo",
   "agents_dir": "/repo/agents",
   "root_repo": "/repo"

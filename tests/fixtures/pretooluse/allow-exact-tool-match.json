@@ -1,10 +1,12 @@
 {
-  "tool_name": "Read",
+  "tool_name": "Edit",
   "tool_input": {
-    "file_path": "/repo/src/main.ts"
+    "file_path": "/repo/agents/test-agent/repo/src/file.txt",
+    "old_string": "foo",
+    "new_string": "bar"
   },
   "cwd": "/repo/agents/test-agent/repo",
-  "allow_list": ["Read"],
+  "allow_list": ["Edit", "Read"],
   "worktree_path": "/repo/agents/test-agent/repo",
   "agents_dir": "/repo/agents",
   "root_repo": "/repo"
