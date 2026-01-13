@@ -4713,35 +4713,25 @@ EOF
 # PreToolUse hook to prevent main repo Claude from cd-ing into agent worktrees
 # Only blocks Bash cd commands - allows Read/Write/Edit to worktree paths
 cmd_hooks_main_path() {
-    echo "[DEBUG main-path] START" >&2
-
     # Read JSON input from stdin
     local json_input
-    echo "[DEBUG main-path] reading stdin..." >&2
     json_input=$(cat)
-    echo "[DEBUG main-path] got stdin: ${#json_input} bytes" >&2
 
     # Extract tool name
     local tool_name
-    echo "[DEBUG main-path] extracting tool_name..." >&2
     tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
-    echo "[DEBUG main-path] tool_name=$tool_name" >&2
 
     # Only check Bash commands - allow all other tools
     if [[ "$tool_name" != "Bash" ]]; then
-        echo "[DEBUG main-path] not Bash, allowing" >&2
         exit 0
     fi
 
     # Extract bash command
     local bash_command
-    echo "[DEBUG main-path] extracting command..." >&2
     bash_command=$(echo "$json_input" | jq -r '.tool_input.command // ""')
-    echo "[DEBUG main-path] command=$bash_command" >&2
 
     # Only check cd commands - allow all other Bash commands
     if [[ ! "$bash_command" =~ ^cd[[:space:]]+ ]]; then
-        echo "[DEBUG main-path] not cd command, allowing" >&2
         exit 0
     fi
 
