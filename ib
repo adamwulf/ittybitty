@@ -6343,7 +6343,8 @@ cmd_setup_gitignore_install() {
     local gitignore=".gitignore"
 
     # Check if already installed
-    if [[ -f "$gitignore" ]] && grep -q '^\.ittybitty/?$\|^\.ittybitty$\|^/\.ittybitty/?$\|^/\.ittybitty$' "$gitignore" 2>/dev/null; then
+    # Note: In basic grep, \? means "zero or one" (not ?)
+    if [[ -f "$gitignore" ]] && grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
         echo ".ittybitty already in $gitignore"
         return 0
     fi
@@ -6371,7 +6372,8 @@ cmd_setup_gitignore_uninstall() {
     fi
 
     # Check if installed
-    if ! grep -q '^\.ittybitty/?$\|^\.ittybitty$\|^/\.ittybitty/?$\|^/\.ittybitty$' "$gitignore" 2>/dev/null; then
+    # Note: In basic grep, \? means "zero or one" (not ?)
+    if ! grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
         echo ".ittybitty not found in $gitignore"
         return 0
     fi
@@ -6380,7 +6382,7 @@ cmd_setup_gitignore_uninstall() {
     local tmpfile
     tmpfile=$(mktemp)
 
-    grep -v '^\.ittybitty/?$\|^\.ittybitty$\|^/\.ittybitty/?$\|^/\.ittybitty$' "$gitignore" > "$tmpfile"
+    grep -v '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" > "$tmpfile"
 
     mv "$tmpfile" "$gitignore"
     echo ".ittybitty removed from $gitignore"
@@ -7250,7 +7252,8 @@ EOF
         local gitignore="$ROOT_REPO_PATH/.gitignore"
         if [[ -f "$gitignore" ]]; then
             # Check for .ittybitty or .ittybitty/ in .gitignore
-            if grep -q '^\.ittybitty/?$\|^\.ittybitty$\|^/\.ittybitty/?$\|^/\.ittybitty$' "$gitignore" 2>/dev/null; then
+            # Note: In basic grep, \? means "zero or one" (not ?)
+            if grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
                 SETUP_GITIGNORE=1
             else
                 SETUP_GITIGNORE=2
