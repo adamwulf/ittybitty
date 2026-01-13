@@ -681,11 +681,15 @@ resolve_agent_id() {
     done
 
     # Also check tmux sessions that might not have directories
+    # Filter to only sessions with our repo-specific prefix, then extract agent IDs
     while IFS= read -r session; do
-        if [[ "$session" == *"$partial"* ]] && [[ ! " ${matches[*]} " =~ " $session " ]]; then
-            matches+=("$session")
+        [[ -z "$session" ]] && continue
+        [[ "$session" != "${SESSION_PREFIX}"* ]] && continue
+        local agent_id="${session#${SESSION_PREFIX}}"
+        if [[ "$agent_id" == *"$partial"* ]] && [[ ! " ${matches[*]} " =~ " $agent_id " ]]; then
+            matches+=("$agent_id")
         fi
-    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^agent-')
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
 
     case ${#matches[@]} in
         0)
