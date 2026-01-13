@@ -2455,12 +2455,14 @@ EOF
 - Whenever you stop working and are idle, you must end your message with either:
   - 'WAITING' - if waiting for input or have nothing more to do without further instruction
   - 'I HAVE COMPLETED THE GOAL' - if you have completed your task
+- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
 
 When your task is complete:
 1. Commit any changes you made (git add && git commit)
-2. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
+2. Summarize what you accomplished (if needed)
+3. Say the exact phrase: \"I HAVE COMPLETED THE GOAL\" as the FINAL line of your message
    This signals to your manager agent that you are done.
-3. Wait for your manager to merge or kill your session."
+4. Wait for your manager to merge or kill your session."
         else
             # Determine PR instructions based on config and gh availability
             local PR_INSTRUCTIONS=""
@@ -2484,6 +2486,7 @@ Your work is on branch \`agent/$ID\` for review."
 - Whenever you stop working and are idle, you must end your message with either:
   - 'WAITING' - if waiting for next monitoring cycle or have nothing more to do
   - 'I HAVE COMPLETED THE GOAL' - if you have completed your primary goal
+- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
 
 Your workflow:
 CRITICAL: Before spawning ANY sub-agents, you MUST define clear, objective completion criteria for each task.
@@ -4349,7 +4352,7 @@ cmd_hooks_agent_status() {
 
     if [[ "$state" == "unknown" ]]; then
         log_agent "$ID" "[hook] State unknown, sending nudge prompt" --quiet
-        local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
+        local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL' as the FINAL line of your output. Put any summaries before these phrases. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
         sleep 0.1
