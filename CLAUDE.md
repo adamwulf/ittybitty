@@ -76,7 +76,7 @@ ib hooks uninstall   # Remove hook
 
 The hook only blocks `cd` commands into `.ittybitty/agents/*/repo` paths. Read/Write/Edit and other tools still work.
 
-In `ib watch`, press `h` to open the hooks dialog for easy install/uninstall.
+In `ib watch`, press `h` to open the setup dialog for easy install/uninstall of hooks and other setup options.
 
 ### PermissionRequest Hook
 
