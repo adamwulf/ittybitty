@@ -8624,176 +8624,6 @@ EOF
     # ==========================================================================
 
     # ==========================================================================
-    # Jump Dialog (DIALOG_MODE=5)
-    # ==========================================================================
-
-    watch_dialog_init_jump() {
-        JUMP_PATTERN=""
-        _DIALOG_ESC_PENDING=0
-        _DIALOG_DIRTY=1
-    }
-
-    watch_dialog_render_jump() {
-        # Check if a pending escape should close the dialog
-        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-            DIALOG_MODE=0
-            _DIALOG_ESC_PENDING=0
-            return
-        fi
-
-        # Only redraw when dirty
-        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
-        _DIALOG_DIRTY=0
-
-        # Get terminal size
-        TERM_LINES=$(tput lines)
-        TERM_COLS=$(tput cols)
-
-        # Calculate dialog position (centered)
-        dialog_calc_position
-        local start_row=$(( (TERM_LINES - 7) / 2 ))  # 7 lines tall
-        [[ $start_row -lt 1 ]] && start_row=1
-
-        # Clear dialog area
-        dialog_clear "$start_row" 8
-
-        # Draw dialog box
-        local row=$start_row
-        dialog_draw_hline "$row" "┌" "─" "┐"
-        ((row++))
-
-        # Title
-        dialog_draw_line "$row" "JUMP TO AGENT"
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Text input line
-        local input_display="${JUMP_PATTERN}_"
-        local inner_width=$((DIALOG_WIDTH - 4))
-        printf '\e[%d;%dH│ Pattern: ' "$row" "$_DIALOG_START_COL"
-        printf '\e[7m%-*.*s\e[0m' "$((inner_width - 10))" "$((inner_width - 10))" "$input_display"
-        local remaining=$((DIALOG_WIDTH - 4 - 10 - ${#input_display}))
-        if [[ $remaining -gt 0 ]]; then
-            printf '%*s' "$remaining" ""
-        fi
-        printf ' │'
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Hint
-        dialog_draw_line "$row" "Enter: jump  Esc: cancel"
-        ((row++))
-
-        # Bottom border
-        dialog_draw_hline "$row" "└" "─" "┘"
-
-        # Footer hint
-        ((row++))
-        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
-        printf '%*s' "$DIALOG_WIDTH" ''
-        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - 24) / 2 ))" "Type pattern, then Enter"
-    }
-
-    watch_dialog_key_jump() {
-        local key="$1"
-        case "$key" in
-            $'\x1e')  # Enter
-                if [[ -n "$JUMP_PATTERN" ]]; then
-                    # Find matching agent
-                    local agents_dir="$PWD/.ittybitty/agents"
-                    local best_match=""
-                    local best_index=-1
-                    local current_index=0
-
-                    # Build list of agent IDs from current agent list
-                    local tmpfile=$(mktemp)
-                    trap "rm -f '$tmpfile'" RETURN
-                    build_agent_data_file "$tmpfile"
-
-                    while IFS='|' read -r id name state manager model prompt _; do
-                        # Case-insensitive pattern matching on agent name
-                        if [[ "${name,,}" == *"${JUMP_PATTERN,,}"* ]]; then
-                            best_match="$id"
-                            best_index=$current_index
-                            break
-                        fi
-                        ((current_index++))
-                    done < "$tmpfile"
-
-                    # If match found, jump to it
-                    if [[ $best_index -ge 0 ]]; then
-                        SELECTED_INDEX=$best_index
-                        SCROLL_OFFSET=0  # Reset scroll
-                    fi
-                fi
-                DIALOG_MODE=0
-                ;;
-            $'\e')  # Escape
-                _DIALOG_ESC_PENDING=1
-                ;;
-            '[')  # Part of escape sequence
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-                    _DIALOG_ESC_PENDING=2
-                else
-                    # Typing in text field
-                    JUMP_PATTERN="${JUMP_PATTERN}["
-                    _DIALOG_DIRTY=1
-                fi
-                ;;
-            'A'|'B'|'C'|'D'|'Z')  # Arrow keys or Shift+Tab
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    _DIALOG_ESC_PENDING=0
-                else
-                    # Typing in text field
-                    JUMP_PATTERN="${JUMP_PATTERN}${key}"
-                    _DIALOG_DIRTY=1
-                fi
-                ;;
-            $'\x15')  # Ctrl+U - delete all
-                if [[ -n "$JUMP_PATTERN" ]]; then
-                    JUMP_PATTERN=""
-                    _DIALOG_DIRTY=1
-                fi
-                ;;
-            $'\x7f'|$'\b')  # Backspace
-                if [[ -n "$JUMP_PATTERN" ]]; then
-                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-                        # Option+Delete - delete word
-                        dialog_delete_word "$JUMP_PATTERN"
-                        JUMP_PATTERN="$_DIALOG_TEXT_RESULT"
-                        _DIALOG_ESC_PENDING=0
-                    else
-                        # Regular backspace
-                        JUMP_PATTERN="${JUMP_PATTERN%?}"
-                    fi
-                    _DIALOG_DIRTY=1
-                fi
-                ;;
-            *)  # Any other key
-                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
-                    DIALOG_MODE=0
-                    _DIALOG_ESC_PENDING=0
-                else
-                    # Typing in text field
-                    JUMP_PATTERN="${JUMP_PATTERN}${key}"
-                    _DIALOG_DIRTY=1
-                fi
-                _DIALOG_ESC_PENDING=0
-                ;;
-        esac
-    }
-
-    # ==========================================================================
-    # End Jump Dialog
-    # ==========================================================================
-
-    # ==========================================================================
     # Setup Dialog (DIALOG_MODE=6)
     # ==========================================================================
 
@@ -9062,11 +8892,11 @@ EOF
         if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
             DIALOG_MODE=0
             _DIALOG_ESC_PENDING=0
-            return
+            return 0
         fi
 
         # Only redraw when dirty
-        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        [[ "${_DIALOG_DIRTY:-0}" == "1" ]] || return 0
         _DIALOG_DIRTY=0
 
         # Get terminal size
@@ -9076,7 +8906,7 @@ EOF
         # Calculate dialog position (centered)
         dialog_calc_position
         local start_row=$(( (TERM_LINES - 9) / 2 ))  # 9 lines tall
-        [[ $start_row -lt 1 ]] && start_row=1
+        (( start_row < 1 )) && start_row=1
 
         # Find matching agents
         local -a matching_ids=()
@@ -9158,7 +8988,8 @@ EOF
 
     # Helper to check if exactly one agent matches and auto-select it
     watch_jump_check_single_match() {
-        [[ -z "$JUMP_PATTERN" ]] && return  # Don't auto-jump if empty pattern
+        # Don't auto-jump if empty pattern
+        [[ -n "$JUMP_PATTERN" ]] || return 0
 
         local -a matching_ids=()
         local agent_dir id
