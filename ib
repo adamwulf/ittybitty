@@ -8714,12 +8714,20 @@ EOF
 
     watch_dialog_init_setup() {
         SETUP_FOCUS=0
+        _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
         # Refresh all setup status
         watch_check_all_setup
     }
 
     watch_dialog_render_setup() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
         # Only redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
