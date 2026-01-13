@@ -1,0 +1,4 @@
+{
+  "check_type": "ittybitty_block",
+  "content": "# CLAUDE.md\n\nSome content here.\n\n<ittybitty>\n## Multi-Agent Orchestration\nContent here\n</ittybitty>\n\nMore content."
+}

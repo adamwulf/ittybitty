@@ -5965,6 +5965,183 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-setup-check
+# =============================================================================
+
+# Pure function to check if .gitignore content contains the .ittybitty pattern
+# Returns: 1 if pattern found (checkbox should be checked), 0 if not found
+# Args: $1=content
+check_gitignore_has_ittybitty() {
+    local content="$1"
+    # Pattern should match:
+    # - .ittybitty or .ittybitty/ at start of line
+    # - /.ittybitty or /.ittybitty/ at start of line
+    # - Can have trailing slash or not
+    # - Can be preceded by / or not
+    # - Line can have trailing whitespace but nothing else after
+    #
+    # Using basic grep (not extended) for Bash 3.2 compatibility
+    # In basic grep: \? means zero or one, \| means OR
+    if echo "$content" | grep -q '^\.ittybitty/\?[[:space:]]*$' 2>/dev/null; then
+        return 0
+    fi
+    if echo "$content" | grep -q '^/\.ittybitty/\?[[:space:]]*$' 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Pure function to check if CLAUDE.md content contains <ittybitty> tags
+# Returns: 1 if both tags found, 0 if not
+# Args: $1=content
+check_claude_md_has_ittybitty_block() {
+    local content="$1"
+    if echo "$content" | grep -q '<ittybitty>' 2>/dev/null && \
+       echo "$content" | grep -q '</ittybitty>' 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Pure function to check if CLAUDE.md content contains @.ittybitty/STATUS.md import
+# Returns: 1 if import found, 0 if not
+# Args: $1=content
+check_claude_md_has_status_import() {
+    local content="$1"
+    if echo "$content" | grep -q '@\.ittybitty/STATUS\.md' 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Test setup check functions with fixture files
+# This is for testing only - blocked from running inside agents
+# Fixture JSON format:
+# {
+#   "check_type": "gitignore" | "ittybitty_block" | "status_import",
+#   "content": "the content to check"
+# }
+cmd_test_setup_check() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-setup-check [options] [file]
+
+Test setup dialog checkbox state detection.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs "1" if the check passes (checkbox should be checked) or "0" if not.
+
+This command tests the logic that determines checkbox states in the setup dialog.
+
+Options:
+  -v, --verbose   Show additional details
+  -h, --help      Show this help
+
+Input JSON format:
+{
+  "check_type": "gitignore" | "ittybitty_block" | "status_import",
+  "content": "the file content to check"
+}
+
+Check types:
+  gitignore        - Check if .ittybitty is in .gitignore content
+  ittybitty_block  - Check if <ittybitty>...</ittybitty> is in CLAUDE.md
+  status_import    - Check if @.ittybitty/STATUS.md is in CLAUDE.md
+
+Examples:
+  echo '{"check_type": "gitignore", "content": ".ittybitty/"}' | ib test-setup-check
+  ib test-setup-check tests/fixtures/setup-check/1-gitignore-start.json
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-setup-check [file] or echo '{...}' | ib test-setup-check" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse JSON
+    local check_type content
+    check_type=$(echo "$input" | jq -r '.check_type // ""')
+    content=$(echo "$input" | jq -r '.content // ""')
+
+    if [[ -z "$check_type" ]]; then
+        echo "Error: check_type is required" >&2
+        exit 1
+    fi
+
+    local result=0
+    case "$check_type" in
+        gitignore)
+            if check_gitignore_has_ittybitty "$content"; then
+                result=1
+            fi
+            ;;
+        ittybitty_block)
+            if check_claude_md_has_ittybitty_block "$content"; then
+                result=1
+            fi
+            ;;
+        status_import)
+            if check_claude_md_has_status_import "$content"; then
+                result=1
+            fi
+            ;;
+        *)
+            echo "Error: unknown check_type: $check_type" >&2
+            echo "Valid types: gitignore, ittybitty_block, status_import" >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ "$verbose" == "true" ]]; then
+        echo "Check type: $check_type"
+        echo "Result: $result"
+    else
+        echo "$result"
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -7218,7 +7395,9 @@ EOF
     watch_check_ib_instructions() {
         local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
         if [[ -f "$claude_md" ]]; then
-            if grep -q '<ittybitty>' "$claude_md" && grep -q '</ittybitty>' "$claude_md"; then
+            local content
+            content=$(cat "$claude_md")
+            if check_claude_md_has_ittybitty_block "$content"; then
                 SETUP_IB_INSTRUCTIONS=1
             else
                 SETUP_IB_INSTRUCTIONS=2
@@ -7232,9 +7411,9 @@ EOF
     watch_check_status_import() {
         local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
         if [[ -f "$claude_md" ]]; then
-            # Check for @.ittybitty/STATUS.md anywhere in the file
-            # (ideally inside <ittybitty> but we accept it anywhere)
-            if grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
+            local content
+            content=$(cat "$claude_md")
+            if check_claude_md_has_status_import "$content"; then
                 SETUP_STATUS_IMPORT=1
                 STATUS_MD_INTEGRATED=1  # Legacy
             else
@@ -7251,9 +7430,9 @@ EOF
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
         if [[ -f "$gitignore" ]]; then
-            # Check for .ittybitty or .ittybitty/ in .gitignore
-            # Note: In basic grep, \? means "zero or one" (not ?)
-            if grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
+            local content
+            content=$(cat "$gitignore")
+            if check_gitignore_has_ittybitty "$content"; then
                 SETUP_GITIGNORE=1
             else
                 SETUP_GITIGNORE=2
@@ -10581,6 +10760,10 @@ case "${1:-help}" in
     test-log-format)
         shift
         cmd_test_log_format "$@"
+        ;;
+    test-setup-check)
+        shift
+        cmd_test_setup_check "$@"
         ;;
     log)
         shift
