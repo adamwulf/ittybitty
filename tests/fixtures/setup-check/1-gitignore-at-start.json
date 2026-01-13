@@ -1,0 +1,4 @@
+{
+  "check_type": "gitignore",
+  "content": ".ittybitty/\nnode_modules/\n.env"
+}
