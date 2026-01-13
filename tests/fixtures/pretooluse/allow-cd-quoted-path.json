@@ -1,26 +1,12 @@
 {
-  "description": "Bash cd command with quoted path in worktree should be allowed",
-  "settings": {
-    "permissions": {
-      "allow": ["Bash(cd:*)"]
-    }
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd \"/test/agents/test-agent/repo/src\"",
+    "description": "Change to src directory with quotes"
   },
-  "input": {
-    "tool_name": "Bash",
-    "tool_input": {
-      "command": "cd \"/test/agents/test-agent/repo/src\"",
-      "description": "Change to src directory with quotes"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "allow",
-    "reason": "Tool in allow list, path in worktree"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Bash(cd:*)"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }

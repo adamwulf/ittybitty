@@ -4928,12 +4928,13 @@ cmd_test_pretooluse() {
     fixture=$(cat "$fixture_file")
 
     # Extract test parameters
-    local tool_name tool_input cwd allow_list worktree_path agents_dir root_repo
+    local tool_name tool_input cwd allow_list worktree_path agent_dir agents_dir root_repo
     tool_name=$(echo "$fixture" | jq -r '.tool_name // ""')
     tool_input=$(echo "$fixture" | jq -c '.tool_input // {}')
     cwd=$(echo "$fixture" | jq -r '.cwd // ""')
     allow_list=$(echo "$fixture" | jq -r '.allow_list // []')
     worktree_path=$(echo "$fixture" | jq -r '.worktree_path // ""')
+    agent_dir=$(echo "$fixture" | jq -r '.agent_dir // ""')
     agents_dir=$(echo "$fixture" | jq -r '.agents_dir // ""')
     root_repo=$(echo "$fixture" | jq -r '.root_repo // ""')
 
@@ -5040,14 +5041,20 @@ cmd_test_pretooluse() {
         exit 0
     fi
 
-    # Check 2: Block access to other agents' directories
+    # Check 2: Allow access to agent's own log file
+    if [[ -n "$agent_dir" && "$file_path" == "$agent_dir/agent.log" ]]; then
+        echo "allow"
+        exit 0
+    fi
+
+    # Check 3: Block access to other agents' directories
     if [[ -n "$agents_dir" && "$file_path" == "$agents_dir/"* ]]; then
         # It's in agents_dir but not in worktree_path (which would have matched above)
         echo "deny"
         exit 0
     fi
 
-    # Check 3: Block access to main repo (outside worktree)
+    # Check 4: Block access to main repo (outside worktree)
     if [[ -n "$root_repo" && "$file_path" == "$root_repo"* ]]; then
         # Check if it's NOT in the worktree (worktree check already passed if it was)
         if [[ -z "$worktree_path" || "$file_path" != "$worktree_path"* ]]; then

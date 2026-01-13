@@ -1,26 +1,12 @@
 {
-  "description": "Bash cd command to main repo should be denied",
-  "settings": {
-    "permissions": {
-      "allow": ["Bash(cd:*)"]
-    }
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /test/main-repo/src",
+    "description": "Change to main repo src"
   },
-  "input": {
-    "tool_name": "Bash",
-    "tool_input": {
-      "command": "cd /test/main-repo/src",
-      "description": "Change to main repo src"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "deny",
-    "reason": "Access denied: work in your worktree, not the main repo"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Bash(cd:*)"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }

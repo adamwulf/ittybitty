@@ -1,26 +1,12 @@
 {
-  "description": "Bash cd command to another agent's worktree should be denied",
-  "settings": {
-    "permissions": {
-      "allow": ["Bash(cd:*)"]
-    }
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /test/agents/other-agent/repo",
+    "description": "Change to other agent's repo"
   },
-  "input": {
-    "tool_name": "Bash",
-    "tool_input": {
-      "command": "cd /test/agents/other-agent/repo",
-      "description": "Change to other agent's repo"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "deny",
-    "reason": "Access denied: cannot cd into other agents' worktrees"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Bash(cd:*)"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }

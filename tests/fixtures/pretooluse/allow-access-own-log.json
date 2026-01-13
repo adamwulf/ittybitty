@@ -1,25 +1,12 @@
 {
-  "description": "Read tool accessing agent's own log file should be allowed",
-  "settings": {
-    "permissions": {
-      "allow": ["Read"]
-    }
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/test/agents/test-agent/agent.log"
   },
-  "input": {
-    "tool_name": "Read",
-    "tool_input": {
-      "file_path": "/test/agents/test-agent/agent.log"
-    },
-    "cwd": "/test/agents/test-agent/repo"
-  },
-  "context": {
-    "worktree_path": "/test/agents/test-agent/repo",
-    "agent_dir": "/test/agents/test-agent",
-    "agents_dir": "/test/agents",
-    "root_repo": "/test/main-repo"
-  },
-  "expected": {
-    "decision": "allow",
-    "reason": "Tool in allow list, accessing own log"
-  }
+  "cwd": "/test/agents/test-agent/repo",
+  "allow_list": ["Read"],
+  "worktree_path": "/test/agents/test-agent/repo",
+  "agent_dir": "/test/agents/test-agent",
+  "agents_dir": "/test/agents",
+  "root_repo": "/test/main-repo"
 }
