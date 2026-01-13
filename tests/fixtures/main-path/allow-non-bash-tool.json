@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/some/path/.ittybitty/agents/test/repo/file.txt"
+  },
+  "cwd": "/some/path"
+}

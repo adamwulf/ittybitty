@@ -6145,6 +6145,100 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-main-path
+# =============================================================================
+
+# Test the main-path hook logic with fixture files
+# This is for testing only - blocked from running inside agents
+# Fixture JSON format: same as PreToolUse hook input
+# {
+#   "tool_name": "Bash",
+#   "tool_input": { "command": "cd /path" },
+#   "cwd": "/current/dir"
+# }
+cmd_test_main_path() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-main-path [file]
+
+Test the main-path hook logic that prevents cd into agent worktrees.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs "allow" if the command should be allowed, "deny" if it should be blocked.
+
+This tests the logic in 'ib hooks main-path' without needing actual hook setup.
+
+Input JSON format (same as Claude's PreToolUse hook):
+{
+  "tool_name": "Bash",
+  "tool_input": { "command": "cd /path/to/somewhere" },
+  "cwd": "/current/working/dir"
+}
+
+Examples:
+  echo '{"tool_name": "Bash", "tool_input": {"command": "cd /tmp"}}' | ib test-main-path
+  ib test-main-path tests/fixtures/main-path/deny-cd-agent-worktree.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-main-path [file] or echo '{...}' | ib test-main-path" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Run the main-path hook logic and capture exit code
+    # cmd_hooks_main_path exits with 0 for allow, 2 for deny
+    # Temporarily disable set -e to capture non-zero exit codes
+    set +e
+    echo "$input" | cmd_hooks_main_path > /dev/null 2>&1
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -eq 0 ]]; then
+        echo "allow"
+    elif [[ $exit_code -eq 2 ]]; then
+        echo "deny"
+    else
+        echo "error"
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -6173,15 +6267,29 @@ cmd_hooks_main_path() {
         exit 0
     fi
 
-    # Extract cd target
+    # Extract cd target - strip everything after 'cd '
     local cd_target="${bash_command#cd }"
     cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
 
-    # Remove quotes if present
-    cd_target="${cd_target#\"}"
-    cd_target="${cd_target%\"}"
-    cd_target="${cd_target#\'}"
-    cd_target="${cd_target%\'}"
+    # Stop at command separators (&&, ||, ;, |, #)
+    # This handles compound commands like: cd /path && other_command
+    cd_target="${cd_target%% &&*}"  # stop at &&
+    cd_target="${cd_target%% ||*}"  # stop at ||
+    cd_target="${cd_target%%;*}"    # stop at ;
+    cd_target="${cd_target%% |*}"   # stop at | (space before to avoid matching paths with |)
+    cd_target="${cd_target%% #*}"   # stop at # (comment)
+
+    # Trim trailing whitespace
+    cd_target="${cd_target%"${cd_target##*[![:space:]]}"}"
+
+    # Remove quotes if present (handle both "path" and 'path')
+    if [[ "$cd_target" == \"*\" ]]; then
+        cd_target="${cd_target#\"}"
+        cd_target="${cd_target%\"}"
+    elif [[ "$cd_target" == \'*\' ]]; then
+        cd_target="${cd_target#\'}"
+        cd_target="${cd_target%\'}"
+    fi
 
     # If cd target is empty (cd to home), allow
     if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
@@ -6198,8 +6306,14 @@ cmd_hooks_main_path() {
         fi
     fi
 
-    # Normalize path (resolve . and ..)
-    file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
+    # Normalize path (resolve . and ..) - only if directory exists
+    # This avoids breaking path checking for test fixtures with non-existent paths
+    local dir_path
+    dir_path=$(dirname "$file_path")
+    if [[ -d "$dir_path" ]]; then
+        file_path=$(cd "$dir_path" 2>/dev/null && pwd)/$(basename "$file_path")
+    fi
+    # If dir doesn't exist, keep file_path as-is (still check the pattern)
 
     # Check if path matches .ittybitty/agents/*/repo pattern
     if [[ "$file_path" == *"/.ittybitty/agents/"*"/repo"* || "$file_path" == *"/.ittybitty/agents/"*"/repo" ]]; then
@@ -10767,6 +10881,10 @@ case "${1:-help}" in
     test-setup-check)
         shift
         cmd_test_setup_check "$@"
+        ;;
+    test-main-path)
+        shift
+        cmd_test_main_path "$@"
         ;;
     log)
         shift

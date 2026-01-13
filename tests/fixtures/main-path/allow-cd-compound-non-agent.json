@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /Users/dev/project/src && npm test"
+  },
+  "cwd": "/Users/dev/project"
+}

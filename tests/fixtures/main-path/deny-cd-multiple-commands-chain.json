@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /Users/dev/project/.ittybitty/agents/test-agent/repo && git add . && git commit -m 'test'"
+  },
+  "cwd": "/Users/dev/project"
+}
