@@ -7603,6 +7603,7 @@ EOF
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
     local -a ERRORS_CACHE=()
     local ERRORS_UNREAD_COUNT=0  # Count of unread errors
+    local ERRORS_TOTAL_COUNT=0   # Total count of errors (for skip logic)
 
     # Usage tracking state (refreshed periodically)
     local USAGE_SESSION_PCT=""   # 5-hour session utilization percentage
@@ -7730,6 +7731,7 @@ EOF
         local new_errors=$((count_after - count_before))
         if [[ $new_errors -gt 0 ]]; then
             ERRORS_UNREAD_COUNT=$((ERRORS_UNREAD_COUNT + new_errors))
+            ERRORS_TOTAL_COUNT=$((ERRORS_TOTAL_COUNT + new_errors))
         fi
         # Clear the file after loading
         : > "$ERRORS_FILE"
@@ -7739,6 +7741,7 @@ EOF
     watch_clear_errors() {
         ERRORS_CACHE=()
         ERRORS_UNREAD_COUNT=0
+        ERRORS_TOTAL_COUNT=0
     }
 
     # Mark all errors as read (reset unread count)
@@ -7755,7 +7758,8 @@ EOF
         local next_mode=$(( (RIGHT_PANE_MODE + direction + pane_count) % pane_count ))
 
         # Skip errors pane (mode 4) if there are no errors
-        if [[ $next_mode -eq 4 && ${#ERRORS_CACHE[@]} -eq 0 ]]; then
+        # Use ERRORS_TOTAL_COUNT instead of array length for reliable cross-function access
+        if [[ $next_mode -eq 4 && $ERRORS_TOTAL_COUNT -eq 0 ]]; then
             next_mode=$(( (next_mode + direction + pane_count) % pane_count ))
         fi
 
@@ -9927,10 +9931,15 @@ EOF
             # Show "No errors" if empty
             if [[ $total_lines -eq 0 ]]; then
                 local empty_msg="No errors recorded"
+                # Truncate message if wider than content area
+                if [[ ${#empty_msg} -gt $content_width ]]; then
+                    empty_msg="${empty_msg:0:$content_width}"
+                fi
                 for ((line_num=0; line_num<content_height; line_num++)); do
                     if [[ $line_num -eq $((content_height / 2)) ]]; then
                         # Center the message
                         local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        [[ $padding -lt 0 ]] && padding=0
                         printf '%*s%s\n' "$padding" "" "$empty_msg"
                     else
                         printf '%-*s\n' "$content_width" ""
