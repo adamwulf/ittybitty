@@ -9330,23 +9330,28 @@ EOF
         fi
 
         # Display min(agent count, 5) lines of tree with selection highlighting
-        _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
-        [[ $_WATCH_TREE_DISPLAY_LINES -gt 5 ]] && _WATCH_TREE_DISPLAY_LINES=5
-        local display_line
-        for ((display_line=0; display_line<_WATCH_TREE_DISPLAY_LINES; display_line++)); do
-            local tree_idx=$((TREE_SCROLL + display_line))
-            if [[ $tree_idx -lt $total_tree_lines ]]; then
-                line="${tree_lines[$tree_idx]}"
-                if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
-                    # Highlight selected line with reverse video
-                    printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
+        # Skip rendering the header tree when TREE pane is active (mode 3) to avoid duplication
+        if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
+            _WATCH_TREE_DISPLAY_LINES=0
+        else
+            _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
+            [[ $_WATCH_TREE_DISPLAY_LINES -gt 5 ]] && _WATCH_TREE_DISPLAY_LINES=5
+            local display_line
+            for ((display_line=0; display_line<_WATCH_TREE_DISPLAY_LINES; display_line++)); do
+                local tree_idx=$((TREE_SCROLL + display_line))
+                if [[ $tree_idx -lt $total_tree_lines ]]; then
+                    line="${tree_lines[$tree_idx]}"
+                    if [[ $tree_idx -eq $SELECTED_INDEX ]]; then
+                        # Highlight selected line with reverse video
+                        printf "\e[7m%-${TERM_COLS}.${TERM_COLS}s\e[0m\n" "$line"
+                    else
+                        printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+                    fi
                 else
-                    printf "%-${TERM_COLS}.${TERM_COLS}s\n" "$line"
+                    printf "%-${TERM_COLS}s\n" ""
                 fi
-            else
-                printf "%-${TERM_COLS}s\n" ""
-            fi
-        done
+            done
+        fi
     }
 
     # Render split panes (tmux output + agent log)
