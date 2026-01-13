@@ -8909,7 +8909,7 @@ EOF
         # Calculate dialog position (centered)
         dialog_calc_position
         local start_row=$(( (TERM_LINES - 9) / 2 ))  # 9 lines tall
-        (( start_row < 1 )) && start_row=1
+        [[ $start_row -lt 1 ]] && start_row=1
 
         # Find matching agents
         local -a matching_ids=()
