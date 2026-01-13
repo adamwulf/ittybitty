@@ -10264,6 +10264,9 @@ EOF
         # Load any new errors from background processes
         watch_load_errors_from_file
 
+        # Track dialog state for dirty detection at end of frame
+        local prev_dialog_mode=$DIALOG_MODE
+
         # Render frame (dialog or normal)
         if [[ $DIALOG_MODE -ne 0 ]]; then
             set +e  # Disable exit-on-error for dialog rendering
@@ -10311,6 +10314,12 @@ EOF
             watch_process_key "${keys_to_process:$i:1}"
         done
         set -e
+
+        # If dialog was closed during this frame (via render or key processing),
+        # force full screen redraw on next frame to clear dialog remnants
+        if [[ $prev_dialog_mode -ne 0 && $DIALOG_MODE -eq 0 ]]; then
+            _NO_AGENTS_DIRTY=1
+        fi
     done
 }
 
