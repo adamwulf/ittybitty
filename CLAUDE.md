@@ -252,10 +252,25 @@ tmux capture-pane -t "$SESSION" -p -S - >> "$AGENT_DIR/agent.log"
 
 ## Process and Session Management
 
+### Tmux Session Naming and Multi-Repo Isolation
+
+Each repository gets a unique repo ID stored in `.ittybitty/repo-id` (auto-generated on first use). This ID is included in tmux session names to prevent collisions when running `ib` in multiple repositories simultaneously.
+
+**Session naming format:** `ittybitty-<repo-id>-<agent-id>`
+
+Example: `ittybitty-a1b2c3d4-agent-e5f6g7h8`
+
+This ensures:
+- Each repo's agents are isolated in the tmux namespace
+- Orphan detection only targets sessions belonging to the same repo
+- Worktree agents automatically use the main repo's ID (via `get_root_repo()`)
+
+The repo ID is gitignored (inside `.ittybitty/`) so each clone gets its own unique ID.
+
 ### Process Hierarchy
 
 ```
-tmux session (ittybitty-<agent-id>)
+tmux session (ittybitty-<repo-id>-<agent-id>)
   └── bash shell (pane_pid)
         └── claude process (claude_pid)
 ```
