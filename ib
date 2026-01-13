@@ -143,15 +143,32 @@ log_tmux_screen() {
     log_multi_line "$ID" "tmux" "$tmux_content"
 }
 
-# Check if ib is being called from within an agent worktree
+# Check if ib is being called by Claude Code (vs user terminal)
+# Returns: 0 if Claude is running the command, 1 if user terminal
+# Detection: CLAUDECODE=1 env var is set by Claude Code
+is_claude_running() {
+    [[ "${CLAUDECODE:-}" == "1" ]]
+}
+
+# Check if ib is being called from within an agent worktree or ib tmux session
 # Returns: 0 if running as an agent, 1 if not
 # Use this to detect when commands like kill/merge/nuke are called by an agent
 # so we can error out instead of blocking on interactive prompts
 is_running_as_agent() {
+    # Primary check: worktree path pattern
     local current_dir=$(pwd)
     if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
         return 0
     fi
+
+    # Secondary check: ib-spawned tmux session name (for cases where agent cd'd elsewhere)
+    local session_name
+    if session_name=$(tmux display-message -p '#{session_name}' 2>/dev/null); then
+        if [[ "$session_name" == ittybitty-* ]]; then
+            return 0
+        fi
+    fi
+
     return 1
 }
 
