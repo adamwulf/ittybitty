@@ -8991,29 +8991,15 @@ EOF
         printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
-    # Helper to check if exactly one agent matches and auto-select it
+    # Helper to check if exactly one agent matches
+    # Note: We no longer auto-close the dialog here to prevent key batching issues
+    # where subsequent keys in the same frame would go to normal mode handlers.
+    # The dialog only closes on Enter (if one match) or Escape.
     watch_jump_check_single_match() {
-        # Don't auto-jump if empty pattern
-        [[ -n "$JUMP_PATTERN" ]] || return 0
-
-        local -a matching_ids=()
-        local agent_dir id
-        shopt -s nocasematch
-        for agent_dir in "$AGENTS_DIR"/*/; do
-            [[ -d "$agent_dir" ]] || continue
-            id="${agent_dir%/}"; id="${id##*/}"
-            if [[ "$id" == *"$JUMP_PATTERN"* ]]; then
-                matching_ids+=("$id")
-            fi
-        done
-        shopt -u nocasematch
-
-        if [[ ${#matching_ids[@]} -eq 1 ]]; then
-            # Exactly one match - auto-select it and close dialog
-            SELECTED_NAME="${matching_ids[0]}"
-            SELECTED_INDEX=-1  # Will be reconciled in render
-            DIALOG_MODE=0
-        fi
+        # This function is now a no-op placeholder.
+        # Match checking happens in render and on Enter key.
+        # Keeping the function to avoid removing all call sites.
+        :
     }
 
     watch_dialog_key_jump() {
