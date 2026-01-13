@@ -1,0 +1,3 @@
+Some output text
+More output
+✻ Thinking...

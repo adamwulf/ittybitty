@@ -979,9 +979,13 @@ parse_state() {
 
     # Check for thinking spinners at start of line (model is actively thinking)
     # These Unicode spinner characters appear at line start when Claude is processing
+    # Exclude "Brewed for" and "Worked for" lines - these are completion time indicators, not active spinners
     if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-        echo "running"
-        return
+        # Check if any spinner line contains completion time indicator
+        if ! [[ "$last_lines" =~ [✽✶✢·✻✳][[:space:]]+(Brewed|Worked)[[:space:]]+for ]]; then
+            echo "running"
+            return
+        fi
     fi
 
     # Check for tool invocation patterns (weaker running signal)
