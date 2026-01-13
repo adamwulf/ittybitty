@@ -9491,6 +9491,9 @@ EOF
 
         # ===== SPECIAL HANDLING FOR DENIALS PANE (MODE 2) =====
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
+            # Set terminal title (since tree rendering is skipped)
+            printf '\e]0;ib watch: denials\a'
+
             # Full-width header for denials mode
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
             local header="── DENIED TOOLS ($filter_name) "
@@ -9924,20 +9927,26 @@ EOF
         tmpfile=$(mktemp)
 
         # Active agents (always included)
+        # Look for both "Permission denied" and "Path violation" patterns
         if [[ -d "$AGENTS_DIR" ]]; then
-            find "$AGENTS_DIR" -name "agent.log" -exec grep -H "Permission denied" {} \; 2>/dev/null | \
-                while IFS=: read -r file_path log_line; do
-                    local agent_id
-                    agent_id=$(basename "$(dirname "$file_path")")
-                    # Extract timestamp and format
-                    local timestamp="${log_line#*[}"
-                    timestamp="${timestamp%%]*}"
-                    local denial="${log_line#*] }"
-                    echo "$timestamp|$agent_id|$denial"
-                done >> "$tmpfile" || true
+            for agent_log in "$AGENTS_DIR"/*/agent.log; do
+                [[ -f "$agent_log" ]] || continue
+                local agent_id
+                agent_id=$(basename "$(dirname "$agent_log")")
+                # Grep for both denial patterns
+                grep -E "Permission denied|Path violation" "$agent_log" 2>/dev/null | \
+                    while IFS= read -r log_line; do
+                        # Extract timestamp and format
+                        local timestamp="${log_line#*[}"
+                        timestamp="${timestamp%%]*}"
+                        local denial="${log_line#*] }"
+                        echo "$timestamp|$agent_id|$denial"
+                    done >> "$tmpfile"
+            done
         fi
 
         # Archived agents (if time filter allows)
+        # Also look for both "Permission denied" and "Path violation" patterns
         if [[ $DENIALS_TIME_FILTER -gt 0 && -d "$ARCHIVE_DIR" ]]; then
             # Calculate cutoff timestamp
             local cutoff_seconds
@@ -9958,34 +9967,35 @@ EOF
 
             # Find archive directories newer than cutoff
             # Directory format: YYYYMMDD-HHMMSS-<agent-id>
-            find "$ARCHIVE_DIR" -maxdepth 1 -type d -name "20*-*" 2>/dev/null | \
-                while read -r archive_dir; do
-                    local dir_name
-                    dir_name=$(basename "$archive_dir")
-                    local dir_timestamp="${dir_name%%-*}-${dir_name#*-}"  # Extract YYYYMMDD-HHMMSS
-                    dir_timestamp="${dir_timestamp%%-*}"  # Remove trailing agent-id
+            for archive_dir in "$ARCHIVE_DIR"/20*-*; do
+                [[ -d "$archive_dir" ]] || continue
+                local dir_name
+                dir_name=$(basename "$archive_dir")
+                local dir_timestamp="${dir_name%%-*}-${dir_name#*-}"  # Extract YYYYMMDD-HHMMSS
+                dir_timestamp="${dir_timestamp%%-*}"  # Remove trailing agent-id
 
-                    # Compare timestamps lexicographically (YYYYMMDD-HHMMSS is sortable)
-                    if [[ "$dir_timestamp" > "$cutoff_date" || "$dir_timestamp" == "$cutoff_date" ]]; then
-                        # Within time range, check for agent.log
-                        if [[ -f "$archive_dir/agent.log" ]]; then
-                            grep -H "Permission denied" "$archive_dir/agent.log" 2>/dev/null | \
-                                while IFS=: read -r file_path log_line; do
-                                    local agent_name="${dir_name#*-*-}"  # Remove YYYYMMDD-HHMMSS-
-                                    local timestamp="${log_line#*[}"
-                                    timestamp="${timestamp%%]*}"
-                                    local denial="${log_line#*] }"
-                                    echo "$timestamp|$agent_name|$denial"
-                                done
-                        fi
+                # Compare timestamps lexicographically (YYYYMMDD-HHMMSS is sortable)
+                if [[ "$dir_timestamp" > "$cutoff_date" || "$dir_timestamp" == "$cutoff_date" ]]; then
+                    # Within time range, check for agent.log
+                    if [[ -f "$archive_dir/agent.log" ]]; then
+                        local agent_name="${dir_name#*-*-}"  # Remove YYYYMMDD-HHMMSS-
+                        grep -E "Permission denied|Path violation" "$archive_dir/agent.log" 2>/dev/null | \
+                            while IFS= read -r log_line; do
+                                local timestamp="${log_line#*[}"
+                                timestamp="${timestamp%%]*}"
+                                local denial="${log_line#*] }"
+                                echo "$timestamp|$agent_name|$denial"
+                            done >> "$tmpfile"
                     fi
-                done >> "$tmpfile" || true
+                fi
+            done
         fi
 
         # Sort by timestamp and load into array
-        sort "$tmpfile" | while IFS='|' read -r timestamp agent_id denial_text; do
-            DENIALS_CACHE_LINES+=("[$timestamp] $agent_id: $denial_text")
-        done
+        # Use process substitution to avoid subshell issue with while loop
+        while IFS='|' read -r timestamp agent_id denial_text; do
+            [[ -n "$timestamp" ]] && DENIALS_CACHE_LINES+=("[$timestamp] $agent_id: $denial_text")
+        done < <(sort "$tmpfile")
 
         rm -f "$tmpfile"
     }
@@ -10083,8 +10093,21 @@ EOF
         # Agents exist - clear the no-agents dirty flag for next time
         _NO_AGENTS_DIRTY=1
 
-        # Render tree and get selected agent
-        watch_render_tree "$tmpfile"
+        # Render tree and get selected agent (skip for denials mode which shows all agents)
+        if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
+            # Denials mode: skip tree rendering, set tree_display_lines to 0
+            # Still need to process agent list for state tracking
+            local agent_ids=()
+            local line
+            while IFS= read -r line; do
+                agent_ids+=("${line%%|*}")
+            done < "$tmpfile"
+            AGENT_COUNT=${#agent_ids[@]}
+            _WATCH_SELECTED_ID="${agent_ids[$SELECTED_INDEX]:-}"
+            _WATCH_TREE_DISPLAY_LINES=0
+        else
+            watch_render_tree "$tmpfile"
+        fi
         local selected_id="$_WATCH_SELECTED_ID"
         local tree_display_lines="$_WATCH_TREE_DISPLAY_LINES"
 
