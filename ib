@@ -4358,6 +4358,24 @@ cmd_hooks_agent_status() {
         sleep 0.1
         tmux send-keys -t "$TMUX_SESSION" Enter
     elif [[ "$state" == "complete" ]]; then
+        # Check for uncommitted changes in the agent's worktree
+        local worktree_path="$AGENT_DIR/repo"
+        if [[ -d "$worktree_path" ]]; then
+            local uncommitted_changes
+            uncommitted_changes=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
+            if [[ -n "$uncommitted_changes" ]]; then
+                log_agent "$ID" "[hook] Agent has uncommitted changes, sending reminder" --quiet
+                local commit_prompt="You have uncommitted changes. Please commit your work using git add && git commit before completing."
+                tmux send-keys -t "$TMUX_SESSION" "$commit_prompt"
+                sleep 0.1
+                tmux send-keys -t "$TMUX_SESSION" Enter
+                # Don't proceed with other checks - let agent commit first
+                update_claude_status
+                echo "$state"
+                return
+            fi
+        fi
+
         # For workers: notify manager immediately
         if [[ -n "$manager" ]]; then
             log_agent "$ID" "[hook] Notifying manager $manager: just completed"
