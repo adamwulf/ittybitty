@@ -1,0 +1,1 @@
+[2026-01-10 15:05:06] [PreToolUse] Path violation: Read tried to access main repo: /path/to/main/repo/file.txt

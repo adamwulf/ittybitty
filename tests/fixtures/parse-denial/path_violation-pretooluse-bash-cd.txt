@@ -1,0 +1,1 @@
+[2026-01-10 15:05:06] [PreToolUse] Path violation: Bash cd command tried to enter other agent's worktree: /path/to/agents/other/repo

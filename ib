@@ -1581,9 +1581,11 @@ LOG_PARSED_LINES=()   # Parsed array of lines
 # Permission denials pane cache
 DENIALS_TIME_FILTER=0            # 0=active only, 1=last 24h, 2=last week
 DENIALS_TIME_FILTER_NAMES=("ACTIVE" "24 HOURS" "7 DAYS")
-DENIALS_CACHE_TIMESTAMP=0        # Last refresh time (epoch seconds)
 DENIALS_CACHE_LINES=()           # Cached denial lines for display
-DENIALS_REFRESH_INTERVAL=10      # Refresh every 10 seconds
+DENIALS_CACHE_FILE=""            # Path to cache file (set in cmd_watch)
+DENIALS_BG_PID=""                # PID of background collector process
+DENIALS_CACHE_LOADED=0           # 0=not loaded yet (show loading), 1=loaded
+DENIALS_LAST_FILTER=-1           # Track filter changes to trigger reload
 
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
@@ -6083,6 +6085,173 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-parse-denial
+# =============================================================================
+
+# Pure function to parse a denial log line
+# Input: A log line like "[2026-01-10 15:05:06] [PreToolUse] Permission denied: Bash (command: curl)"
+# Output: JSON with parsed fields: timestamp, hook_type, denial_type, tool_name, params
+# Args: $1=log_line
+parse_denial_line() {
+    local log_line="$1"
+
+    # Extract timestamp: everything between first [ and ]
+    local timestamp=""
+    if [[ "$log_line" =~ ^\[([^\]]+)\] ]]; then
+        timestamp="${BASH_REMATCH[1]}"
+    fi
+
+    # Remove timestamp prefix to get the rest
+    local rest="${log_line#*] }"
+
+    # Extract hook type: [PreToolUse] or [PermissionRequest]
+    local hook_type=""
+    if [[ "$rest" =~ ^\[([^\]]+)\] ]]; then
+        hook_type="${BASH_REMATCH[1]}"
+        rest="${rest#*] }"
+    fi
+
+    # Determine denial type and extract tool info
+    local denial_type=""
+    local tool_name=""
+    local params=""
+
+    if [[ "$rest" == "Permission denied: "* ]]; then
+        denial_type="permission_denied"
+        rest="${rest#Permission denied: }"
+
+        # Extract tool name (everything before first space or paren)
+        if [[ "$rest" =~ ^([^\ \(]+) ]]; then
+            tool_name="${BASH_REMATCH[1]}"
+        fi
+
+        # Extract params if present (inside parentheses)
+        if [[ "$rest" =~ \(([^\)]+)\) ]]; then
+            params="${BASH_REMATCH[1]}"
+        fi
+
+    elif [[ "$rest" == "Path violation: "* ]]; then
+        denial_type="path_violation"
+        rest="${rest#Path violation: }"
+
+        # Format: "ToolName tried to access..." or "Bash cd command tried to..."
+        if [[ "$rest" =~ ^([^\ ]+)\ (tried|cd) ]]; then
+            tool_name="${BASH_REMATCH[1]}"
+        fi
+
+        # The rest is the path info
+        params="$rest"
+    fi
+
+    # Output as JSON
+    printf '{"timestamp":"%s","hook_type":"%s","denial_type":"%s","tool_name":"%s","params":"%s"}\n' \
+        "$timestamp" "$hook_type" "$denial_type" "$tool_name" "$params"
+}
+
+# Test command for parse_denial_line
+cmd_test_parse_denial() {
+    # Block test commands from running inside agents
+    if is_running_as_agent; then
+        echo "Error: test-* commands are for development testing only" >&2
+        echo "These commands cannot be run inside an agent worktree" >&2
+        exit 1
+    fi
+
+    local input_file=""
+    local output_field=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-parse-denial [options] [file]
+
+Parse a denial log line and extract structured fields.
+
+Reads from stdin if no file is provided, or from the specified file.
+
+Options:
+  --field NAME  Output only the specified field (timestamp, hook_type, denial_type, tool_name, params)
+  -h, --help    Show this help
+
+Input format (log line):
+  [TIMESTAMP] [HOOK_TYPE] Permission denied: TOOL (params)
+  [TIMESTAMP] [HOOK_TYPE] Path violation: TOOL tried to access...
+
+Output format (JSON):
+  {"timestamp":"...","hook_type":"...","denial_type":"...","tool_name":"...","params":"..."}
+
+Examples:
+  echo '[2026-01-10 15:05:06] [PreToolUse] Permission denied: Bash (command: curl)' | ib test-parse-denial
+  ib test-parse-denial --field tool_name tests/fixtures/parse-denial/permission-denied-bash.txt
+EOF
+                exit 0
+                ;;
+            --field)
+                shift
+                output_field="$1"
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    local result
+    result=$(parse_denial_line "$input")
+
+    if [[ -n "$output_field" ]]; then
+        # Extract specific field using parameter expansion (avoid jq dependency in tests)
+        case "$output_field" in
+            timestamp)
+                echo "$result" | sed 's/.*"timestamp":"\([^"]*\)".*/\1/'
+                ;;
+            hook_type)
+                echo "$result" | sed 's/.*"hook_type":"\([^"]*\)".*/\1/'
+                ;;
+            denial_type)
+                echo "$result" | sed 's/.*"denial_type":"\([^"]*\)".*/\1/'
+                ;;
+            tool_name)
+                echo "$result" | sed 's/.*"tool_name":"\([^"]*\)".*/\1/'
+                ;;
+            params)
+                echo "$result" | sed 's/.*"params":"\([^"]*\)".*/\1/'
+                ;;
+            *)
+                echo "Unknown field: $output_field" >&2
+                exit 1
+                ;;
+        esac
+    else
+        echo "$result"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-setup-check
 # =============================================================================
 
@@ -7766,8 +7935,29 @@ EOF
         _NEXT_PANE_MODE=$next_mode
     }
 
+    # Handle pane mode changes - start/stop background collectors as needed
+    # Args: $1=new_mode
+    watch_set_pane_mode() {
+        local new_mode="$1"
+        local old_mode=$RIGHT_PANE_MODE
+
+        # Stop denials collector when leaving denials mode
+        if [[ $old_mode -eq 2 && $new_mode -ne 2 ]]; then
+            stop_denials_collector
+        fi
+
+        # Start denials collector when entering denials mode
+        if [[ $old_mode -ne 2 && $new_mode -eq 2 ]]; then
+            start_denials_collector
+        fi
+
+        RIGHT_PANE_MODE=$new_mode
+    }
+
     # Cleanup function for exit
     watch_cleanup() {
+        # Stop background collectors
+        stop_denials_collector
         stty echo    # Restore terminal echo
         tput cnorm   # Show cursor
         tput clear   # Clear screen
@@ -9758,8 +9948,9 @@ EOF
                 header="${header}─"
             done
             printf "%s\n" "$header"
-            # Refresh denials cache if needed
-            collect_denials_cache
+
+            # Load denials from background cache (non-blocking)
+            load_denials_from_cache
 
             # Render full-width denials pane (hide left tmux pane)
             local content_height=$pane_height
@@ -9768,8 +9959,20 @@ EOF
             # Render denial lines
             local total_lines=${#DENIALS_CACHE_LINES[@]}
 
-            # Show "No permission denials" if empty
-            if [[ $total_lines -eq 0 ]]; then
+            # Show loading state if cache not loaded yet
+            if [[ $DENIALS_CACHE_LOADED -eq 0 ]]; then
+                local loading_msg="Loading permission denials..."
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#loading_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$loading_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            # Show "No permission denials" if loaded but empty
+            elif [[ $total_lines -eq 0 ]]; then
                 local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
                 local empty_msg="No permission denials recorded ($filter_name)"
                 for ((line_num=0; line_num<content_height; line_num++)); do
@@ -10169,97 +10372,150 @@ EOF
         printf '\e[%d;1H%s─┴─%s' "$separator_row" "$left_sep" "$right_sep"
     }
 
-    # Collect and cache permission denials from all agents
-    # Only refreshes if DENIALS_REFRESH_INTERVAL has elapsed
-    # Result stored in DENIALS_CACHE_LINES global array
-    # Format: [timestamp] agent-id: ToolName (params...)
-    collect_denials_cache() {
-        local now
-        now=$(date +%s)
+    # Background process to collect permission denials and write to cache file
+    # This runs in a loop, refreshing the cache file periodically
+    # Args: $1=cache_file, $2=time_filter (0=active, 1=24h, 2=7d), $3=agents_dir, $4=archive_dir
+    denials_background_collector() {
+        local cache_file="$1"
+        local time_filter="$2"
+        local agents_dir="$3"
+        local archive_dir="$4"
+        local refresh_interval=10  # Refresh every 10 seconds
 
-        # Only refresh if interval elapsed
-        if [[ $((now - DENIALS_CACHE_TIMESTAMP)) -lt $DENIALS_REFRESH_INTERVAL ]]; then
+        while true; do
+            local now
+            now=$(date +%s)
+            local tmpfile
+            tmpfile=$(mktemp)
+
+            # Active agents (always included)
+            # Look for both "Permission denied" and "Path violation" patterns
+            if [[ -d "$agents_dir" ]]; then
+                for agent_log in "$agents_dir"/*/agent.log; do
+                    [[ -f "$agent_log" ]] || continue
+                    local agent_id
+                    agent_id=$(basename "$(dirname "$agent_log")")
+                    # Grep for both denial patterns
+                    grep -E "Permission denied|Path violation" "$agent_log" 2>/dev/null | \
+                        while IFS= read -r log_line; do
+                            # Extract timestamp and format
+                            local timestamp="${log_line#*[}"
+                            timestamp="${timestamp%%]*}"
+                            local denial="${log_line#*] }"
+                            echo "$timestamp|$agent_id|$denial"
+                        done >> "$tmpfile"
+                done
+            fi
+
+            # Archived agents (if time filter allows)
+            if [[ $time_filter -gt 0 && -d "$archive_dir" ]]; then
+                # Calculate cutoff timestamp
+                local cutoff_seconds
+                if [[ $time_filter -eq 1 ]]; then
+                    cutoff_seconds=$((now - 86400))  # 24 hours
+                else
+                    cutoff_seconds=$((now - 604800))  # 7 days
+                fi
+
+                # Convert to YYYYMMDD-HHMMSS format for directory name comparison
+                local cutoff_date
+                cutoff_date=$(date -r "$cutoff_seconds" +%Y%m%d-%H%M%S 2>/dev/null)
+
+                # If date -r is not supported (Linux), use -d instead
+                if [[ -z "$cutoff_date" ]]; then
+                    cutoff_date=$(date -d "@$cutoff_seconds" +%Y%m%d-%H%M%S 2>/dev/null)
+                fi
+
+                # Find archive directories newer than cutoff
+                for archive_dir_entry in "$archive_dir"/20*-*; do
+                    [[ -d "$archive_dir_entry" ]] || continue
+                    local dir_name
+                    dir_name=$(basename "$archive_dir_entry")
+                    local dir_timestamp="${dir_name%%-*}-${dir_name#*-}"
+                    dir_timestamp="${dir_timestamp%%-*}"
+
+                    if [[ "$dir_timestamp" > "$cutoff_date" || "$dir_timestamp" == "$cutoff_date" ]]; then
+                        if [[ -f "$archive_dir_entry/agent.log" ]]; then
+                            local agent_name="${dir_name#*-*-}"
+                            grep -E "Permission denied|Path violation" "$archive_dir_entry/agent.log" 2>/dev/null | \
+                                while IFS= read -r log_line; do
+                                    local timestamp="${log_line#*[}"
+                                    timestamp="${timestamp%%]*}"
+                                    local denial="${log_line#*] }"
+                                    echo "$timestamp|$agent_name|$denial"
+                                done >> "$tmpfile"
+                        fi
+                    fi
+                done
+            fi
+
+            # Sort and write to cache file atomically
+            local sorted_file
+            sorted_file=$(mktemp)
+            sort "$tmpfile" > "$sorted_file"
+            mv "$sorted_file" "$cache_file"
+            rm -f "$tmpfile"
+
+            # Sleep before next refresh
+            sleep $refresh_interval
+        done
+    }
+
+    # Start the background denials collector
+    # Sets DENIALS_BG_PID with the process ID
+    start_denials_collector() {
+        # Kill existing collector if any
+        stop_denials_collector
+
+        # Create cache file path
+        DENIALS_CACHE_FILE=$(mktemp)
+
+        # Start collector in background
+        denials_background_collector "$DENIALS_CACHE_FILE" "$DENIALS_TIME_FILTER" "$AGENTS_DIR" "$ARCHIVE_DIR" &
+        DENIALS_BG_PID=$!
+
+        # Mark cache as not loaded yet
+        DENIALS_CACHE_LOADED=0
+        DENIALS_LAST_FILTER=$DENIALS_TIME_FILTER
+    }
+
+    # Stop the background denials collector
+    stop_denials_collector() {
+        if [[ -n "$DENIALS_BG_PID" ]]; then
+            kill "$DENIALS_BG_PID" 2>/dev/null || true
+            wait "$DENIALS_BG_PID" 2>/dev/null || true
+            DENIALS_BG_PID=""
+        fi
+        if [[ -n "$DENIALS_CACHE_FILE" && -f "$DENIALS_CACHE_FILE" ]]; then
+            rm -f "$DENIALS_CACHE_FILE"
+            DENIALS_CACHE_FILE=""
+        fi
+        DENIALS_CACHE_LOADED=0
+    }
+
+    # Load denials from cache file into DENIALS_CACHE_LINES array
+    # This is non-blocking - reads whatever is in the file
+    load_denials_from_cache() {
+        DENIALS_CACHE_LINES=()
+
+        # Check if filter changed - need to restart collector
+        if [[ $DENIALS_TIME_FILTER -ne $DENIALS_LAST_FILTER ]]; then
+            start_denials_collector
             return
         fi
 
-        DENIALS_CACHE_TIMESTAMP=$now
-        DENIALS_CACHE_LINES=()
-
-        local tmpfile
-        tmpfile=$(mktemp)
-
-        # Active agents (always included)
-        # Look for both "Permission denied" and "Path violation" patterns
-        if [[ -d "$AGENTS_DIR" ]]; then
-            for agent_log in "$AGENTS_DIR"/*/agent.log; do
-                [[ -f "$agent_log" ]] || continue
-                local agent_id
-                agent_id=$(basename "$(dirname "$agent_log")")
-                # Grep for both denial patterns
-                grep -E "Permission denied|Path violation" "$agent_log" 2>/dev/null | \
-                    while IFS= read -r log_line; do
-                        # Extract timestamp and format
-                        local timestamp="${log_line#*[}"
-                        timestamp="${timestamp%%]*}"
-                        local denial="${log_line#*] }"
-                        echo "$timestamp|$agent_id|$denial"
-                    done >> "$tmpfile"
-            done
+        # Check if cache file exists and has content
+        if [[ -z "$DENIALS_CACHE_FILE" || ! -f "$DENIALS_CACHE_FILE" ]]; then
+            return
         fi
 
-        # Archived agents (if time filter allows)
-        # Also look for both "Permission denied" and "Path violation" patterns
-        if [[ $DENIALS_TIME_FILTER -gt 0 && -d "$ARCHIVE_DIR" ]]; then
-            # Calculate cutoff timestamp
-            local cutoff_seconds
-            if [[ $DENIALS_TIME_FILTER -eq 1 ]]; then
-                cutoff_seconds=$((now - 86400))  # 24 hours
-            else
-                cutoff_seconds=$((now - 604800))  # 7 days
-            fi
-
-            # Convert to YYYYMMDD-HHMMSS format for directory name comparison
-            local cutoff_date
-            cutoff_date=$(date -r "$cutoff_seconds" +%Y%m%d-%H%M%S 2>/dev/null)
-
-            # If date -r is not supported (Linux), use -d instead
-            if [[ -z "$cutoff_date" ]]; then
-                cutoff_date=$(date -d "@$cutoff_seconds" +%Y%m%d-%H%M%S 2>/dev/null)
-            fi
-
-            # Find archive directories newer than cutoff
-            # Directory format: YYYYMMDD-HHMMSS-<agent-id>
-            for archive_dir in "$ARCHIVE_DIR"/20*-*; do
-                [[ -d "$archive_dir" ]] || continue
-                local dir_name
-                dir_name=$(basename "$archive_dir")
-                local dir_timestamp="${dir_name%%-*}-${dir_name#*-}"  # Extract YYYYMMDD-HHMMSS
-                dir_timestamp="${dir_timestamp%%-*}"  # Remove trailing agent-id
-
-                # Compare timestamps lexicographically (YYYYMMDD-HHMMSS is sortable)
-                if [[ "$dir_timestamp" > "$cutoff_date" || "$dir_timestamp" == "$cutoff_date" ]]; then
-                    # Within time range, check for agent.log
-                    if [[ -f "$archive_dir/agent.log" ]]; then
-                        local agent_name="${dir_name#*-*-}"  # Remove YYYYMMDD-HHMMSS-
-                        grep -E "Permission denied|Path violation" "$archive_dir/agent.log" 2>/dev/null | \
-                            while IFS= read -r log_line; do
-                                local timestamp="${log_line#*[}"
-                                timestamp="${timestamp%%]*}"
-                                local denial="${log_line#*] }"
-                                echo "$timestamp|$agent_name|$denial"
-                            done >> "$tmpfile"
-                    fi
-                fi
-            done
-        fi
-
-        # Sort by timestamp and load into array
-        # Use process substitution to avoid subshell issue with while loop
+        # Read lines from cache file
         while IFS='|' read -r timestamp agent_id denial_text; do
             [[ -n "$timestamp" ]] && DENIALS_CACHE_LINES+=("[$timestamp] $agent_id: $denial_text")
-        done < <(sort "$tmpfile")
+        done < "$DENIALS_CACHE_FILE"
 
-        rm -f "$tmpfile"
+        # Mark as loaded once we have data (or if file exists but is empty)
+        DENIALS_CACHE_LOADED=1
     }
 
     # Main render function
@@ -10403,8 +10659,8 @@ EOF
         if [[ "$key" == "t" && $RIGHT_PANE_MODE -eq 2 ]]; then
             # Cycle through time filters: 0 → 1 → 2 → 0
             DENIALS_TIME_FILTER=$(( (DENIALS_TIME_FILTER + 1) % 3 ))
-            # Force immediate refresh
-            DENIALS_CACHE_TIMESTAMP=0
+            # Restart collector with new filter
+            start_denials_collector
             # Reset scroll to bottom
             SCROLL_OFFSET=0
             return
@@ -10444,7 +10700,7 @@ EOF
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Right arrow = same as n (previous pane, skip errors if empty)
                     watch_calc_next_pane -1
-                    RIGHT_PANE_MODE=$_NEXT_PANE_MODE
+                    watch_set_pane_mode $_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
@@ -10453,7 +10709,7 @@ EOF
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Left arrow = same as p (next pane, skip errors if empty)
                     watch_calc_next_pane 1
-                    RIGHT_PANE_MODE=$_NEXT_PANE_MODE
+                    watch_set_pane_mode $_NEXT_PANE_MODE
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
@@ -10491,14 +10747,14 @@ EOF
                 _WATCH_ESC_PENDING=0
                 # Previous right pane mode (skip errors pane if empty)
                 watch_calc_next_pane -1
-                RIGHT_PANE_MODE=$_NEXT_PANE_MODE
+                watch_set_pane_mode $_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             p)
                 _WATCH_ESC_PENDING=0
                 # Next right pane mode (skip errors pane if empty)
                 watch_calc_next_pane 1
-                RIGHT_PANE_MODE=$_NEXT_PANE_MODE
+                watch_set_pane_mode $_NEXT_PANE_MODE
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             s)
@@ -10540,7 +10796,7 @@ EOF
             e)
                 _WATCH_ESC_PENDING=0
                 # Switch to errors pane
-                RIGHT_PANE_MODE=4
+                watch_set_pane_mode 4
                 SCROLL_OFFSET=0
                 ;;
             c)
@@ -11001,6 +11257,10 @@ case "${1:-help}" in
     test-log-format)
         shift
         cmd_test_log_format "$@"
+        ;;
+    test-parse-denial)
+        shift
+        cmd_test_parse_denial "$@"
         ;;
     test-setup-check)
         shift
