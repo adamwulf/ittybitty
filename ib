@@ -8810,7 +8810,7 @@ EOF
         else
             printf '%-17s ▼' "$model_name"
         fi
-        remaining=$((DIALOG_WIDTH - 30))
+        remaining=$((DIALOG_WIDTH - 29))
         printf '%*s│' "$remaining" ""
         ((row++))
 
@@ -9280,13 +9280,16 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Helper to format checkbox item
-        # Args: $1=installed (1=yes, 2=no), $2=label, $3=focused (0/1), $4=disabled (0/1)
-        format_checkbox_item() {
-            local installed=$1
-            local label=$2
-            local focused=$3
-            local disabled=${4:-0}
+        # Draw a checkbox line with proper escape sequence handling
+        # Unlike dialog_draw_line, this handles escape sequences correctly by
+        # calculating visual width separately from the escape codes
+        # Args: $1=row, $2=installed (1=yes, 0=no), $3=label, $4=focused (0/1), $5=disabled (0/1)
+        dialog_draw_checkbox() {
+            local row=$1
+            local installed=$2
+            local label=$3
+            local focused=$4
+            local disabled=${5:-0}
 
             local checkbox
             if [[ $installed -eq 1 ]]; then
@@ -9296,24 +9299,27 @@ EOF
             fi
 
             local text="$checkbox $label"
+            local visual_len=${#text}
+            local inner_width=$((DIALOG_WIDTH - 4))  # 2 for borders, 2 for padding
+            local padding=$((inner_width - visual_len))
+            [[ $padding -lt 0 ]] && padding=0
+
+            # Build the line with proper escape sequences
+            printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
 
             if [[ $disabled -eq 1 ]]; then
-                # Dim/gray for disabled items
-                text=$'\e[2m'"$text"$'\e[0m'
+                printf '\e[2m%s\e[0m' "$text"
+            elif [[ $focused -eq 1 ]]; then
+                printf '\e[7m%s\e[0m' "$text"
+            else
+                printf '%s' "$text"
             fi
 
-            if [[ $focused -eq 1 ]]; then
-                # Highlight focused item
-                text=$'\e[7m'"$text"$'\e[0m'
-            fi
-
-            echo "$text"
+            printf '%*s │' "$padding" ""
         }
 
         # Option 1: Safety hooks
-        local item1
-        item1=$(format_checkbox_item "$SETUP_HOOKS_INSTALLED" "Safety hooks" "$([[ $SETUP_FOCUS -eq 0 ]] && echo 1 || echo 0)")
-        dialog_draw_line "$row" "$item1"
+        dialog_draw_checkbox "$row" "$SETUP_HOOKS_INSTALLED" "Safety hooks" "$([[ $SETUP_FOCUS -eq 0 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for safety hooks
@@ -9325,9 +9331,7 @@ EOF
         ((row++))
 
         # Option 2: ib instructions
-        local item2
-        item2=$(format_checkbox_item "$SETUP_IB_INSTRUCTIONS" "ib instructions" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)")
-        dialog_draw_line "$row" "$item2"
+        dialog_draw_checkbox "$row" "$SETUP_IB_INSTRUCTIONS" "ib instructions" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for ib instructions
@@ -9345,9 +9349,7 @@ EOF
             item3_disabled=1
             item3_note="  (requires ib instructions)"
         fi
-        local item3
-        item3=$(format_checkbox_item "$SETUP_STATUS_IMPORT" "Agent status" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$item3_disabled")
-        dialog_draw_line "$row" "$item3"
+        dialog_draw_checkbox "$row" "$SETUP_STATUS_IMPORT" "Agent status" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$item3_disabled"
         ((row++))
 
         # Description/note for agent status
@@ -9363,9 +9365,7 @@ EOF
         ((row++))
 
         # Option 4: Gitignore
-        local item4
-        item4=$(format_checkbox_item "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)")
-        dialog_draw_line "$row" "$item4"
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -9376,9 +9376,19 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Close button
-        local close_btn=$(dialog_format_button "Close" "$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)")
-        dialog_draw_line "$row" "$close_btn"
+        # Close button - render manually to handle escape sequences correctly
+        local close_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        local btn_visual_width=7  # [Close] = 7 chars
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s' "$row" "$_DIALOG_START_COL" "$left_pad" ""
+        if [[ $close_focused == "1" ]]; then
+            printf '\e[7m[Close]\e[0m'
+        else
+            printf '[Close]'
+        fi
+        printf '%*s │' "$right_pad" ""
         ((row++))
 
         # Bottom border
