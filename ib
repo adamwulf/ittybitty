@@ -6747,6 +6747,114 @@ EOF
     fi
 }
 
+# Test command for enforce_command_access logic
+# Input JSON format:
+# {
+#   "is_agent": true,
+#   "cmd": "watch",
+#   "subcmd": ""
+# }
+cmd_test_enforce_access() {
+    # Note: Agent blocking is handled by enforce_command_access() before dispatch
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-enforce-access [file]
+
+Test the command access restriction logic for agents.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs "allow" if the command is allowed, "deny" if blocked for agents.
+
+Input JSON format:
+{
+  "is_agent": true,
+  "cmd": "watch",
+  "subcmd": ""
+}
+
+Fields:
+  is_agent  - true if simulating agent context, false for user/primary Claude
+  cmd       - the ib command (e.g., "watch", "hooks", "list")
+  subcmd    - optional subcommand (e.g., "install" for "hooks install")
+
+Examples:
+  echo '{"is_agent": true, "cmd": "watch"}' | ib test-enforce-access
+  ib test-enforce-access tests/fixtures/enforce-access/deny-watch-agent.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-enforce-access [file] or echo '{...}' | ib test-enforce-access" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Extract test parameters
+    local is_agent cmd subcmd
+    is_agent=$(echo "$input" | jq -r '.is_agent // false')
+    cmd=$(echo "$input" | jq -r '.cmd // ""')
+    subcmd=$(echo "$input" | jq -r '.subcmd // ""')
+
+    # If not simulating agent context, always allow
+    if [[ "$is_agent" != "true" ]]; then
+        echo "allow"
+        return 0
+    fi
+
+    # Simulate agent context - apply the same logic as enforce_command_access
+    case "$cmd" in
+        # Test commands - development only, not for agents
+        parse-state|test-*)
+            echo "deny"
+            return 0
+            ;;
+        # Interactive commands - don't make sense for agents
+        watch)
+            echo "deny"
+            return 0
+            ;;
+        # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
+        hooks)
+            case "$subcmd" in
+                install|uninstall)
+                    echo "deny"
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+
+    echo "allow"
+    return 0
+}
+
 # =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
@@ -11516,6 +11624,10 @@ case "${1:-help}" in
     test-main-path)
         shift
         cmd_test_main_path "$@"
+        ;;
+    test-enforce-access)
+        shift
+        cmd_test_enforce_access "$@"
         ;;
     log)
         shift
