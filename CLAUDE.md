@@ -46,6 +46,25 @@ The `ib` script is organized into commands, each implemented as a function:
 
 Key helper functions: `log_agent`, `get_state`, `archive_agent_output`, `kill_agent_process`, `wait_for_claude_start`, `auto_accept_workspace_trust`, etc.
 
+## Bash Version Compatibility
+
+**Target version: Bash 3.2** (the default on macOS)
+
+The `ib` script must work with Bash 3.2, which ships with macOS. This means avoiding Bash 4.0+ features:
+
+| Feature | Bash 4.0+ | Bash 3.2 Alternative |
+|---------|-----------|---------------------|
+| Lowercase | `${var,,}` | `shopt -s nocasematch` for matching, or `tr '[:upper:]' '[:lower:]'` |
+| Uppercase | `${var^^}` | `tr '[:lower:]' '[:upper:]'` |
+| Associative arrays | `declare -A` | Use indexed arrays with naming conventions |
+| `readarray`/`mapfile` | `mapfile -t arr` | `while read` loop |
+| `&>` redirection | `cmd &> file` | `cmd > file 2>&1` |
+| `|&` pipe stderr | `cmd |& cmd2` | `cmd 2>&1 | cmd2` |
+| Negative array indices | `${arr[-1]}` | `${arr[${#arr[@]}-1]}` |
+| `coproc` | `coproc NAME { cmd; }` | Named pipes or temp files |
+
+When adding new code, always test on the system bash (`/bin/bash --version`) to ensure compatibility.
+
 ## Bash Script Behavior (`set -e`)
 
 The `ib` script uses `set -e` (exit on error), which means **any command returning non-zero will terminate the entire script**. This is a common source of subtle bugs.

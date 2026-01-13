@@ -8914,14 +8914,16 @@ EOF
         # Find matching agents
         local -a matching_ids=()
         local agent_dir id
+        shopt -s nocasematch
         for agent_dir in "$AGENTS_DIR"/*/; do
             [[ -d "$agent_dir" ]] || continue
             id="${agent_dir%/}"; id="${id##*/}"
             # Case-insensitive substring match
-            if [[ -z "$JUMP_PATTERN" ]] || [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+            if [[ -z "$JUMP_PATTERN" ]] || [[ "$id" == *"$JUMP_PATTERN"* ]]; then
                 matching_ids+=("$id")
             fi
         done
+        shopt -u nocasematch
 
         # Clear dialog area
         dialog_clear "$start_row" 10
@@ -8996,13 +8998,15 @@ EOF
 
         local -a matching_ids=()
         local agent_dir id
+        shopt -s nocasematch
         for agent_dir in "$AGENTS_DIR"/*/; do
             [[ -d "$agent_dir" ]] || continue
             id="${agent_dir%/}"; id="${id##*/}"
-            if [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+            if [[ "$id" == *"$JUMP_PATTERN"* ]]; then
                 matching_ids+=("$id")
             fi
         done
+        shopt -u nocasematch
 
         if [[ ${#matching_ids[@]} -eq 1 ]]; then
             # Exactly one match - auto-select it and close dialog
@@ -9019,13 +9023,15 @@ EOF
                 # Find matching agents
                 local -a matching_ids=()
                 local agent_dir id
+                shopt -s nocasematch
                 for agent_dir in "$AGENTS_DIR"/*/; do
                     [[ -d "$agent_dir" ]] || continue
                     id="${agent_dir%/}"; id="${id##*/}"
-                    if [[ -z "$JUMP_PATTERN" ]] || [[ "${id,,}" == *"${JUMP_PATTERN,,}"* ]]; then
+                    if [[ -z "$JUMP_PATTERN" ]] || [[ "$id" == *"$JUMP_PATTERN"* ]]; then
                         matching_ids+=("$id")
                     fi
                 done
+                shopt -u nocasematch
 
                 if [[ ${#matching_ids[@]} -eq 1 ]]; then
                     # Exactly one match - select it and close dialog
@@ -10153,10 +10159,15 @@ EOF
     # Start persistent background key reader
     local keyfile=$(mktemp)
     (
-        exec < /dev/tty
+        set +e  # Disable exit-on-error in subshell
+        exec < /dev/tty 2>/dev/null
         while true; do
             # Read one character; Enter produces empty $k but successful read
-            IFS= read -rsn1 k
+            # Redirect stderr to suppress I/O error messages
+            if ! IFS= read -rsn1 k 2>/dev/null; then
+                # Read failed (I/O error or EOF) - exit cleanly
+                break
+            fi
             if [[ -z "$k" ]]; then
                 # Empty means Enter was pressed - use record separator (0x1E) as marker
                 printf '\x1e' >> "$keyfile"
