@@ -4411,6 +4411,118 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: merge-check
+# =============================================================================
+
+cmd_merge_check() {
+    local ID=""
+    local TARGET_BRANCH=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --into)    TARGET_BRANCH="$2"; shift 2 ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib merge-check <id> [options]
+
+Check if merging an agent's branch would succeed without conflicts.
+Does NOT perform the actual merge.
+
+Arguments:
+  id              Agent identifier
+
+Options:
+  --into BRANCH   Target branch to check merge against (default: current branch if agent, main/master if root)
+  -h, --help      Show this help
+
+Exit codes:
+  0  Merge would succeed (no conflicts)
+  1  Merge would have conflicts
+
+Examples:
+  ib merge-check task-a1b2
+  ib merge-check task-a1b2 --into develop
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib merge-check <id> [options]" >&2
+        exit 1
+    fi
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local BRANCH_NAME="agent/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Determine target branch (same logic as cmd_merge)
+    if [[ -z "$TARGET_BRANCH" ]]; then
+        # Try to use current branch first (works for both agents and user-level Claude)
+        TARGET_BRANCH=$(git branch --show-current 2>/dev/null) || true
+
+        if [[ -z "$TARGET_BRANCH" ]]; then
+            # Detached HEAD or couldn't determine branch - fall back to main/master
+            if git show-ref --verify --quiet refs/heads/main; then
+                TARGET_BRANCH="main"
+            elif git show-ref --verify --quiet refs/heads/master; then
+                TARGET_BRANCH="master"
+            else
+                echo "Error: could not determine target branch" >&2
+                echo "You appear to be in detached HEAD state with no main or master branch." >&2
+                echo "Use --into BRANCH to specify target branch" >&2
+                exit 1
+            fi
+        fi
+    fi
+
+    # Check if agent branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+        echo "Error: branch '$BRANCH_NAME' does not exist" >&2
+        exit 1
+    fi
+
+    # Check for merge conflicts
+    local conflict_files
+    if conflict_files=$(check_merge_conflicts "$TARGET_BRANCH" "$BRANCH_NAME"); then
+        echo "Merge would succeed: '$BRANCH_NAME' into '$TARGET_BRANCH'"
+        exit 0
+    else
+        echo "Merge would have conflicts: '$BRANCH_NAME' into '$TARGET_BRANCH'"
+        if [[ -n "$conflict_files" ]]; then
+            echo ""
+            echo "Conflicting files:"
+            echo "$conflict_files" | sed 's/^/  - /'
+        fi
+        exit 1
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks (dispatcher)
 # =============================================================================
 
@@ -11184,6 +11296,10 @@ case "${1:-help}" in
         shift
         cmd_merge "$@"
         ;;
+    merge-check)
+        shift
+        cmd_merge_check "$@"
+        ;;
     send)
         shift
         cmd_send "$@"
@@ -11311,10 +11427,11 @@ ib (ittybitty) - multi-agent orchestration for Claude Code
 Usage: ib <command> [options]
 
 Agent Lifecycle:
-  new-agent   Start a new agent with a prompt
-  resume      Restart a stopped agent's session
-  kill        Close an agent without merging
-  merge       Merge agent's work and close the agent
+  new-agent     Start a new agent with a prompt
+  resume        Restart a stopped agent's session
+  kill          Close an agent without merging
+  merge         Merge agent's work and close the agent
+  merge-check   Check if a merge would succeed (no conflicts)
 
 Monitoring:
   list        Show all agents and their state
