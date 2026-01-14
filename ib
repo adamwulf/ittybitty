@@ -187,41 +187,52 @@ is_running_as_agent() {
 # Check if a command is allowed for the current execution context
 # Args: $1 = command name (e.g., "hooks", "test-tool-match")
 #       $2 = subcommand (optional, for commands like "hooks install")
-# Exits with error if command is not allowed for agents
-# User terminal and primary Claude can run any command
+# Exits with error if command is not allowed
+# Priority: 1) Agent restrictions, 2) Claude restrictions, 3) Allow for user terminal
 enforce_command_access() {
     local cmd="$1"
     local subcmd="${2:-}"
 
-    # User terminal and primary Claude can run anything
-    if ! is_running_as_agent; then
+    # First check: Agent restrictions (most restrictive)
+    if is_running_as_agent; then
+        case "$cmd" in
+            # Test commands - development only, not for agents
+            parse-state|test-*)
+                echo "Error: '$cmd' is a development/test command not available to agents" >&2
+                exit 1
+                ;;
+            # Interactive commands - don't make sense for agents
+            watch)
+                echo "Error: '$cmd' is an interactive command not available to agents" >&2
+                exit 1
+                ;;
+            # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
+            hooks)
+                case "$subcmd" in
+                    install|uninstall)
+                        echo "Error: 'ib hooks $subcmd' modifies main repo configuration" >&2
+                        echo "Agents cannot install or uninstall hooks" >&2
+                        exit 1
+                        ;;
+                esac
+                ;;
+        esac
         return 0
     fi
 
-    # Agent restrictions: block undocumented/test commands
-    case "$cmd" in
-        # Test commands - development only, not for agents
-        parse-state|test-*)
-            echo "Error: '$cmd' is a development/test command not available to agents" >&2
-            exit 1
-            ;;
-        # Interactive commands - don't make sense for agents
-        watch)
-            echo "Error: '$cmd' is an interactive command not available to agents" >&2
-            exit 1
-            ;;
-        # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
-        hooks)
-            case "$subcmd" in
-                install|uninstall)
-                    echo "Error: 'ib hooks $subcmd' modifies main repo configuration" >&2
-                    echo "Agents cannot install or uninstall hooks" >&2
-                    exit 1
-                    ;;
-            esac
-            ;;
-    esac
+    # Second check: Claude (primary) restrictions - needs TTY for interactive commands
+    if is_claude_running; then
+        case "$cmd" in
+            watch)
+                echo "Error: '$cmd' requires an interactive terminal" >&2
+                echo "Ask the user to run 'ib watch' in a separate terminal window" >&2
+                exit 1
+                ;;
+        esac
+        return 0
+    fi
 
+    # User terminal - allow everything
     return 0
 }
 
