@@ -1770,6 +1770,14 @@ DENIALS_BG_PID=""                # PID of background collector process
 DENIALS_CACHE_LOADED=0           # 0=not loaded yet (show loading), 1=loaded
 DENIALS_LAST_FILTER=-1           # Track filter changes to trigger reload
 
+# Diff pane cache
+DIFF_CACHE_AGENT=""              # Which agent's diff is cached
+DIFF_CACHE_LINES=()              # Cached diff lines for display
+DIFF_CACHE_FILE=""               # Path to cache file (set in cmd_watch)
+DIFF_BG_PID=""                   # PID of background collector process
+DIFF_CACHE_LOADED=0              # 0=not loaded yet (show loading), 1=loaded
+DIFF_MERGE_STATUS=""             # "ok", "conflicts", or "error"
+
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
     local lookup_id="$1"
@@ -8232,7 +8240,8 @@ Full-screen dashboard for monitoring all agents.
 Controls:
   j/k     Select next/previous agent
   /       Quick jump to agent by name
-  p/n     Cycle right pane mode (agent log → prompt → denials → tree)
+  p/n     Cycle right pane mode (agent log → prompt → denials → tree → diff)
+  d       Jump to diff pane (shows changes and merge status)
   ;/l     Scroll panes down/up
   Ctrl-C  Exit
 
@@ -8240,7 +8249,7 @@ The display shows:
   - Agent tree (top 5 lines, scrolls with selection)
   - Selected agent info (model, prompt)
   - Split view: tmux output (left) and right pane (cycling modes)
-  - Right pane modes: agent log, initial prompt, denials, full tree view
+  - Right pane modes: agent log, initial prompt, denials, full tree view, diff with merge status
 
 EOF
                 exit 0
@@ -8266,8 +8275,8 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
-    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors
-    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS")
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors, 5=diff
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF")
 
     # Dialog state variables
     local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks
@@ -8483,9 +8492,10 @@ EOF
     }
 
     # Handle pane mode changes - start/stop background collectors as needed
-    # Args: $1=new_mode
+    # Args: $1=new_mode, $2=selected_agent_id (optional, for diff mode)
     watch_set_pane_mode() {
         local new_mode="$1"
+        local selected_id="${2:-}"
         local old_mode=$RIGHT_PANE_MODE
 
         # Stop denials collector when leaving denials mode
@@ -8498,6 +8508,16 @@ EOF
             start_denials_collector
         fi
 
+        # Stop diff collector when leaving diff mode
+        if [[ $old_mode -eq 5 && $new_mode -ne 5 ]]; then
+            stop_diff_collector
+        fi
+
+        # Start diff collector when entering diff mode (needs agent id)
+        if [[ $old_mode -ne 5 && $new_mode -eq 5 && -n "$selected_id" ]]; then
+            start_diff_collector "$selected_id"
+        fi
+
         RIGHT_PANE_MODE=$new_mode
     }
 
@@ -8505,6 +8525,7 @@ EOF
     watch_cleanup() {
         # Stop background collectors
         stop_denials_collector
+        stop_diff_collector
         stty echo    # Restore terminal echo
         tput cnorm   # Show cursor
         tput clear   # Clear screen
@@ -10294,6 +10315,9 @@ EOF
             # Denials mode: show time filter toggle
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
             help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    Ctrl-C: quit"
+        elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
+            # Diff mode: show scroll and pane navigation
+            help_text=";/l: scroll    n/p: pane    Ctrl-C: quit"
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
@@ -10315,6 +10339,26 @@ EOF
             # Errors mode: show clear option
             action_text="c: clear all    n/p: pane"
             action_text_visible_len=${#action_text}
+        elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
+            # Diff mode: show merge status info
+            case "$DIFF_MERGE_STATUS" in
+                ok)
+                    action_text=$'\e[32m'"Merge ready: no conflicts detected"$'\e[0m'
+                    action_text_visible_len=34  # length of "Merge ready: no conflicts detected"
+                    ;;
+                conflicts)
+                    action_text=$'\e[31m'"Merge blocked: conflicts exist"$'\e[0m'
+                    action_text_visible_len=30  # length of "Merge blocked: conflicts exist"
+                    ;;
+                error)
+                    action_text=$'\e[33m'"Error checking merge status"$'\e[0m'
+                    action_text_visible_len=27  # length of "Error checking merge status"
+                    ;;
+                *)
+                    action_text="Checking merge status..."
+                    action_text_visible_len=${#action_text}
+                    ;;
+            esac
         else
             # Normal mode: show action keys
             action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
@@ -10434,8 +10478,8 @@ EOF
         fi
 
         # Display min(agent count, 5) lines of tree with selection highlighting
-        # Skip rendering the header tree when TREE pane is active (mode 3) to avoid duplication
-        if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
+        # Skip rendering the header tree when TREE or DIFF pane is active (modes 3, 5) to use full height
+        if [[ $RIGHT_PANE_MODE -eq 3 || $RIGHT_PANE_MODE -eq 5 ]]; then
             _WATCH_TREE_DISPLAY_LINES=0
         else
             _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
@@ -10720,6 +10764,93 @@ EOF
                     if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
                         # Truncate to terminal width
                         local display_line="${error_lines[$array_idx]:0:$content_width}"
+                        printf '%-*s\n' "$content_width" "$display_line"
+                    else
+                        # Empty line (no content)
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            fi
+
+            # Bottom separator
+            local separator=""
+            local i
+            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
+            printf '%s' "$separator"
+
+            # Store pane info for footer
+            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
+            _WATCH_PANE_HEIGHT=$content_height
+
+            return  # Skip normal split pane rendering
+        fi
+
+        # ===== DIFF MODE (MODE 5) =====
+        if [[ $RIGHT_PANE_MODE -eq 5 ]]; then
+            # Load diff from background cache (non-blocking)
+            load_diff_from_cache "$selected_id"
+
+            # Build header with merge status indicator
+            local merge_indicator=""
+            case "$DIFF_MERGE_STATUS" in
+                ok)        merge_indicator=" (merge OK)" ;;
+                conflicts) merge_indicator=" (CONFLICTS)" ;;
+                error)     merge_indicator=" (error)" ;;
+                *)         merge_indicator="" ;;  # Still loading
+            esac
+
+            # Full-width header for diff mode
+            local header="── DIFF$merge_indicator "
+            while [[ ${#header} -lt $TERM_COLS ]]; do
+                header="${header}─"
+            done
+            printf "%s\n" "$header"
+
+            # Render full-width diff pane (hide left tmux pane)
+            local content_height=$pane_height
+            local content_width=$TERM_COLS
+
+            local total_lines=${#DIFF_CACHE_LINES[@]}
+
+            # Show loading state if cache not loaded yet
+            if [[ $DIFF_CACHE_LOADED -eq 0 ]]; then
+                local loading_msg="Loading diff..."
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#loading_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$loading_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            # Show "No changes" if loaded but empty
+            elif [[ $total_lines -eq 0 ]]; then
+                local empty_msg="No changes (branch is identical to base)"
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$empty_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            else
+                # Calculate scroll parameters (scroll from top like a normal diff view)
+                local max_scroll=$((total_lines - content_height))
+                [[ $max_scroll -lt 0 ]] && max_scroll=0
+                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+                local start_idx=$SCROLL_OFFSET
+
+                local line_num
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    local array_idx=$((start_idx + line_num))
+                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
+                        # Truncate to terminal width
+                        local display_line="${DIFF_CACHE_LINES[$array_idx]:0:$content_width}"
                         printf '%-*s\n' "$content_width" "$display_line"
                     else
                         # Empty line (no content)
@@ -11075,6 +11206,161 @@ EOF
         DENIALS_CACHE_LOADED=1
     }
 
+    # Background process to collect diff output and merge status for an agent
+    # Args: $1=cache_file, $2=agent_id, $3=agents_dir
+    diff_background_collector() {
+        local cache_file="$1"
+        local agent_id="$2"
+        local agents_dir="$3"
+        local refresh_interval=5  # Refresh every 5 seconds
+
+        while true; do
+            local tmpfile
+            tmpfile=$(mktemp)
+
+            local agent_dir="$agents_dir/$agent_id"
+            local branch_name="agent/$agent_id"
+
+            # Check if agent exists
+            if [[ ! -d "$agent_dir" ]]; then
+                echo "STATUS:error" > "$tmpfile"
+                echo "Agent '$agent_id' not found" >> "$tmpfile"
+                mv "$tmpfile" "$cache_file"
+                sleep $refresh_interval
+                continue
+            fi
+
+            # Check if branch exists
+            if ! git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
+                echo "STATUS:error" > "$tmpfile"
+                echo "Branch '$branch_name' does not exist" >> "$tmpfile"
+                mv "$tmpfile" "$cache_file"
+                sleep $refresh_interval
+                continue
+            fi
+
+            # Determine target branch
+            local target_branch=""
+            if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
+                target_branch="main"
+            elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
+                target_branch="master"
+            else
+                target_branch="HEAD"
+            fi
+
+            # Check merge status
+            local merge_status="ok"
+            if ! git merge-tree "$(git merge-base "$target_branch" "$branch_name")" "$target_branch" "$branch_name" 2>/dev/null | grep -q "^<<<<<<<" ; then
+                merge_status="ok"
+            else
+                merge_status="conflicts"
+            fi
+
+            # Alternative: use merge --no-commit --no-ff in a temporary worktree
+            # For simplicity, we'll do a dry-run merge check
+            local conflict_check
+            conflict_check=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null)
+            if [[ -n "$conflict_check" ]]; then
+                # Try to detect conflicts more reliably using git diff with conflict markers check
+                local test_merge
+                test_merge=$(git merge-tree "$conflict_check" "$target_branch" "$branch_name" 2>/dev/null || true)
+                if echo "$test_merge" | grep -q "^<<<<<<<"; then
+                    merge_status="conflicts"
+                else
+                    merge_status="ok"
+                fi
+            fi
+
+            echo "STATUS:$merge_status" > "$tmpfile"
+
+            # Get diff output
+            local merge_base
+            merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || true
+            if [[ -n "$merge_base" ]]; then
+                git diff "$merge_base..$branch_name" 2>/dev/null >> "$tmpfile" || true
+            fi
+
+            # Atomic write
+            mv "$tmpfile" "$cache_file"
+
+            sleep $refresh_interval
+        done
+    }
+
+    # Start the background diff collector for a specific agent
+    # Args: $1=agent_id
+    start_diff_collector() {
+        local agent_id="$1"
+
+        # Kill existing collector if any
+        stop_diff_collector
+
+        # Create cache file path
+        DIFF_CACHE_FILE=$(mktemp)
+        DIFF_CACHE_AGENT="$agent_id"
+
+        # Start collector in background
+        diff_background_collector "$DIFF_CACHE_FILE" "$agent_id" "$AGENTS_DIR" &
+        DIFF_BG_PID=$!
+
+        # Mark cache as not loaded yet
+        DIFF_CACHE_LOADED=0
+        DIFF_MERGE_STATUS=""
+    }
+
+    # Stop the background diff collector
+    stop_diff_collector() {
+        if [[ -n "$DIFF_BG_PID" ]]; then
+            kill "$DIFF_BG_PID" 2>/dev/null || true
+            wait "$DIFF_BG_PID" 2>/dev/null || true
+            DIFF_BG_PID=""
+        fi
+        if [[ -n "$DIFF_CACHE_FILE" && -f "$DIFF_CACHE_FILE" ]]; then
+            rm -f "$DIFF_CACHE_FILE"
+            DIFF_CACHE_FILE=""
+        fi
+        DIFF_CACHE_LOADED=0
+        DIFF_CACHE_AGENT=""
+        DIFF_MERGE_STATUS=""
+    }
+
+    # Load diff from cache file into DIFF_CACHE_LINES array
+    # Args: $1=agent_id (to check if we need to restart collector)
+    load_diff_from_cache() {
+        local agent_id="$1"
+        DIFF_CACHE_LINES=()
+
+        # Check if agent changed - need to restart collector
+        if [[ "$DIFF_CACHE_AGENT" != "$agent_id" ]]; then
+            start_diff_collector "$agent_id"
+            return
+        fi
+
+        # Check if cache file exists and has content
+        if [[ -z "$DIFF_CACHE_FILE" || ! -f "$DIFF_CACHE_FILE" ]]; then
+            return
+        fi
+
+        # Read first line for status
+        local first_line
+        first_line=$(head -n 1 "$DIFF_CACHE_FILE" 2>/dev/null) || true
+        if [[ "$first_line" == STATUS:* ]]; then
+            DIFF_MERGE_STATUS="${first_line#STATUS:}"
+            # Read rest of file as diff lines (using here-string to avoid subshell)
+            local content
+            content=$(tail -n +2 "$DIFF_CACHE_FILE" 2>/dev/null) || true
+            if [[ -n "$content" ]]; then
+                while IFS= read -r line; do
+                    DIFF_CACHE_LINES+=("$line")
+                done <<< "$content"
+            fi
+        fi
+
+        # Mark as loaded once we have data
+        DIFF_CACHE_LOADED=1
+    }
+
     # Main render function
     watch_render() {
         local t_frame_start=$(get_ms)
@@ -11168,9 +11454,9 @@ EOF
         # Agents exist - clear the no-agents dirty flag for next time
         _NO_AGENTS_DIRTY=1
 
-        # Render tree and get selected agent (skip for denials mode which shows all agents)
-        if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
-            # Denials mode: skip tree rendering, set tree_display_lines to 0
+        # Render tree and get selected agent (skip for full-width modes)
+        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 ]]; then
+            # Denials/Diff mode: skip tree rendering, set tree_display_lines to 0
             # Still need to process agent list for state tracking
             local agent_ids=()
             local line
@@ -11257,7 +11543,7 @@ EOF
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Right arrow = same as n (previous pane, skip errors if empty)
                     watch_calc_next_pane -1
-                    watch_set_pane_mode $_NEXT_PANE_MODE
+                    watch_set_pane_mode $_NEXT_PANE_MODE "$_WATCH_SELECTED_ID"
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
@@ -11266,7 +11552,7 @@ EOF
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Left arrow = same as p (next pane, skip errors if empty)
                     watch_calc_next_pane 1
-                    watch_set_pane_mode $_NEXT_PANE_MODE
+                    watch_set_pane_mode $_NEXT_PANE_MODE "$_WATCH_SELECTED_ID"
                     SCROLL_OFFSET=0
                     _WATCH_ESC_PENDING=0
                 fi
@@ -11304,14 +11590,14 @@ EOF
                 _WATCH_ESC_PENDING=0
                 # Previous right pane mode (skip errors pane if empty)
                 watch_calc_next_pane -1
-                watch_set_pane_mode $_NEXT_PANE_MODE
+                watch_set_pane_mode $_NEXT_PANE_MODE "$_WATCH_SELECTED_ID"
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             p)
                 _WATCH_ESC_PENDING=0
                 # Next right pane mode (skip errors pane if empty)
                 watch_calc_next_pane 1
-                watch_set_pane_mode $_NEXT_PANE_MODE
+                watch_set_pane_mode $_NEXT_PANE_MODE "$_WATCH_SELECTED_ID"
                 SCROLL_OFFSET=0  # Reset scroll on pane change
                 ;;
             s)
@@ -11354,6 +11640,12 @@ EOF
                 _WATCH_ESC_PENDING=0
                 # Switch to errors pane
                 watch_set_pane_mode 4
+                SCROLL_OFFSET=0
+                ;;
+            d)
+                _WATCH_ESC_PENDING=0
+                # Switch to diff pane
+                watch_set_pane_mode 5 "$_WATCH_SELECTED_ID"
                 SCROLL_OFFSET=0
                 ;;
             c)
