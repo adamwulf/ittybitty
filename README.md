@@ -140,6 +140,14 @@ Top-level manager agents can ask you questions using `ib ask`. These questions a
 
 **Note**: Only YOU (the primary agent) can acknowledge questions. Background agents cannot use `ib acknowledge`.
 
+**IMPORTANT - Question Visibility Limitation:**
+Questions from agents are stored in STATUS.md, which is imported at conversation start. If you spawn agents and continue working, you will NOT automatically see new questions that arrive mid-conversation.
+
+To stay aware of agent questions:
+- Periodically run `ib questions` to check for pending questions
+- The user can run `ib watch` in another terminal for real-time monitoring
+- If an agent seems stuck, check `ib questions` - it may be waiting for your answer
+
 ### When to Use
 
 - Large or complex tasks that benefit from isolation
