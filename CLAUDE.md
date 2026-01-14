@@ -607,9 +607,10 @@ echo "2h" > tests/fixtures/parse-duration/7200-2-hours.txt
 - **Send timing**: Message and Enter key sent separately with 0.1s delay to handle busy agents
 - **Orphan cleanup**: `scan_and_kill_orphans` runs after kill/merge to clean up stray Claude processes
 
-<!-- CANONICAL ITTYBITTY BLOCK: This is the authoritative version of the <ittybitty> section.
-     Keep in sync with: README.md (copy-paste block) and ib script (get_ittybitty_instructions function).
-     When updating, update all three locations. -->
+<!-- INSTALLED ITTYBITTY BLOCK: This is the installed copy of the <ittybitty> section.
+     The canonical source is in the ib script: get_ittybitty_instructions() function.
+     To update: modify get_ittybitty_instructions() in ib, then reinstall via 'ib watch' setup dialog.
+     New users installing ib will get the latest version from the ib script. -->
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
