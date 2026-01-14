@@ -688,16 +688,24 @@ Permissions flow through several layers:
 
 ```
 ┌─────────────────────────────────────────┐
-│ .ittybitty.json                         │  ← User configures
+│ .ittybitty.json                         │  ← User configures (optional)
 │ permissions.manager.allow/deny          │
 │ permissions.worker.allow/deny           │
 └─────────────────────────────────────────┘
                     │
-                    ▼ build_settings_local()
+                    ▼ build_agent_settings()
+┌─────────────────────────────────────────┐
+│ Mandatory permissions (always added)    │  ← ib adds automatically
+│ + User permissions from .ittybitty.json │
+│ = Final merged permissions              │
+└─────────────────────────────────────────┘
+                    │
+                    ▼
 ┌─────────────────────────────────────────┐
 │ $AGENT_DIR/settings.local.json          │  ← Claude Code reads
-│ - allowedTools: [...]                   │
-│ - hooks: PreToolUse, PermissionRequest  │
+│ - permissions.allow: [...]              │
+│ - permissions.deny: [...]               │
+│ - hooks: Stop, PreToolUse, PermRequest  │
 └─────────────────────────────────────────┘
                     │
                     ▼ Hooks enforce at runtime
@@ -713,9 +721,35 @@ Permissions flow through several layers:
 └─────────────────────────────────────────┘
 ```
 
+**User-configurable permissions** (`.ittybitty.json`):
+```json
+{
+  "permissions": {
+    "manager": { "allow": [...], "deny": [...] },
+    "worker": { "allow": [...], "deny": [...] }
+  }
+}
+```
+
+**Mandatory permissions** (always added by `build_agent_settings()`):
+
+| Category | Always Allowed |
+|----------|---------------|
+| **ib commands** | `Bash(ib:*)`, `Bash(./ib:*)` |
+| **Git operations** | `Bash(git status:*)`, `Bash(git add:*)`, `Bash(git commit:*)`, `Bash(git diff:*)`, `Bash(git show:*)`, `Bash(git log:*)`, `Bash(git ls-files:*)`, `Bash(git grep:*)`, `Bash(git rm:*)` |
+| **Basic shell** | `Bash(pwd:*)`, `Bash(ls:*)`, `Bash(head:*)`, `Bash(tail:*)`, `Bash(cat:*)`, `Bash(grep:*)` |
+| **File tools** | `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `LS` |
+| **Other tools** | `TodoWrite`, `Task`, `NotebookEdit`, `WebFetch`, `WebSearch`, `AskUserQuestion` |
+
+| Category | Always Denied |
+|----------|--------------|
+| **Plan mode** | `EnterPlanMode`, `ExitPlanMode` (agents should work directly, not enter planning mode) |
+
+**Why file tools are allowed by default:** The PreToolUse hook enforces path isolation at runtime. Agents can only access files in their own worktree - attempts to access the main repo or other agents' files are blocked regardless of tool permissions.
+
 Key files:
-- `.ittybitty.json` - User-editable config in repo root
-- `$AGENT_DIR/settings.local.json` - Generated per-agent, includes hooks
+- `.ittybitty.json` - User-editable config in repo root (optional)
+- `$AGENT_DIR/settings.local.json` - Generated per-agent, merges mandatory + user permissions
 - `$AGENT_DIR/agent.log` - Contains `[PreToolUse]` and `[PermissionRequest]` denial logs
 
 <!-- INSTALLED ITTYBITTY BLOCK: This is the installed copy of the <ittybitty> section.
