@@ -49,67 +49,25 @@ When a manager spawns subagents, it will automatically track their progress and 
 
 ## Adding `ib` to Your Project
 
-To make Claude aware of `ib`, add this to your project's `CLAUDE.md`:
+To make Claude aware of `ib`, run the setup from your project's root directory:
 
-```markdown
-<ittybitty>
-## Multi-Agent Orchestration (ittybitty)
-
-You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), `ib` agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
-
-### Identify Your Role First
-
-**Check the very beginning of this conversation:**
-- If you see `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` → MANAGER AGENT (can spawn children, see below)
-- If you see `<ittybitty>You are an IttyBitty worker agent.</ittybitty>` → WORKER AGENT (cannot spawn children, must complete task yourself)
-- If you DON'T see either marker → PRIMARY AGENT (see below)
-
----
-
-## For IttyBitty Manager Agents
-
-You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
-
-### ✅ CORRECT: Spawn multiple helpers
-These helpers will probably be --worker agents unless you think they will also need to subdivide work
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-
-### ❌ WRONG: Spawn ONE worker with complete task
-ib new-agent "do the full task that I was supposed to either do or delegate in parts"
-
-
-## For IttyBitty Worker Agents
-
-You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
-
-### ✅ CORRECT: Do the full task yourself
-Work on task and `ib send manager-id` a message if you get stuck
-
-
-## For Primary Agents (NOT IttyBitty agents)
-
-You're having a conversation with a human user. When using `ib`:
-- **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
-- You do NOT get automatic watchdog notifications
-- **Do NOT poll** with `ib list` - polling wastes tokens. Tell the user you've spawned agents and suggest they run `ib watch` in another terminal to monitor status. Wait for them to notify you when agents need attention.
-- Each spawned agent is a full Claude Code instance with all your capabilities
-- Agents can be manager agents (can spawn children) or worker agents (workers only)
-- Don't try to micromanage. Let agents spawn their own children.
-
-### ❌ WRONG: Don't spawn all agents yourself
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-
-### ✅ CORRECT: Spawn ONE root with complete task
-ib new-agent "full task description and goal"
-
-
-</ittybitty>
-
+```bash
+# Run the interactive setup
+ib watch
+# Press 'h' to open the setup dialog
+# Toggle options with number keys, press 'h' again to close
 ```
+
+The setup dialog will configure:
+1. **ittybitty instructions** - Adds the `<ittybitty>` block to your CLAUDE.md (creates file if needed)
+2. **STATUS.md import** - Adds `@.ittybitty/STATUS.md` import for agent status visibility
+3. **.gitignore** - Adds `.ittybitty/` to your .gitignore
+
+All three options should be enabled (checked) for full functionality.
+
+**Alternative: Manual setup**
+
+If you prefer not to use the interactive setup, you can view the canonical `<ittybitty>` block in [CLAUDE.md](CLAUDE.md) and copy it to your project's CLAUDE.md file.
 
 **More examples:**
 ```bash
@@ -139,6 +97,14 @@ Top-level manager agents can ask you questions using `ib ask`. These questions a
 3. **Respond**: `ib send <agent-id> "your answer"` — sends your answer to the agent
 
 **Note**: Only YOU (the primary agent) can acknowledge questions. Background agents cannot use `ib acknowledge`.
+
+**IMPORTANT - Question Visibility Limitation:**
+Questions from agents are stored in STATUS.md, which is imported at conversation start. If you spawn agents and continue working, you will NOT automatically see new questions that arrive mid-conversation.
+
+To stay aware of agent questions:
+- Periodically run `ib questions` to check for pending questions
+- The user can run `ib watch` in another terminal for real-time monitoring
+- If an agent seems stuck, check `ib questions` - it may be waiting for your answer
 
 ### When to Use
 
