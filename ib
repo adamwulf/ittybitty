@@ -155,20 +155,32 @@ is_claude_running() {
 # Use this to detect when commands like kill/merge/nuke are called by an agent
 # so we can error out instead of blocking on interactive prompts
 is_running_as_agent() {
+    # Debug mode: set IB_DEBUG_AGENT_DETECTION=1 to see why detection triggered
+    local debug="${IB_DEBUG_AGENT_DETECTION:-}"
+
     # Primary check: worktree path pattern
     local current_dir=$(pwd)
     if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - pwd matches agent worktree: $current_dir" >&2
         return 0
     fi
 
     # Secondary check: ib-spawned tmux session name (for cases where agent cd'd elsewhere)
-    local session_name
-    if session_name=$(tmux display-message -p '#{session_name}' 2>/dev/null); then
-        if [[ "$session_name" == ittybitty-* ]]; then
-            return 0
+    # Only check if we're actually inside a tmux session ($TMUX is set)
+    if [[ -n "${TMUX:-}" ]]; then
+        local session_name
+        if session_name=$(tmux display-message -p '#{session_name}' 2>/dev/null); then
+            if [[ "$session_name" == ittybitty-* ]]; then
+                [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - tmux session matches: $session_name" >&2
+                return 0
+            fi
+            [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: tmux session '$session_name' does not match ittybitty-*" >&2
         fi
+    else
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: not in tmux (\$TMUX not set)" >&2
     fi
 
+    [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: FALSE - pwd: $current_dir" >&2
     return 1
 }
 
