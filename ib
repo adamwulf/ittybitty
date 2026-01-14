@@ -1142,6 +1142,22 @@ parse_state() {
         return
     fi
 
+    # Check for 'creating' state - Claude permission screens before fully started
+    # These appear when Claude needs user acceptance before proceeding:
+    # - Workspace trust prompt: "Do you trust the files" + "Enter to confirm"
+    # - External imports prompt: "Allow external CLAUDE.md file imports" + "Enter to confirm"
+    # IMPORTANT: Only detect as creating if Claude logo/[USER TASK] is NOT present
+    # (if they're present, Claude has started and permission prompts are just history)
+    if [[ "$input" != *"Claude Code v"* ]] && [[ "$input" != *"[USER TASK]"* ]]; then
+        if [[ "$input" == *"Enter to confirm"* ]]; then
+            if [[ "$input" == *"Do you trust the files"* ]] || \
+               [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
+                echo "creating"
+                return
+            fi
+        fi
+    fi
+
     # Get last 5 lines for active execution detection (very recent window)
     local very_recent
     very_recent=$(echo "$input" | tail -5)
@@ -5077,6 +5093,21 @@ EOF
     fi
 
     if $verbose; then
+        # Check for 'creating' state - Claude permission screens before fully started
+        # Only detect as creating if Claude logo/[USER TASK] is NOT present
+        if [[ "$input" != *"Claude Code v"* ]] && [[ "$input" != *"[USER TASK]"* ]]; then
+            if [[ "$input" == *"Enter to confirm"* ]]; then
+                if [[ "$input" == *"Do you trust the files"* ]]; then
+                    echo "creating (matched: workspace trust prompt)"
+                    return
+                fi
+                if [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
+                    echo "creating (matched: external imports prompt)"
+                    return
+                fi
+            fi
+        fi
+
         # Get last 5 lines for active execution detection (very recent window)
         local very_recent
         very_recent=$(echo "$input" | tail -5)
