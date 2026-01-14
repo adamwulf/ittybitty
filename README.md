@@ -57,55 +57,151 @@ To make Claude aware of `ib`, add this to your project's `CLAUDE.md`:
 
 You have access to `ib` for spawning long-running background agents. Unlike Claude's built-in Task tool (which spawns ephemeral subagents that block until complete), `ib` agents are **persistent Claude Code instances** that run in isolated git worktrees and can work autonomously for extended periods.
 
-### Identify Your Role First
+### When to Use
 
-**Check the very beginning of this conversation:**
-- If you see `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` → MANAGER AGENT (can spawn children, see below)
-- If you see `<ittybitty>You are an IttyBitty worker agent.</ittybitty>` → WORKER AGENT (cannot spawn children, must complete task yourself)
-- If you DON'T see either marker → PRIMARY AGENT (see below)
+- Large or complex tasks that benefit from isolation
+- Long-running research or analysis
+- When the user explicitly requests background agents
+- Tasks that can run while you continue other work
 
----
+### Automatic Notifications (Agent-to-Agent Only)
 
-## For IttyBitty Manager Agents
+**IMPORTANT**: Watchdog notifications only work between agents, not between user and agent.
 
-You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You will need to decide if the task should be split into smaller subtasks for subagents, or if the task is small enough to accomplish yourself without issue. Spend time thinking and deciding how you want to accomplish your task.
+- If **Manager Agent A** spawns **Worker Agent B**: Agent A gets automatic watchdog notifications about Agent B
+- If **you (primary agent)** spawn **Agent A**: You will NOT get automatic notifications
+- **Do NOT poll** with `ib list` - polling wastes tokens. Instead, tell the user that you've spawned agents and that you'll both need to check on them periodically. The user can run `ib watch` in another terminal to monitor agent status.
 
-### ✅ CORRECT: Spawn multiple helpers
-These helpers will probably be --worker agents unless you think they will also need to subdivide work
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-ib new-agent "do part of task"
+When agent spawns child agent (agent-to-agent):
+- A watchdog is automatically spawned to monitor the child
+- The watchdog notifies the manager agent when:
+  - Child is waiting for >30 seconds (needs input)
+  - Child completes (ready to review/merge)
+- Manager agents should enter WAITING mode after spawning children
 
-### ❌ WRONG: Spawn ONE worker with complete task
-ib new-agent "do the full task that I was supposed to either do or delegate in parts"
+### Workflow
 
+**If you are a primary agent in a user conversation (no watchdog notifications):**
+1. **Spawn**: `ib new-agent "clearly defined goal"` — returns agent ID
+2. **Inform the user**: Tell them you've spawned agents and suggest they run `ib watch` in another terminal
+3. **Wait for user**: The user will tell you when agents need attention or are complete
+4. **Check status**: Use `ib look <id>` to review output when the user notifies you
+5. **Interact**: If agent needs input, use `ib send <id> "answer"`
+6. **Respond to questions**: If agents ask questions (shown in STATUS.md), use `ib acknowledge <question-id>` then `ib send <agent-id> "answer"`
+7. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
 
-## For IttyBitty Worker Agents
+**If you are a background agent spawning sub-agents (automatic watchdog notifications):**
+1. **Spawn**: `ib new-agent "clearly defined goal"` — agent auto-detects manager, watchdog auto-spawns
+2. **Enter WAITING**: Enter WAITING mode after spawning sub-agents (use `read` or similar)
+3. **Auto-notify**: Watchdog monitors each child and notifies you when:
+   - Child has been waiting >30s (needs input)
+   - Child completes (ready to merge/review)
+4. **Review & merge**: When notified, check work with `ib look/diff <id>`, then `ib merge <id> --force` or `ib kill <id> --force`
 
-You will have specific instructions provided to you for your manager or worker tasks inside your prompt. You are not able to spawn helper subagents, you must accomplish your given task on your own. If you get stuck or need help, you can `ib send` messages to your manager and then enter WAITING state until your manager replies with any clarification needed.
+### All Commands
 
-### ✅ CORRECT: Do the full task yourself
-Work on task and `ib send manager-id` a message if you get stuck
+| Command               | Description                                                  |
+| --------------------- | ------------------------------------------------------------ |
+| `ib new-agent "goal"` | Spawn a new agent, returns its ID                            |
+| `ib list`             | Show all agents and their status                             |
+| `ib look <id>`        | View an agent's recent output                                |
+| `ib send <id> "msg"`  | Send input to an agent                                       |
+| `ib status <id>`      | Show agent's git commits and changes                         |
+| `ib diff <id>`        | Show full diff of agent's work vs main                       |
+| `ib merge <id>`       | Merge agent's work and permanently close it                  |
+| `ib kill <id>`        | Permanently close agent without merging                      |
+| `ib resume <id>`      | Restart a stopped agent's session                            |
+| `ib log "msg"`        | Write timestamped message to agent's log (auto-detects agent) |
+| `ib watchdog <id>`    | Monitor agent and notify manager (auto-spawned for child agents) |
+| `ib ask "question"`   | Ask the user-level Claude a question (top-level managers only) |
+| `ib questions`        | List pending questions from agents                           |
+| `ib acknowledge <id>` | Mark a question as handled (primary agent only, alias: `ack`) |
 
+### Spawn Options
 
-## For Primary Agents (NOT IttyBitty agents)
+When creating agents with `ib new-agent`, you can customize behavior with these flags:
 
-You're having a conversation with a human user. When using `ib`:
-- **Key principle**: Spawn ONE root agent with the complete task, don't orchestrate the entire tree yourself
-- You do NOT get automatic watchdog notifications
-- **Do NOT poll** with `ib list` - polling wastes tokens. Tell the user you've spawned agents and suggest they run `ib watch` in another terminal to monitor status. Wait for them to notify you when agents need attention.
-- Each spawned agent is a full Claude Code instance with all your capabilities
-- Agents can be manager agents (can spawn children) or worker agents (workers only)
-- Don't try to micromanage. Let agents spawn their own children.
+| Flag | Description |
+| ---- | ----------- |
+| `--name <name>` | Custom agent name (default: auto-generated ID) |
+| `--manager <id>` | Track manager relationship for hierarchical coordination |
+| `--worker` | Create a worker agent that cannot spawn sub-agents |
+| `--yolo` | **Yolo mode**: Skip all permission prompts for full autonomy |
+| `--model <model>` | Use a specific model (opus, sonnet, haiku) |
+| `--no-worktree` | Work in repo root instead of isolated worktree |
+| `--allow-tools <list>` | Only allow these tools (comma-separated) |
+| `--deny-tools <list>` | Deny these tools (comma-separated) |
+| `--print` | One-shot mode: run and exit, no interaction |
 
-### ❌ WRONG: Don't spawn all agents yourself
-ib new-agent "do part of task"
-ib new-agent "do part of task"
-ib new-agent "do part of task"
+#### Yolo Mode (`--yolo`)
 
-### ✅ CORRECT: Spawn ONE root with complete task
-ib new-agent "full task description and goal"
+Yolo mode enables full autonomous operation by passing `--dangerously-skip-permissions --permission-mode bypassPermissions` to Claude CLI. This mode:
 
+- **Skips all tool permission prompts** - agent can use any tool without approval
+- **Bypasses workspace trust dialogs** - no need for auto-acceptance
+- **Requires manual confirmation** - Claude CLI shows a one-time "Bypass Permissions" warning that must be accepted interactively
+- **Persists across resume** - yolo setting is stored in `start.sh` and preserved when resuming
+
+**Use with caution**: Only use yolo mode in sandboxed environments or when you fully trust the agent's task.
+
+**Example:**
+```bash
+ib new-agent --yolo "research latest React patterns and update our components"
+```
+
+**Note**: Even with `--yolo`, the agent will show a one-time warning screen asking to confirm bypass permissions mode. This is a safety feature built into Claude CLI and requires manual confirmation (select option 2: "Yes, I accept").
+
+### Agent States
+
+| State      | Meaning                                                 |
+| ---------- | ------------------------------------------------------- |
+| `creating` | Agent is initializing (Claude starting up)              |
+| `running`  | Agent is actively processing                            |
+| `waiting`  | Agent is idle, may need input                           |
+| `complete` | Agent signaled task completion (merge or kill to close) |
+| `stopped`  | Session ended unexpectedly, needs user intervention     |
+
+### Key Differences from Claude's Task Tool
+
+| Task Tool             | `ib` Agents              |
+| --------------------- | ------------------------ |
+| Blocks until complete | Runs in background       |
+| Shares your context   | Isolated conversation    |
+| No git isolation      | Own branch + worktree    |
+| Cannot spawn children | Can manage sub-agents    |
+| Lost on crash         | Resumable via session ID |
+
+### User Questions (Agent-to-User Communication)
+
+Top-level manager agents can ask questions of the user-level Claude using `ib ask`. Questions are stored in `.ittybitty/user-questions.json` and appear in STATUS.md via the @import.
+
+**Communication hierarchy:**
+- **Workers/sub-managers** → must ask their manager (via `ib send <manager> "question"`)
+- **Top-level managers** → can ask the user directly (via `ib ask "question"`)
+
+**Workflow for agents asking questions:**
+```bash
+# Top-level manager asks the user
+ib ask "Should I proceed with option A or B?"
+# Then enter WAITING mode until the user responds
+```
+
+**Workflow for user-level Claude responding (PRIMARY AGENT ONLY):**
+1. See pending questions in STATUS.md (via @import)
+2. `ib acknowledge <question-id>` to mark as handled
+3. `ib send <agent-id> "your answer"` to respond to the agent
+
+**Note**: Only the primary (user-level) Claude can use `ib acknowledge`. Background agents cannot acknowledge questions.
+
+**IMPORTANT - Question Visibility Limitation:**
+Questions from agents are stored in STATUS.md, which is imported at conversation start. If you spawn agents and continue working, you will NOT automatically see new questions that arrive mid-conversation.
+
+To stay aware of agent questions:
+- Periodically run `ib questions` to check for pending questions
+- The user can run `ib watch` in another terminal for real-time monitoring
+- If an agent seems stuck, check `ib questions` - it may be waiting for your answer
+
+@.ittybitty/STATUS.md
 
 </ittybitty>
 
