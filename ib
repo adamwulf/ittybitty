@@ -8552,7 +8552,8 @@ EOF
     local COLOR_DIM=$'\e[2m'       # Dim/faint text
     local COLOR_CYAN=$'\e[36m'     # Cyan for brackets/blocks
     local COLOR_YELLOW=$'\e[33m'   # Yellow for warnings (>80%)
-    local COLOR_RED=$'\e[31m'      # Red for critical (>90%)
+    local COLOR_RED=$'\e[31m'      # Red for critical (>90%), diff removals
+    local COLOR_GREEN=$'\e[32m'    # Green for diff additions
     local COLOR_RESET=$'\e[0m'     # Reset all attributes
 
     # Colorize a log line for agent log display
@@ -8584,6 +8585,43 @@ EOF
         result="${result}${remaining}"
 
         _COLORIZED_LINE="$result"
+    }
+
+    # Colorize a diff line for diff panel display
+    # - Green for addition lines (+)
+    # - Red for removal lines (-)
+    # - Dim grey for file headers (diff, index, ---, +++, @@)
+    # Args: $1=line
+    # Sets: _COLORIZED_LINE
+    # Performance: O(1) - single character check
+    colorize_diff_line() {
+        local line="$1"
+        local first_char="${line:0:1}"
+        local first_two="${line:0:2}"
+        local first_three="${line:0:3}"
+        local first_four="${line:0:4}"
+
+        # Check for file headers (grey/dim)
+        # Order matters: check longer prefixes first
+        if [[ "$first_four" == "diff" || "$first_four" == "inde" ]]; then
+            # diff --git or index lines
+            _COLORIZED_LINE="${COLOR_DIM}${line}${COLOR_RESET}"
+        elif [[ "$first_three" == "---" || "$first_three" == "+++" ]]; then
+            # File path markers
+            _COLORIZED_LINE="${COLOR_DIM}${line}${COLOR_RESET}"
+        elif [[ "$first_two" == "@@" ]]; then
+            # Hunk headers
+            _COLORIZED_LINE="${COLOR_DIM}${line}${COLOR_RESET}"
+        elif [[ "$first_char" == "+" ]]; then
+            # Addition lines (green)
+            _COLORIZED_LINE="${COLOR_GREEN}${line}${COLOR_RESET}"
+        elif [[ "$first_char" == "-" ]]; then
+            # Removal lines (red)
+            _COLORIZED_LINE="${COLOR_RED}${line}${COLOR_RESET}"
+        else
+            # Context lines and other content (no color)
+            _COLORIZED_LINE="$line"
+        fi
     }
 
     # Format session percentage with color coding
@@ -10920,7 +10958,13 @@ EOF
                     if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
                         # Truncate to terminal width
                         local display_line="${DIFF_CACHE_LINES[$array_idx]:0:$content_width}"
-                        printf '%-*s\n' "$content_width" "$display_line"
+                        local visible_len=${#display_line}
+                        # Apply diff colorization
+                        colorize_diff_line "$display_line"
+                        # Calculate padding needed (visible chars only)
+                        local padding=$((content_width - visible_len))
+                        [[ $padding -lt 0 ]] && padding=0
+                        printf '%s%*s\n' "$_COLORIZED_LINE" "$padding" ""
                     else
                         # Empty line (no content)
                         printf '%-*s\n' "$content_width" ""
