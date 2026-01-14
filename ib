@@ -10649,13 +10649,15 @@ EOF
             # Set terminal title (since tree rendering is skipped)
             printf '\e]0;ib watch: denials\a'
 
-            # Full-width header for denials mode (dim)
+            # Full-width header for denials mode (box chars dim, title white)
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
-            local header="── DENIED TOOLS ($filter_name) "
-            while [[ ${#header} -lt $TERM_COLS ]]; do
-                header="${header}─"
-            done
-            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
+            local title="DENIED TOOLS ($filter_name)"
+            local pad_count=$((TERM_COLS - 3 - ${#title} - 1))  # 3 for "── ", 1 for trailing space
+            [[ $pad_count -lt 0 ]] && pad_count=0
+            local pad=""
+            local i
+            for ((i=0; i<pad_count; i++)); do pad="${pad}─"; done
+            printf "%s── %s%s%s %s%s\n" "$COLOR_DIM" "$COLOR_RESET" "$title" "$COLOR_DIM" "$pad" "$COLOR_RESET"
 
             # Load denials from background cache (non-blocking)
             load_denials_from_cache
@@ -10731,12 +10733,14 @@ EOF
 
         # ===== TREE MODE (MODE 3) =====
         if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
-            # Full-width header for tree mode (dim)
-            local header="── AGENT TREE "
-            while [[ ${#header} -lt $TERM_COLS ]]; do
-                header="${header}─"
-            done
-            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
+            # Full-width header for tree mode (box chars dim, title white)
+            local title="AGENT TREE"
+            local pad_count=$((TERM_COLS - 3 - ${#title} - 1))  # 3 for "── ", 1 for trailing space
+            [[ $pad_count -lt 0 ]] && pad_count=0
+            local pad=""
+            local i
+            for ((i=0; i<pad_count; i++)); do pad="${pad}─"; done
+            printf "%s── %s%s%s %s%s\n" "$COLOR_DIM" "$COLOR_RESET" "$title" "$COLOR_DIM" "$pad" "$COLOR_RESET"
 
             # Render full-width tree pane (hide left tmux pane)
             local content_height=$pane_height
@@ -11169,7 +11173,7 @@ EOF
                 colorize_log_line "$right_line"
                 right_line="$_COLORIZED_LINE"
             fi
-            printf '\e[%d;1H\e[K%s\e[%d;%dH%s│%s %s' \
+            printf '\e[%d;1H\e[K%s\e[%d;%dH %s│%s %s' \
                 "$row" "${visible_tmux_lines[$pane_line]}" \
                 "$row" "$((left_pane_width + 1))" \
                 "$COLOR_DIM" "$COLOR_RESET" "$right_line"
@@ -11563,7 +11567,7 @@ EOF
             # Blank panes with dim separator (only │ is dim)
             local pane_line
             for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-                printf '%-*s%s│%s %-*s\n' "$left_pane_width" "" "$COLOR_DIM" "$COLOR_RESET" "$right_pane_width" ""
+                printf '%-*s %s│%s %-*s\n' "$left_pane_width" "" "$COLOR_DIM" "$COLOR_RESET" "$right_pane_width" ""
             done
 
             # Bottom separator with ─ characters (dim)
