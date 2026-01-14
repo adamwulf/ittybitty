@@ -1267,8 +1267,19 @@ get_state() {
     # - Still showing external imports prompt (needs acceptance)
     # - Nothing meaningful showing yet (Claude still loading)
     # We capture more history to check for Claude logo
-    local full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -50)
-    if ! echo "$full_history" | grep -q "Claude Code v" && ! echo "$full_history" | grep -q "\[USER TASK\]"; then
+    # Check for various Claude startup indicators:
+    # - "Claude Code v" (version in logo on some versions)
+    # - "╭─ Claude Code" (welcome box header)
+    # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
+    local full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100)
+    local claude_started=false
+    if echo "$full_history" | grep -q "Claude Code v" || \
+       echo "$full_history" | grep -q "╭─ Claude Code" || \
+       echo "$full_history" | grep -q "\[USER TASK\]" || \
+       echo "$full_history" | grep -q "\[AGENT CONTEXT\]"; then
+        claude_started=true
+    fi
+    if [[ "$claude_started" == false ]]; then
         # Check if permissions screen is showing (workspace trust OR external imports)
         if echo "$full_history" | grep -qi "Enter to confirm"; then
             if echo "$full_history" | grep -qi "trust" || \
