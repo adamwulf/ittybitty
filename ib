@@ -2856,26 +2856,7 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib merge <agent-id>                            Merge agent's work and close it
   ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
 
-TASK SIZING STRATEGY:
-1. DEFINE SUCCESS CRITERIA FIRST - What does 'done' look like?
-   - What specific changes/outputs are required?
-   - What conditions prove completion? (tests pass, files exist, content present)
-
-2. THEN ASSESS TASK SIZE - Now that you know what success looks like:
-   - SMALL: You can complete it quickly yourself - just do it, don't spawn sub-agents
-   - MEDIUM: 2-3 independent subtasks - spawn WORKER agents in parallel (--worker flag)
-   - LARGE: Multiple serial stages - use TodoWrite to track, spawn workers per stage
-
-3. IF SPAWNING WORKERS:
-   - Include success criteria in each worker's prompt
-   - Enter WAITING mode after spawning - watchdogs notify you when they complete
-   - Always use --worker unless sub-agent needs to manage its own sub-agents
-
-AUTOMATIC NOTIFICATIONS:
-  - A watchdog monitors each sub-agent you spawn
-  - You will be notified when sub-agents complete OR when they need help
-  - Once you've created agents to work, enter WAITING mode - don't poll 'ib list'
-  - The watchdog ensures you're woken up when action is needed
+WATCHDOGS: Each sub-agent you spawn is monitored. Enter WAITING mode after spawning - you'll be notified when they complete or need help. Don't poll \`ib list\`.
 
 If \`ib merge\` fails due to conflicts, choose the best strategy:
 1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
@@ -2883,28 +2864,10 @@ If \`ib merge\` fails due to conflicts, choose the best strategy:
 3. If the merge is no longer needed, skip it and note this in your final report
 
 MERGE CONFLICT RESOLUTION:
-When resolving conflicts (whether yourself or delegating to a worker):
-
-1. UNDERSTAND BOTH SIDES FIRST:
-   - \`git diff --name-only --diff-filter=U\` to see conflicted files
-   - Each conflict has two sides: YOUR changes and the TARGET branch's changes
-   - BOTH sides represent real work that should be preserved
-
-2. DO NOT blindly resolve conflicts:
-   - NEVER use \`git checkout --ours .\` or \`git checkout --theirs .\`
-   - NEVER accept one side without understanding the other
-   - NEVER delete code you don't understand
-
-3. For each conflict:
-   - Read both versions carefully
-   - Understand what each change was trying to accomplish
-   - Merge the INTENT of both changes, not just the code
-   - If unclear, ASK your manager (or user via \`ib ask\` if top-level)
-
-4. After resolving:
-   - \`git add <resolved-files>\`
-   - \`git commit\` (the merge commit)
-   - Then cleanup: \`git worktree remove <path> --force && git branch -D agent/<id>\`
+- NEVER blindly accept one side (\`git checkout --ours/theirs .\`) - both sides represent real work
+- Understand what each side was trying to accomplish, then merge the INTENT
+- If unclear, ASK your manager (or \`ib ask\` if top-level)
+- After: \`git add <files> && git commit\`, then cleanup: \`git worktree remove <path> --force && git branch -D agent/<id>\`
 "
         # Add ib ask guidance for root-level managers
         if [[ -z "$MANAGER" ]]; then
