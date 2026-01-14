@@ -1,0 +1,14 @@
+{
+  "id": "test-agent",
+  "session_id": "c462b077-3132-4cb1-a275-d6ea695b47c7",
+  "tmux_session": "ittybitty-64c28d2a-test-agent",
+  "prompt": "test prompt",
+  "manager": null,
+  "created": "2026-01-14T02:21:19-06:00",
+  "created_epoch": 1768378879,
+  "worktree": true,
+  "worker": false,
+  "yolo": false,
+  "model": "opus",
+  "claude_pid": "86853"
+}

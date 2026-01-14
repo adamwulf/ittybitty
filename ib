@@ -1723,6 +1723,46 @@ update_claude_status() {
 # TREE HELPERS (shared by cmd_tree and cmd_watch)
 # =============================================================================
 
+# Validate all agent meta.json files have required fields
+# Exits with error if any agent has invalid metadata
+# Required fields: created_epoch (must be numeric)
+validate_agent_metadata() {
+    [[ ! -d "$AGENTS_DIR" ]] && return 0
+
+    local errors=()
+    local agent_dir id meta
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        [[ -f "$agent_dir/meta.json" ]] || continue
+
+        id="${agent_dir%/}"; id="${id##*/}"
+        meta="$agent_dir/meta.json"
+
+        # Check for created_epoch field (required for age calculation)
+        local created_epoch
+        created_epoch=$(jq -r '.created_epoch // empty' "$meta" 2>/dev/null)
+
+        if [[ -z "$created_epoch" ]]; then
+            errors+=("Agent '$id': missing 'created_epoch' field in meta.json")
+        elif ! [[ "$created_epoch" =~ ^[0-9]+$ ]]; then
+            errors+=("Agent '$id': 'created_epoch' must be numeric (got: $created_epoch)")
+        fi
+    done
+
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        echo "Error: Invalid agent metadata detected" >&2
+        echo "" >&2
+        for err in "${errors[@]}"; do
+            echo "  - $err" >&2
+        done
+        echo "" >&2
+        echo "Fix: Either delete the invalid agent directories or update their meta.json files." >&2
+        echo "Agent directories are in: $AGENTS_DIR" >&2
+        exit 1
+    fi
+}
+
 # Global cache for meta.json data (invalidated when meta.json file changes)
 # Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
@@ -5579,6 +5619,46 @@ cmd_test_pretooluse() {
 }
 
 # =============================================================================
+# COMMAND: test-validate-meta
+# =============================================================================
+
+# Test validate_agent_metadata() logic with a single meta.json file
+# Input: meta.json file path
+# Output: "valid" or "invalid" followed by error message
+cmd_test_validate_meta() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        echo "Usage: ib test-validate-meta <meta.json>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    # Check for created_epoch field (required for age calculation)
+    local created_epoch
+    created_epoch=$(jq -r '.created_epoch // empty' "$fixture_file" 2>/dev/null)
+
+    if [[ -z "$created_epoch" ]]; then
+        echo "invalid"
+        echo "missing 'created_epoch' field"
+        exit 0
+    fi
+
+    if ! [[ "$created_epoch" =~ ^[0-9]+$ ]]; then
+        echo "invalid"
+        echo "'created_epoch' must be numeric (got: $created_epoch)"
+        exit 0
+    fi
+
+    echo "valid"
+    exit 0
+}
+
+# =============================================================================
 # COMMAND: test-format-age
 # =============================================================================
 
@@ -8263,6 +8343,9 @@ EOF
 
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
+
+    # Validate agent metadata before starting (catches invalid meta.json early)
+    validate_agent_metadata
 
     # Load configuration (for CONFIG_FPS, etc.)
     load_config
@@ -12549,6 +12632,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-validate-meta)
+        shift
+        cmd_test_validate_meta "$@"
         ;;
     test-format-age)
         shift
