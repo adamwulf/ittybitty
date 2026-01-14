@@ -8436,59 +8436,32 @@ EOF
     local COLOR_RESET=$'\e[0m'     # Reset all attributes
 
     # Colorize a log line for agent log display
-    # - Makes ISO timestamps dim
-    # - Colors [...] blocks in cyan
+    # - Makes ISO timestamps at line start dim
+    # - Colors other [...] blocks in cyan
     # Args: $1=line
     # Sets: _COLORIZED_LINE
+    # Performance: O(n) where n is number of bracket pairs (typically 1-2)
     colorize_log_line() {
         local line="$1"
         local result=""
-        local i=0
-        local len=${#line}
+        local remaining
 
-        while [[ $i -lt $len ]]; do
-            local char="${line:$i:1}"
+        # Check for ISO timestamp at start: [2026-01-14T...] or [YYYY-MM-DD...]
+        # Uses bash regex - much faster than character iteration
+        if [[ "$line" =~ ^\[([0-9][^]]*)\](.*) ]]; then
+            result="${COLOR_DIM}[${BASH_REMATCH[1]}]${COLOR_RESET}"
+            remaining="${BASH_REMATCH[2]}"
+        else
+            remaining="$line"
+        fi
 
-            # Check for ISO timestamp pattern at start: [YYYY-MM-DDTHH:MM:SS...]
-            if [[ "$char" == "[" && $i -eq 0 ]]; then
-                # Check if this looks like an ISO timestamp (starts with digit after [)
-                local next_char="${line:$((i+1)):1}"
-                if [[ "$next_char" =~ [0-9] ]]; then
-                    # Find the closing bracket
-                    local end_bracket=$i
-                    while [[ $end_bracket -lt $len && "${line:$end_bracket:1}" != "]" ]]; do
-                        end_bracket=$((end_bracket + 1))
-                    done
-                    if [[ $end_bracket -lt $len ]]; then
-                        # Extract timestamp including brackets
-                        local timestamp="${line:$i:$((end_bracket - i + 1))}"
-                        result="${result}${COLOR_DIM}${timestamp}${COLOR_RESET}"
-                        i=$((end_bracket + 1))
-                        continue
-                    fi
-                fi
-            fi
-
-            # Check for [...] blocks (like [PreToolUse], [PermissionRequest])
-            if [[ "$char" == "[" ]]; then
-                # Find the closing bracket
-                local end_bracket=$i
-                while [[ $end_bracket -lt $len && "${line:$end_bracket:1}" != "]" ]]; do
-                    end_bracket=$((end_bracket + 1))
-                done
-                if [[ $end_bracket -lt $len ]]; then
-                    # Extract block including brackets
-                    local block="${line:$i:$((end_bracket - i + 1))}"
-                    result="${result}${COLOR_CYAN}${block}${COLOR_RESET}"
-                    i=$((end_bracket + 1))
-                    continue
-                fi
-            fi
-
-            # Regular character
-            result="${result}${char}"
-            i=$((i + 1))
+        # Colorize remaining [...] blocks in cyan
+        # Each iteration handles one bracket pair - typically 0-2 iterations
+        while [[ "$remaining" =~ ^([^[]*)(\[[^]]*\])(.*)$ ]]; do
+            result="${result}${BASH_REMATCH[1]}${COLOR_CYAN}${BASH_REMATCH[2]}${COLOR_RESET}"
+            remaining="${BASH_REMATCH[3]}"
         done
+        result="${result}${remaining}"
 
         _COLORIZED_LINE="$result"
     }
