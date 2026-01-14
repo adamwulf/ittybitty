@@ -748,6 +748,14 @@ ib ask "Should I proceed with option A or B?"
 
 **Note**: Only the primary (user-level) Claude can use `ib acknowledge`. Background agents cannot acknowledge questions.
 
+**IMPORTANT - Question Visibility Limitation:**
+Questions from agents are stored in STATUS.md, which is imported at conversation start. If you spawn agents and continue working, you will NOT automatically see new questions that arrive mid-conversation.
+
+To stay aware of agent questions:
+- Periodically run `ib questions` to check for pending questions
+- The user can run `ib watch` in another terminal for real-time monitoring
+- If an agent seems stuck, check `ib questions` - it may be waiting for your answer
+
 @.ittybitty/STATUS.md
 
 </ittybitty>
