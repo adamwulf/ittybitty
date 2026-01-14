@@ -11308,18 +11308,26 @@ EOF
             sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || true
             printf '%s' "${sessions//$'\n'/|}" > "$sessionfile"
 
-            # Capture pane output for each ittybitty session (atomic write to avoid race)
-            for session in $sessions; do
-                if [[ "$session" == ${SESSION_PREFIX}* ]]; then
-                    local agent_id="${session#${SESSION_PREFIX}}"
-                    # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
-                    local raw_capture
-                    raw_capture=$(tmux capture-pane -t "$session" -p -S -500 2>/dev/null) || true
-                    if [[ -n "$raw_capture" ]]; then
-                        _strip_ansi "$raw_capture"
-                        printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
-                            mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
-                    fi
+            # Capture pane output for each agent (iterate by agent directory, not session prefix)
+            # This ensures consistency with session_name() which reads from meta.json
+            for agent_dir in "$agents_dir"/*/; do
+                [[ -d "$agent_dir" ]] || continue
+                [[ -f "$agent_dir/meta.json" ]] || continue
+                local agent_id="${agent_dir%/}"
+                agent_id="${agent_id##*/}"
+                # Read tmux_session from meta.json (same source as session_name())
+                local tmux_session
+                tmux_session=$(grep -o '"tmux_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$agent_dir/meta.json" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/')
+                [[ -z "$tmux_session" ]] && continue
+                # Only capture if session exists in current sessions list
+                [[ "$sessions" == *"$tmux_session"* ]] || continue
+                # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
+                local raw_capture
+                raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 2>/dev/null) || true
+                if [[ -n "$raw_capture" ]]; then
+                    _strip_ansi "$raw_capture"
+                    printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
                 fi
             done
 
