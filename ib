@@ -10947,7 +10947,7 @@ EOF
             if [[ "${_NO_AGENTS_DIRTY:-1}" != "1" ]]; then
                 # Just update footer for timing
                 local pane_height=$((TERM_LINES - 5 - 4))  # 5 tree lines + header + separator + 2 footer
-                local footer_row=$((5 + 1 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
+                local footer_row=$((5 + 2 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
                 watch_render_footer "$footer_row" "$t_frame_start"
                 return
             fi
@@ -10994,7 +10994,7 @@ EOF
             printf '%s─┴─%s' "$left_sep" "$right_sep"
 
             # Footer
-            local footer_row=$((5 + 1 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
+            local footer_row=$((5 + 2 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
             watch_render_footer "$footer_row" "$t_frame_start"
 
             return  # tmpfile cleanup handled by RETURN trap
