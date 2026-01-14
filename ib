@@ -2826,7 +2826,7 @@ Your workflow:
 
 3. IF SPAWNING: Create WORKER sub-agents (--worker) for each task
    - Include the task AND its success criteria in the prompt
-   - Enter WAITING mode - watchdogs notify you when they need attention
+   - Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help (don't poll)
 
 4. WHEN NOTIFIED - Review against your predefined criteria:
    - \`ib look <id>\` - what the agent reports
@@ -2905,8 +2905,7 @@ Use this to:
 If you get stuck or encounter a blocker:
 1. Describe the specific problem you're facing
 2. Send a message to your manager: ib send $MANAGER \"[STUCK] <description of problem>\"
-3. Enter WAITING state
-4. Your watchdog will notify your manager that you need help
+3. Enter WAITING state - a watchdog monitors you and will notify your manager that you need help
 
 SELF-INSPECTION:
 Before completing, verify your work:
