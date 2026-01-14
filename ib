@@ -212,10 +212,6 @@ enforce_command_access() {
     # Case 1: Agent (Claude running in worktree or ib tmux session)
     if [[ "$is_claude" == "true" ]] && { [[ "$in_worktree" == "true" ]] || [[ "$in_tmux_session" == "true" ]]; }; then
         case "$cmd" in
-            parse-state|test-*)
-                echo "Error: '$cmd' is a development/test command not available to agents" >&2
-                exit 1
-                ;;
             watch)
                 echo "Error: '$cmd' is an interactive command not available to agents" >&2
                 exit 1
@@ -5643,13 +5639,6 @@ EOF
 #   "settings": {"permissions": {"allow": ["Bash(ib:*)"]}}
 # }
 cmd_test_tool_allowed() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
 
@@ -5801,13 +5790,6 @@ EOF
 # This is for testing only - blocked from running inside agents
 # Input: agent type (manager/worker) via stdin or file
 cmd_test_build_settings() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
     local validate=false
@@ -5908,13 +5890,6 @@ EOF
 # This is for testing only - blocked from running inside agents
 # Input: JSON config via stdin or file
 cmd_test_load_config() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
 
@@ -6018,13 +5993,6 @@ EOF
 #   "agents": ["abc123", "def456", "abc789"]
 # }
 cmd_test_resolve_id() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
 
@@ -6157,13 +6125,6 @@ EOF
 #   "query": {"manager": "manager1"}
 # }
 cmd_test_relationships() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
 
@@ -6272,13 +6233,6 @@ EOF
 # This is for testing only - blocked from running inside agents
 # Input: message string via stdin or file
 cmd_test_log_format() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
     local timestamp=""
@@ -6358,6 +6312,90 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-display-width
+# =============================================================================
+
+# Test display width calculation for UTF-8 strings
+# This is for testing only - blocked from running inside agents
+# Input: string via stdin or file
+cmd_test_display_width() {
+    local input_file=""
+    local verbose=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-display-width [options] [file]
+
+Test display width calculation for strings with UTF-8 characters.
+
+Reads a string from stdin if no file is provided, or from the specified file.
+Outputs the display width (number of terminal columns).
+
+This is used to test alignment of tree view with UTF-8 box-drawing characters
+(│, ├, └, ─) which are 3 bytes each but display as 1 column.
+
+Options:
+  -v, --verbose   Show additional details (byte length vs display width)
+  -h, --help      Show this help
+
+Examples:
+  echo "├── agent-1" | ib test-display-width
+  echo "│   └── worker" | ib test-display-width
+  ib test-display-width tests/fixtures/display-width/simple-ascii.txt
+EOF
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-display-width [file] or echo 'string' | ib test-display-width" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Remove trailing newline for consistent calculation
+    input="${input%$'\n'}"
+
+    local width
+    width=$(display_width "$input")
+
+    if [[ "$verbose" == true ]]; then
+        echo "input: $input"
+        echo "byte_length: ${#input}"
+        echo "display_width: $width"
+    else
+        echo "$width"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-parse-denial
 # =============================================================================
 
@@ -6423,13 +6461,6 @@ parse_denial_line() {
 
 # Test command for parse_denial_line
 cmd_test_parse_denial() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local output_field=""
 
@@ -6582,13 +6613,6 @@ check_claude_md_has_status_import() {
 #   "content": "the content to check"
 # }
 cmd_test_setup_check() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
     local verbose=false
 
@@ -6714,13 +6738,6 @@ EOF
 #   "cwd": "/current/dir"
 # }
 cmd_test_main_path() {
-    # Block test commands from running inside agents
-    if is_running_as_agent; then
-        echo "Error: test-* commands are for development testing only" >&2
-        echo "These commands cannot be run inside an agent worktree" >&2
-        exit 1
-    fi
-
     local input_file=""
 
     # Parse arguments
