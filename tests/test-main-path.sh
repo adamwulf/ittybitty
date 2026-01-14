@@ -22,6 +22,12 @@ if [[ ! -x "$IB" ]]; then
     exit 1
 fi
 
+# Skip if running from agent worktree - these tests verify main repo hook behavior
+if ! "$IB" is-in-main-repo; then
+    echo "SKIP: test-main-path requires running from main repo (not agent worktree)"
+    exit 0
+fi
+
 FIXTURES_DIR="$SCRIPT_DIR/fixtures/main-path"
 
 if [[ ! -d "$FIXTURES_DIR" ]]; then

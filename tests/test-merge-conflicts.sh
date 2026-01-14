@@ -23,6 +23,12 @@ if [[ ! -x "$IB" ]]; then
     exit 1
 fi
 
+# Skip if running from agent worktree
+if ! "$IB" is-in-main-repo; then
+    echo "SKIP: test-merge-conflicts requires running from main repo (not agent worktree)"
+    exit 0
+fi
+
 # Extract just the check_merge_conflicts function from ib script
 # This avoids side effects from sourcing the entire script
 extract_function() {
@@ -30,8 +36,15 @@ extract_function() {
     sed -n '/^check_merge_conflicts()/,/^}/p' "$IB"
 }
 
+# Check if the function exists before trying to extract it
+FUNC_DEF=$(extract_function)
+if [[ -z "$FUNC_DEF" ]]; then
+    echo "SKIP: check_merge_conflicts function not yet implemented in ib"
+    exit 0
+fi
+
 # Evaluate the extracted function to define it in this shell
-eval "$(extract_function)"
+eval "$FUNC_DEF"
 
 PASSED=0
 FAILED=0

@@ -4955,8 +4955,13 @@ cmd_hooks_agent_path() {
         fi
     fi
 
-    # Normalize path (resolve . and ..)
-    file_path=$(cd "$(dirname "$file_path")" 2>/dev/null && pwd)/$(basename "$file_path") 2>/dev/null || file_path="$file_path"
+    # Normalize path (resolve . and ..) - only if directory exists
+    local dir_part
+    dir_part=$(dirname "$file_path")
+    if [[ -d "$dir_part" ]]; then
+        file_path="$(cd "$dir_part" && pwd)/$(basename "$file_path")"
+    fi
+    # If directory doesn't exist, keep the original path for pattern matching
 
     # Check 1: Allow access within agent's own worktree
     if [[ "$file_path" == "$WORKTREE_PATH"* ]]; then
@@ -6989,13 +6994,12 @@ cmd_hooks_main_path() {
     fi
 
     # Normalize path (resolve . and ..) - only if directory exists
-    # This avoids breaking path checking for test fixtures with non-existent paths
-    local dir_path
-    dir_path=$(dirname "$file_path")
-    if [[ -d "$dir_path" ]]; then
-        file_path=$(cd "$dir_path" 2>/dev/null && pwd)/$(basename "$file_path")
+    local dir_part
+    dir_part=$(dirname "$file_path")
+    if [[ -d "$dir_part" ]]; then
+        file_path="$(cd "$dir_part" && pwd)/$(basename "$file_path")"
     fi
-    # If dir doesn't exist, keep file_path as-is (still check the pattern)
+    # If directory doesn't exist, keep the original path for pattern matching
 
     # Check if path matches .ittybitty/agents/*/repo pattern
     if [[ "$file_path" == *"/.ittybitty/agents/"*"/repo"* || "$file_path" == *"/.ittybitty/agents/"*"/repo" ]]; then
@@ -11707,6 +11711,26 @@ case "${1:-help}" in
             echo "true"
         else
             echo "false"
+        fi
+        ;;
+    is-in-agent-worktree)
+        # Check if current directory is inside an agent worktree
+        # Usage: ib is-in-agent-worktree
+        # Exit code: 0 if in agent worktree, 1 if not
+        if is_in_agent_worktree; then
+            exit 0
+        else
+            exit 1
+        fi
+        ;;
+    is-in-main-repo)
+        # Check if current directory is in the main repo (not an agent worktree)
+        # Usage: ib is-in-main-repo
+        # Exit code: 0 if in main repo, 1 if in agent worktree or elsewhere
+        if is_in_agent_worktree; then
+            exit 1
+        else
+            exit 0
         fi
         ;;
     log)
