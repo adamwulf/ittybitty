@@ -2805,26 +2805,26 @@ Your work is on branch \`agent/$ID\` for review."
 - CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
 
 Your workflow:
-CRITICAL: Before spawning ANY sub-agents, you MUST define clear, objective completion criteria for each task.
-You need these criteria to judge whether a sub-agent has truly completed its work when it signals completion.
+1. DEFINE SUCCESS CRITERIA - What does 'done' look like?
+   - What files/outputs are required? What conditions prove completion?
+   - Track in TodoWrite tool with measurable criteria
 
-1. Break down the goal into specific tasks with measurable completion criteria
-   - What files should be changed? What should the output look like?
-   - What specific conditions define \"done\"? (tests pass, specific files exist, specific content present, etc.)
-   - Track these tasks and criteria in your Claude Code tasks tracker (TodoWrite tool)
-2. Spawn WORKER sub-agents (--worker) for each independent task
-   - Provide the specific task AND the clear completion criteria in the prompt
-   - Default to --worker unless the sub-agent itself needs to coordinate multiple parallel sub-agents
-3. Enter WAITING mode - watchdogs will notify you when sub-agents need attention
-4. When notified, review sub-agent work against your predefined completion criteria:
-   - Use \`ib look <agent-id>\` to see what the agent reports
-   - Use \`ib status <agent-id>\` to see the agent's commits
-   - Use \`ib diff <agent-id>\` to verify the actual changes match your criteria
-   - If criteria met: \`ib merge <agent-id>\` or \`ib kill <agent-id>\` (if no changes needed)
-   - If criteria NOT met: \`ib send <agent-id> \"message\"\` explaining what's missing and how to fix it
-   - If a sub-agent is \`stopped\`, STOP and notify the user immediately
-5. When merging successful agents, commit any changes you made directly (git add && git commit).
-6. BEFORE completing: You MUST merge or kill ALL sub-agents. Use \`ib list\` to verify no children remain in running, waiting, or complete state.
+2. ASSESS TASK SIZE - Now that you know what success looks like:
+   - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
+   - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
+
+3. IF SPAWNING: Create WORKER sub-agents (--worker) for each task
+   - Include the task AND its success criteria in the prompt
+   - Enter WAITING mode - watchdogs notify you when they need attention
+
+4. WHEN NOTIFIED - Review against your predefined criteria:
+   - \`ib look <id>\` - what the agent reports
+   - \`ib status <id>\` / \`ib diff <id>\` - verify actual changes
+   - Criteria met: \`ib merge <id>\` or \`ib kill <id>\` (if no changes)
+   - Criteria NOT met: \`ib send <id> \"feedback\"\`
+   - If \`stopped\`: STOP and notify the user immediately
+
+5. BEFORE COMPLETING: Merge or kill ALL sub-agents (\`ib list\` to verify none remain)
 
 $PR_INSTRUCTIONS"
         fi
@@ -2857,23 +2857,19 @@ IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version fr
   ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
 
 TASK SIZING STRATEGY:
-When you receive a task, think about what is needed to accomplish it, then decide:
+1. DEFINE SUCCESS CRITERIA FIRST - What does 'done' look like?
+   - What specific changes/outputs are required?
+   - What conditions prove completion? (tests pass, files exist, content present)
 
-  SMALL TASK (do yourself)
-    - One agent can finish quickly
-    - Just do the task yourself - don't spawn sub-agents unnecessarily
+2. THEN ASSESS TASK SIZE - Now that you know what success looks like:
+   - SMALL: You can complete it quickly yourself - just do it, don't spawn sub-agents
+   - MEDIUM: 2-3 independent subtasks - spawn WORKER agents in parallel (--worker flag)
+   - LARGE: Multiple serial stages - use TodoWrite to track, spawn workers per stage
 
-  MEDIUM TASK (2-3 parallel worker agents)
-    - Can be split into 2-3 independent subtasks
-    - Spawn WORKER agents to work in parallel (always use --worker unless sub-agent needs to manage its own sub-agents)
-    - After spawning them, enter WAITING mode - you'll be notified when they complete
-
-  LARGE TASK (multiple stages)
-    - Requires multiple stages that must run serially
-    - Use TodoWrite tool to track stages
-    - For each stage, spawn WORKER agents to work in parallel (always use --worker)
-    - After spawning agents for a stage, enter WAITING mode
-    - When notified of completion, review work and move to next stage
+3. IF SPAWNING WORKERS:
+   - Include success criteria in each worker's prompt
+   - Enter WAITING mode after spawning - watchdogs notify you when they complete
+   - Always use --worker unless sub-agent needs to manage its own sub-agents
 
 AUTOMATIC NOTIFICATIONS:
   - A watchdog monitors each sub-agent you spawn
@@ -7229,6 +7225,7 @@ get_ittybitty_instructions() {
 ### Primary Claude
 
 Spawn agents for complex/parallel tasks. **No auto-notifications** - tell user to run `ib watch`.
+Always spawn **manager** agents (not `--worker`). Managers assess the task and spawn their own workers if needed.
 
 | Command | Description |
 |---------|-------------|

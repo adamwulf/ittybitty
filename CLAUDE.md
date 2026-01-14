@@ -770,6 +770,7 @@ Key files:
 ### Primary Claude
 
 Spawn agents for complex/parallel tasks. **No auto-notifications** - tell user to run `ib watch`.
+Always spawn **manager** agents (not `--worker`). Managers assess the task and spawn their own workers if needed.
 
 | Command | Description |
 |---------|-------------|
