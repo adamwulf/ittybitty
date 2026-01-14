@@ -150,6 +150,25 @@ is_claude_running() {
     [[ "${CLAUDECODE:-}" == "1" ]]
 }
 
+# Check if a path is inside an agent worktree
+# Args: $1 = path to check (optional, defaults to pwd)
+# Returns: 0 if path is in agent worktree, 1 if not
+# This is separated out for testability
+is_in_agent_worktree() {
+    local path="${1:-$(pwd)}"
+    [[ "$path" == *"/.ittybitty/agents/"*"/repo"* ]]
+}
+
+# Check if running inside an ib-spawned tmux session
+# Returns: 0 if in ittybitty-* tmux session, 1 if not
+# Only returns true if $TMUX is set (actually inside tmux)
+is_in_ib_tmux_session() {
+    [[ -n "${TMUX:-}" ]] || return 1
+    local session_name
+    session_name=$(tmux display-message -p '#{session_name}' 2>/dev/null) || return 1
+    [[ "$session_name" == ittybitty-* ]]
+}
+
 # Check if ib is being called from within an agent worktree or ib tmux session
 # Returns: 0 if running as an agent, 1 if not
 # Use this to detect when commands like kill/merge/nuke are called by an agent
@@ -159,28 +178,18 @@ is_running_as_agent() {
     local debug="${IB_DEBUG_AGENT_DETECTION:-}"
 
     # Primary check: worktree path pattern
-    local current_dir=$(pwd)
-    if [[ "$current_dir" == *"/.ittybitty/agents/"*"/repo"* ]]; then
-        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - pwd matches agent worktree: $current_dir" >&2
+    if is_in_agent_worktree; then
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - pwd matches agent worktree: $(pwd)" >&2
         return 0
     fi
 
     # Secondary check: ib-spawned tmux session name (for cases where agent cd'd elsewhere)
-    # Only check if we're actually inside a tmux session ($TMUX is set)
-    if [[ -n "${TMUX:-}" ]]; then
-        local session_name
-        if session_name=$(tmux display-message -p '#{session_name}' 2>/dev/null); then
-            if [[ "$session_name" == ittybitty-* ]]; then
-                [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - tmux session matches: $session_name" >&2
-                return 0
-            fi
-            [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: tmux session '$session_name' does not match ittybitty-*" >&2
-        fi
-    else
-        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: not in tmux (\$TMUX not set)" >&2
+    if is_in_ib_tmux_session; then
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - in ittybitty tmux session" >&2
+        return 0
     fi
 
-    [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: FALSE - pwd: $current_dir" >&2
+    [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: FALSE - pwd: $(pwd), TMUX=${TMUX:-unset}" >&2
     return 1
 }
 
@@ -188,25 +197,29 @@ is_running_as_agent() {
 # Args: $1 = command name (e.g., "hooks", "test-tool-match")
 #       $2 = subcommand (optional, for commands like "hooks install")
 # Exits with error if command is not allowed
-# Priority: 1) Agent restrictions, 2) Claude restrictions, 3) Allow for user terminal
+# Priority: 1) Agent restrictions, 2) User-in-worktree, 3) Claude restrictions, 4) Allow
 enforce_command_access() {
     local cmd="$1"
     local subcmd="${2:-}"
+    local in_worktree=false
+    local in_tmux_session=false
+    local is_claude=false
 
-    # First check: Agent restrictions (most restrictive)
-    if is_running_as_agent; then
+    is_in_agent_worktree && in_worktree=true
+    is_in_ib_tmux_session && in_tmux_session=true
+    is_claude_running && is_claude=true
+
+    # Case 1: Agent (Claude running in worktree or ib tmux session)
+    if [[ "$is_claude" == "true" ]] && { [[ "$in_worktree" == "true" ]] || [[ "$in_tmux_session" == "true" ]]; }; then
         case "$cmd" in
-            # Test commands - development only, not for agents
             parse-state|test-*)
                 echo "Error: '$cmd' is a development/test command not available to agents" >&2
                 exit 1
                 ;;
-            # Interactive commands - don't make sense for agents
             watch)
                 echo "Error: '$cmd' is an interactive command not available to agents" >&2
                 exit 1
                 ;;
-            # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
             hooks)
                 case "$subcmd" in
                     install|uninstall)
@@ -220,8 +233,20 @@ enforce_command_access() {
         return 0
     fi
 
-    # Second check: Claude (primary) restrictions - needs TTY for interactive commands
-    if is_claude_running; then
+    # Case 2: User terminal inside agent worktree (not Claude, but in worktree)
+    if [[ "$in_worktree" == "true" ]]; then
+        case "$cmd" in
+            watch)
+                echo "Error: You are inside an agent worktree" >&2
+                echo "Run 'ib watch' from the main repository instead" >&2
+                exit 1
+                ;;
+        esac
+        return 0
+    fi
+
+    # Case 3: Primary Claude (not in worktree, but is Claude)
+    if [[ "$is_claude" == "true" ]]; then
         case "$cmd" in
             watch)
                 echo "Error: '$cmd' requires an interactive terminal" >&2
@@ -232,7 +257,7 @@ enforce_command_access() {
         return 0
     fi
 
-    # User terminal - allow everything
+    # Case 4: User terminal (not in worktree, not Claude) - allow everything
     return 0
 }
 
@@ -11651,6 +11676,21 @@ case "${1:-help}" in
     test-enforce-access)
         shift
         cmd_test_enforce_access "$@"
+        ;;
+    test-agent-worktree)
+        # Test if a path matches the agent worktree pattern
+        # Usage: ib test-agent-worktree PATH
+        # Returns: "true" or "false"
+        shift
+        if [[ -z "${1:-}" ]]; then
+            echo "Usage: ib test-agent-worktree PATH" >&2
+            exit 1
+        fi
+        if is_in_agent_worktree "$1"; then
+            echo "true"
+        else
+            echo "false"
+        fi
         ;;
     log)
         shift
