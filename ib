@@ -6645,12 +6645,13 @@ check_gitignore_has_ittybitty() {
 }
 
 # Pure function to check if CLAUDE.md content contains <ittybitty> tags
-# Returns: 1 if both tags found, 0 if not
+# Returns: 0 if both tags found on their own lines, 1 if not
+# Note: Matches only standalone tags to avoid false positives from inline examples
 # Args: $1=content
 check_claude_md_has_ittybitty_block() {
     local content="$1"
-    if echo "$content" | grep -q '<ittybitty>' 2>/dev/null && \
-       echo "$content" | grep -q '</ittybitty>' 2>/dev/null; then
+    if echo "$content" | grep -q '^<ittybitty>$' 2>/dev/null && \
+       echo "$content" | grep -q '^</ittybitty>$' 2>/dev/null; then
         return 0
     fi
     return 1
@@ -7233,9 +7234,9 @@ ITTYBITTY_CONTENT
 cmd_setup_ib_instructions_install() {
     local claude_md="CLAUDE.md"
 
-    # Check if already installed
+    # Check if already installed (match standalone tags only)
     if [[ -f "$claude_md" ]]; then
-        if grep -q '<ittybitty>' "$claude_md" && grep -q '</ittybitty>' "$claude_md"; then
+        if grep -q '^<ittybitty>$' "$claude_md" && grep -q '^</ittybitty>$' "$claude_md"; then
             echo "ib instructions already installed in $claude_md"
             return 0
         fi
@@ -7268,21 +7269,22 @@ cmd_setup_ib_instructions_uninstall() {
         return 0
     fi
 
-    # Check if installed
-    if ! grep -q '<ittybitty>' "$claude_md"; then
+    # Check if installed (match standalone tags only)
+    if ! grep -q '^<ittybitty>$' "$claude_md"; then
         echo "ib instructions not found in $claude_md"
         return 0
     fi
 
     # Remove the <ittybitty>...</ittybitty> block
-    # Use sed to delete from <ittybitty> to </ittybitty> inclusive
+    # Match only standalone tags to avoid removing inline examples
     local tmpfile
     tmpfile=$(mktemp)
 
     # Use awk to remove the block (handles multi-line properly)
+    # Only match tags on their own line (^...$)
     awk '
-        /<ittybitty>/ { in_block=1; next }
-        /<\/ittybitty>/ { in_block=0; next }
+        /^<ittybitty>$/ { in_block=1; next }
+        /^<\/ittybitty>$/ { in_block=0; next }
         !in_block { print }
     ' "$claude_md" > "$tmpfile"
 
@@ -7304,8 +7306,8 @@ cmd_setup_ib_instructions_uninstall() {
 cmd_setup_status_import_install() {
     local claude_md="CLAUDE.md"
 
-    # Check if <ittybitty> block exists
-    if [[ ! -f "$claude_md" ]] || ! grep -q '<ittybitty>' "$claude_md"; then
+    # Check if <ittybitty> block exists (match standalone tags only)
+    if [[ ! -f "$claude_md" ]] || ! grep -q '^<ittybitty>$' "$claude_md"; then
         echo "Error: ib instructions must be installed first"
         return 1
     fi
@@ -7321,7 +7323,7 @@ cmd_setup_status_import_install() {
     tmpfile=$(mktemp)
 
     awk '
-        /<\/ittybitty>/ {
+        /^<\/ittybitty>$/ {
             print ""
             print "@.ittybitty/STATUS.md"
             print ""

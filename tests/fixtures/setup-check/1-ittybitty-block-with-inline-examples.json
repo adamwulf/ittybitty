@@ -1,0 +1,4 @@
+{
+  "check_type": "ittybitty_block",
+  "content": "# CLAUDE.md\n\n## Documentation\n\nThe `<ittybitty>` block contains:\n\n| Marker | Role |\n|--------|------|\n| `<ittybitty>You are a manager</ittybitty>` | Manager |\n| `<ittybitty>You are a worker</ittybitty>` | Worker |\n\n<ittybitty>\n## Actual Block\nThis is the real content.\n</ittybitty>\n\nMore content."
+}
