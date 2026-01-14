@@ -6621,27 +6621,39 @@ EOF
 # COMMAND: test-setup-check
 # =============================================================================
 
+# Pure function to filter out .ittybitty lines from gitignore content
+# This is the SINGLE SOURCE OF TRUTH for the gitignore pattern matching.
+# Args: $1=content
+# Output: content with .ittybitty lines removed
+#
+# Pattern matches:
+# - .ittybitty or .ittybitty/ at start of line
+# - /.ittybitty or /.ittybitty/ at start of line (leading slash variant)
+# - Can have trailing slash or not
+# - Line can have trailing whitespace but nothing else after
+#
+# Using basic grep (not extended) for Bash 3.2 compatibility
+# In basic grep: \? means zero or one
+filter_gitignore_ittybitty_lines() {
+    local content="$1"
+    # Filter out both pattern variants using piped greps
+    # Note: grep returns exit code 1 when no lines match, so we use || true
+    # to handle the case where all lines are filtered out
+    echo "$content" | grep -v '^\.ittybitty/\?[[:space:]]*$' | grep -v '^/\.ittybitty/\?[[:space:]]*$' || true
+}
+
 # Pure function to check if .gitignore content contains the .ittybitty pattern
-# Returns: 1 if pattern found (checkbox should be checked), 0 if not found
+# Returns: 0 if pattern found (checkbox should be checked), 1 if not found
 # Args: $1=content
 check_gitignore_has_ittybitty() {
     local content="$1"
-    # Pattern should match:
-    # - .ittybitty or .ittybitty/ at start of line
-    # - /.ittybitty or /.ittybitty/ at start of line
-    # - Can have trailing slash or not
-    # - Can be preceded by / or not
-    # - Line can have trailing whitespace but nothing else after
-    #
-    # Using basic grep (not extended) for Bash 3.2 compatibility
-    # In basic grep: \? means zero or one, \| means OR
-    if echo "$content" | grep -q '^\.ittybitty/\?[[:space:]]*$' 2>/dev/null; then
-        return 0
+    local filtered
+    # Use the shared filter function - if output differs, lines were found
+    filtered=$(filter_gitignore_ittybitty_lines "$content")
+    if [[ "$filtered" != "$content" ]]; then
+        return 0  # found (lines were filtered out)
     fi
-    if echo "$content" | grep -q '^/\.ittybitty/\?[[:space:]]*$' 2>/dev/null; then
-        return 0
-    fi
-    return 1
+    return 1  # not found
 }
 
 # Pure function to check if CLAUDE.md content contains <ittybitty> tags
@@ -6785,6 +6797,92 @@ EOF
         echo "Result: $result"
     else
         echo "$result"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-gitignore-filter
+# =============================================================================
+
+# Test the gitignore filter function with fixture files
+# This is for testing only - blocked from running inside agents
+# Fixture JSON format:
+# {
+#   "input": "the gitignore content to filter",
+#   "expected": "the expected output after filtering"
+# }
+cmd_test_gitignore_filter() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-gitignore-filter [file]
+
+Test the gitignore filter function that removes .ittybitty lines.
+
+Reads JSON from stdin if no file is provided, or from the specified file.
+Outputs "pass" if the filter produces expected output, "fail" otherwise.
+
+This command tests filter_gitignore_ittybitty_lines() which is the single
+source of truth for gitignore pattern matching used by both detection and removal.
+
+Input JSON format:
+{
+  "input": "the gitignore content to filter",
+  "expected": "the expected output after filtering"
+}
+
+Examples:
+  echo '{"input": ".ittybitty/\nnode_modules/", "expected": "node_modules/"}' | ib test-gitignore-filter
+  ib test-gitignore-filter tests/fixtures/gitignore-filter/removes-basic.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            echo "Usage: ib test-gitignore-filter [file] or echo '{...}' | ib test-gitignore-filter" >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    # Parse JSON - use -r to get raw strings with actual newlines
+    local content expected
+    content=$(echo "$input" | jq -r '.input // ""')
+    expected=$(echo "$input" | jq -r '.expected // ""')
+
+    # Run the filter
+    local actual
+    actual=$(filter_gitignore_ittybitty_lines "$content")
+
+    # Compare
+    if [[ "$actual" == "$expected" ]]; then
+        echo "pass"
+    else
+        echo "fail"
     fi
 }
 
@@ -7397,20 +7495,17 @@ cmd_setup_gitignore_uninstall() {
         return 0
     fi
 
-    # Check if installed
-    # Note: In basic grep, \? means "zero or one" (not ?)
-    if ! grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
+    # Read content and check if installed using the shared check function
+    local content
+    content=$(cat "$gitignore")
+
+    if ! check_gitignore_has_ittybitty "$content"; then
         echo ".ittybitty not found in $gitignore"
         return 0
     fi
 
-    # Remove the .ittybitty line(s)
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    grep -v '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" > "$tmpfile"
-
-    mv "$tmpfile" "$gitignore"
+    # Remove using the shared filter function (single source of truth for patterns)
+    filter_gitignore_ittybitty_lines "$content" > "$gitignore"
     echo ".ittybitty removed from $gitignore"
 }
 
@@ -11743,6 +11838,10 @@ case "${1:-help}" in
     test-setup-check)
         shift
         cmd_test_setup_check "$@"
+        ;;
+    test-gitignore-filter)
+        shift
+        cmd_test_gitignore_filter "$@"
         ;;
     test-main-path)
         shift

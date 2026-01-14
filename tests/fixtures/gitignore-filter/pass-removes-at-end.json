@@ -1,0 +1,4 @@
+{
+  "input": "node_modules/\n.env\n.ittybitty/",
+  "expected": "node_modules/\n.env"
+}
