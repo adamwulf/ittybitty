@@ -8171,7 +8171,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -8203,6 +8203,14 @@ EOF
 
     # Jump dialog state
     local JUMP_PATTERN=""
+
+    # Merge dialog state
+    local MERGE_FOCUS=0   # 0=Cancel, 1=Feedback, 2=Merge
+    local MERGE_SCROLL=0  # Scroll offset for diff view
+    local MERGE_CAN_MERGE=0  # 0=unknown, 1=yes (no conflicts), 2=no (conflicts)
+    local MERGE_CONFLICT_FILES=""  # List of conflicting files if any
+    local MERGE_DIFF=""   # Cached diff content
+    local MERGE_ERROR=""  # Error message from merge attempt
 
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
@@ -10150,6 +10158,307 @@ EOF
     # End Jump Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # Merge Dialog (DIALOG_MODE=7)
+    # ==========================================================================
+
+    watch_dialog_init_merge() {
+        MERGE_FOCUS=0   # 0=Cancel, 1=Feedback, 2=Merge
+        MERGE_SCROLL=0
+        MERGE_CAN_MERGE=0  # Will be determined
+        MERGE_CONFLICT_FILES=""
+        MERGE_DIFF=""
+        MERGE_ERROR=""
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Get target branch (same logic as cmd_merge)
+        local target_branch=""
+        if git show-ref --verify --quiet refs/heads/main; then
+            target_branch="main"
+        elif git show-ref --verify --quiet refs/heads/master; then
+            target_branch="master"
+        else
+            target_branch=$(git branch --show-current 2>/dev/null) || target_branch="HEAD"
+        fi
+
+        local branch_name="agent/$_WATCH_SELECTED_ID"
+
+        # Check for uncommitted changes
+        local agent_dir="$AGENTS_DIR/$_WATCH_SELECTED_ID"
+        local worktree_path="$agent_dir/repo"
+        if [[ -n $(git -C "$worktree_path" status --porcelain 2>/dev/null) ]]; then
+            MERGE_CAN_MERGE=2
+            MERGE_ERROR="Agent has uncommitted changes"
+            return
+        fi
+
+        # Check if branch exists
+        if ! git show-ref --verify --quiet "refs/heads/$branch_name"; then
+            MERGE_CAN_MERGE=2
+            MERGE_ERROR="Branch $branch_name does not exist"
+            return
+        fi
+
+        # Check for merge conflicts
+        local conflict_files
+        if conflict_files=$(check_merge_conflicts "$target_branch" "$branch_name" 2>/dev/null); then
+            MERGE_CAN_MERGE=1  # No conflicts
+        else
+            MERGE_CAN_MERGE=2  # Conflicts detected
+            MERGE_CONFLICT_FILES="$conflict_files"
+        fi
+
+        # Get the diff (merge-base comparison like cmd_diff)
+        local merge_base
+        merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || merge_base="$target_branch"
+        MERGE_DIFF=$(git diff --stat "$merge_base..$branch_name" 2>/dev/null || echo "Unable to get diff")
+    }
+
+    watch_dialog_render_merge() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Use wider dialog for merge (show diff content)
+        local merge_dialog_width=70
+        [[ $merge_dialog_width -gt $((TERM_COLS - 4)) ]] && merge_dialog_width=$((TERM_COLS - 4))
+        local start_col=$(( (TERM_COLS - merge_dialog_width) / 2 ))
+        [[ $start_col -lt 1 ]] && start_col=1
+
+        # Dialog height: title(1) + separator(1) + status(1) + separator(1) + diff_header(1) + diff_area(10) + separator(1) + buttons(1) + border(2) = ~19
+        local diff_area_height=10
+        local dialog_height=$((6 + diff_area_height + 2))  # borders + content
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        local inner_width=$((merge_dialog_width - 4))
+
+        # Helper to draw lines at custom width
+        local row=$start_row
+
+        # Top border
+        printf '\e[%d;%dH┌' "$row" "$start_col"
+        local i
+        for ((i=0; i<inner_width+2; i++)); do printf '─'; done
+        printf '┐'
+        ((row++))
+
+        # Title
+        local title="Merge agent '$_WATCH_SELECTED_ID'"
+        printf '\e[%d;%dH│ %-*s │' "$row" "$start_col" "$inner_width" "$title"
+        ((row++))
+
+        # Separator
+        printf '\e[%d;%dH├' "$row" "$start_col"
+        for ((i=0; i<inner_width+2; i++)); do printf '─'; done
+        printf '┤'
+        ((row++))
+
+        # Status line with indicator
+        local status_text status_indicator
+        if [[ $MERGE_CAN_MERGE -eq 1 ]]; then
+            status_indicator=$'\e[32m✓\e[0m'  # Green checkmark
+            status_text="Ready to merge (no conflicts)"
+        elif [[ $MERGE_CAN_MERGE -eq 2 ]]; then
+            status_indicator=$'\e[31m✗\e[0m'  # Red X
+            if [[ -n "$MERGE_ERROR" ]]; then
+                status_text="$MERGE_ERROR"
+            elif [[ -n "$MERGE_CONFLICT_FILES" ]]; then
+                status_text="Conflicts in: ${MERGE_CONFLICT_FILES%%$'\n'*}"
+                # Truncate if too long
+                [[ ${#status_text} -gt $((inner_width - 4)) ]] && status_text="${status_text:0:$((inner_width - 7))}..."
+            else
+                status_text="Merge conflicts detected"
+            fi
+        else
+            status_indicator="?"
+            status_text="Checking merge status..."
+        fi
+        # Status indicator is 1 visible char but may have escape codes
+        local status_line="$status_indicator $status_text"
+        local status_visible_len=$((2 + ${#status_text}))
+        local status_pad=$((inner_width - status_visible_len))
+        printf '\e[%d;%dH│ %s%*s │' "$row" "$start_col" "$status_line" "$status_pad" ""
+        ((row++))
+
+        # Separator before diff
+        printf '\e[%d;%dH├' "$row" "$start_col"
+        for ((i=0; i<inner_width+2; i++)); do printf '─'; done
+        printf '┤'
+        ((row++))
+
+        # Diff header
+        printf '\e[%d;%dH│ %-*s │' "$row" "$start_col" "$inner_width" "Changes (;/l to scroll):"
+        ((row++))
+
+        # Diff content area (scrollable)
+        # Parse diff into lines
+        local -a diff_lines=()
+        local line=""
+        while IFS= read -r line; do
+            diff_lines+=("$line")
+        done <<< "$MERGE_DIFF"
+
+        local total_diff_lines=${#diff_lines[@]}
+        local visible_lines=$diff_area_height
+
+        # Calculate scroll bounds
+        local max_scroll=$((total_diff_lines - visible_lines))
+        [[ $max_scroll -lt 0 ]] && max_scroll=0
+        [[ $MERGE_SCROLL -gt $max_scroll ]] && MERGE_SCROLL=$max_scroll
+        [[ $MERGE_SCROLL -lt 0 ]] && MERGE_SCROLL=0
+
+        # Render diff lines
+        local line_idx
+        for ((line_idx=0; line_idx<visible_lines; line_idx++)); do
+            local content_idx=$((MERGE_SCROLL + line_idx))
+            local content=""
+            if [[ $content_idx -lt $total_diff_lines ]]; then
+                content="${diff_lines[$content_idx]}"
+                # Truncate if too long
+                [[ ${#content} -gt $inner_width ]] && content="${content:0:$((inner_width - 3))}..."
+            fi
+            printf '\e[%d;%dH│ %-*.*s │' "$row" "$start_col" "$inner_width" "$inner_width" "$content"
+            ((row++))
+        done
+
+        # Separator before buttons
+        printf '\e[%d;%dH├' "$row" "$start_col"
+        for ((i=0; i<inner_width+2; i++)); do printf '─'; done
+        printf '┤'
+        ((row++))
+
+        # Buttons: [Cancel] [Feedback] [Merge]
+        local merge_disabled=$([[ $MERGE_CAN_MERGE -ne 1 ]] && echo 1 || echo 0)
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $MERGE_FOCUS -eq 0 ]] && echo 1 || echo 0)")
+        local feedback_btn=$(dialog_format_button "Feedback" "$([[ $MERGE_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local merge_btn=$(dialog_format_button "Merge" "$([[ $MERGE_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$merge_disabled")
+
+        # Button visual widths: [Cancel]=8, [Feedback]=10, [Merge]=7, gaps=8, total=33
+        local btn_visual_width=33
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s    %s%*s │' "$row" "$start_col" "$left_pad" "" "$cancel_btn" "$feedback_btn" "$merge_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        printf '\e[%d;%dH└' "$row" "$start_col"
+        for ((i=0; i<inner_width+2; i++)); do printf '─'; done
+        printf '┘'
+
+        # Footer hint
+        ((row++))
+        local hint="Tab: switch   ;/l: scroll   Enter: select"
+        local hint_start=$(( start_col + (merge_dialog_width - ${#hint}) / 2 ))
+        printf '\e[%d;%dH%*s' "$row" "$start_col" "$merge_dialog_width" ""
+        printf '\e[%d;%dH%s' "$row" "$hint_start" "$hint"
+    }
+
+    watch_dialog_key_merge() {
+        local key="$1"
+        # Focus: 0=Cancel, 1=Feedback, 2=Merge
+        case "$key" in
+            $'\t')  # Tab - forward
+                if [[ $MERGE_CAN_MERGE -ne 1 ]]; then
+                    # Skip Merge button when merge not possible
+                    MERGE_FOCUS=$(( (MERGE_FOCUS + 1) % 2 ))
+                else
+                    MERGE_FOCUS=$(( (MERGE_FOCUS + 1) % 3 ))
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x1e')  # Enter
+                if [[ $MERGE_FOCUS -eq 0 ]]; then
+                    # Cancel
+                    DIALOG_MODE=0
+                elif [[ $MERGE_FOCUS -eq 1 ]]; then
+                    # Feedback - close merge dialog and open send dialog
+                    DIALOG_MODE=0
+                    # Set up send dialog with pre-filled context
+                    watch_dialog_init_send
+                    DIALOG_MODE=1
+                elif [[ $MERGE_FOCUS -eq 2 && $MERGE_CAN_MERGE -eq 1 ]]; then
+                    # Merge - execute the merge
+                    DIALOG_MODE=0
+                    # Run merge in background
+                    cmd_merge --force "$_WATCH_SELECTED_ID" >/dev/null 2>&1 &
+                fi
+                ;;
+            ';')  # Scroll down
+                MERGE_SCROLL=$((MERGE_SCROLL + 1))
+                _DIALOG_DIRTY=1
+                ;;
+            'l')  # Scroll up
+                MERGE_SCROLL=$((MERGE_SCROLL - 1))
+                [[ $MERGE_SCROLL -lt 0 ]] && MERGE_SCROLL=0
+                _DIALOG_DIRTY=1
+                ;;
+            $'\e')  # Escape
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            'Z')  # Shift+Tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $MERGE_CAN_MERGE -ne 1 ]]; then
+                        MERGE_FOCUS=$(( (MERGE_FOCUS - 1 + 2) % 2 ))
+                    else
+                        MERGE_FOCUS=$(( (MERGE_FOCUS - 1 + 3) % 3 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'A'|'D')  # Up or Left arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $MERGE_CAN_MERGE -ne 1 ]]; then
+                        MERGE_FOCUS=$(( (MERGE_FOCUS - 1 + 2) % 2 ))
+                    else
+                        MERGE_FOCUS=$(( (MERGE_FOCUS - 1 + 3) % 3 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B'|'C')  # Down or Right arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $MERGE_CAN_MERGE -ne 1 ]]; then
+                        MERGE_FOCUS=$(( (MERGE_FOCUS + 1) % 2 ))
+                    else
+                        MERGE_FOCUS=$(( (MERGE_FOCUS + 1) % 3 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=0
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Merge Dialog
+    # ==========================================================================
+
     # Render footer with help text, timing, and clock (2 lines)
     # Args: $1=footer_row, $2=frame_start_ms
     watch_render_footer() {
@@ -10218,7 +10527,7 @@ EOF
             action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
-            action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
+            action_text="/: jump    s: send    m: merge    x: kill    !: nuke    a: new agent"
             action_text_visible_len=${#action_text}
             # Add errors indicator if there are unread errors (in red)
             if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
@@ -11109,6 +11418,7 @@ EOF
                 4) watch_dialog_key_new_agent "$key" ;;
                 5) watch_dialog_key_jump "$key" ;;
                 6) watch_dialog_key_hooks "$key" ;;
+                7) watch_dialog_key_merge "$key" ;;
             esac
             return
         fi
@@ -11221,6 +11531,14 @@ EOF
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     watch_dialog_init_send
                     DIALOG_MODE=1
+                fi
+                ;;
+            m)
+                _WATCH_ESC_PENDING=0
+                # Open Merge dialog
+                if [[ $AGENT_COUNT -gt 0 ]]; then
+                    watch_dialog_init_merge
+                    DIALOG_MODE=7
                 fi
                 ;;
             x)
@@ -11402,6 +11720,7 @@ EOF
                 4) watch_dialog_render_new_agent ;;
                 5) watch_dialog_render_jump ;;
                 6) watch_dialog_render_hooks ;;
+                7) watch_dialog_render_merge ;;
             esac
             set -e
         else
