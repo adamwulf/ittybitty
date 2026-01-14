@@ -8545,6 +8545,70 @@ EOF
     }
 
     # ==========================================================================
+    # Color/Formatting Helper Functions
+    # ==========================================================================
+
+    # ANSI color codes for consistent styling
+    local COLOR_DIM=$'\e[2m'       # Dim/faint text
+    local COLOR_CYAN=$'\e[36m'     # Cyan for brackets/blocks
+    local COLOR_YELLOW=$'\e[33m'   # Yellow for warnings (>80%)
+    local COLOR_RED=$'\e[31m'      # Red for critical (>90%)
+    local COLOR_RESET=$'\e[0m'     # Reset all attributes
+
+    # Colorize a log line for agent log display
+    # - Makes ISO timestamps at line start dim
+    # - Colors other [...] blocks in cyan
+    # Args: $1=line
+    # Sets: _COLORIZED_LINE
+    # Performance: O(n) where n is number of bracket pairs (typically 1-2)
+    colorize_log_line() {
+        local line="$1"
+        local result=""
+        local remaining
+
+        # Check for ISO timestamp at start: [2026-01-14T...] or [YYYY-MM-DD...]
+        # Uses bash regex - much faster than character iteration
+        if [[ "$line" =~ ^\[([0-9][^]]*)\](.*) ]]; then
+            result="${COLOR_DIM}[${BASH_REMATCH[1]}]${COLOR_RESET}"
+            remaining="${BASH_REMATCH[2]}"
+        else
+            remaining="$line"
+        fi
+
+        # Colorize remaining [...] blocks in cyan
+        # Each iteration handles one bracket pair - typically 0-2 iterations
+        while [[ "$remaining" =~ ^([^[]*)(\[[^]]*\])(.*)$ ]]; do
+            result="${result}${BASH_REMATCH[1]}${COLOR_CYAN}${BASH_REMATCH[2]}${COLOR_RESET}"
+            remaining="${BASH_REMATCH[3]}"
+        done
+        result="${result}${remaining}"
+
+        _COLORIZED_LINE="$result"
+    }
+
+    # Format session percentage with color coding
+    # - Yellow if >80%
+    # - Red if >90%
+    # Args: $1=percentage (number without %)
+    # Returns: colored string with % (restores dim after color)
+    format_usage_pct() {
+        local pct="$1"
+        local label="$2"  # "session" or "weekly"
+        if [[ -z "$pct" ]]; then
+            echo ""
+            return
+        fi
+        local pct_num="${pct%.*}"  # Remove decimal part if any
+        if [[ $pct_num -gt 90 ]]; then
+            echo "${COLOR_RED}${label}:${pct}%${COLOR_RESET}${COLOR_DIM}"
+        elif [[ $pct_num -gt 80 ]]; then
+            echo "${COLOR_YELLOW}${label}:${pct}%${COLOR_RESET}${COLOR_DIM}"
+        else
+            echo "${label}:${pct}%"
+        fi
+    }
+
+    # ==========================================================================
     # Dialog Helper Functions
     # ==========================================================================
 
@@ -10276,8 +10340,8 @@ EOF
         local footer_row="$1"
         local frame_start_ms="$2"
 
-        # Move cursor to footer row
-        printf '\e[%d;1H' "$footer_row"
+        # Move cursor to footer row and start dim mode for footer
+        printf '\e[%d;1H%s' "$footer_row" "$COLOR_DIM"
 
         # Check background process health and show age
         local bg_status=""
@@ -10289,16 +10353,22 @@ EOF
             bg_status="bg:${hb_age}s  "
         fi
 
-        # Build usage info string for right side of row 1
+        # Build usage info string for right side of row 1 with color coding
         local usage_info=""
+        local usage_info_visible_len=0
         if [[ -n "$USAGE_SESSION_PCT" || -n "$USAGE_WEEKLY_PCT" ]]; then
             local session_str=""
             local weekly_str=""
             if [[ -n "$USAGE_SESSION_PCT" ]]; then
-                session_str="session:${USAGE_SESSION_PCT}%"
+                session_str=$(format_usage_pct "$USAGE_SESSION_PCT" "session")
+                usage_info_visible_len=$((usage_info_visible_len + 8 + ${#USAGE_SESSION_PCT} + 1))  # "session:" + pct + "%"
             fi
             if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
-                weekly_str="weekly:${USAGE_WEEKLY_PCT}%"
+                weekly_str=$(format_usage_pct "$USAGE_WEEKLY_PCT" "weekly")
+                if [[ -n "$session_str" ]]; then
+                    usage_info_visible_len=$((usage_info_visible_len + 2))  # "  " separator
+                fi
+                usage_info_visible_len=$((usage_info_visible_len + 7 + ${#USAGE_WEEKLY_PCT} + 1))  # "weekly:" + pct + "%"
             fi
             if [[ -n "$session_str" && -n "$weekly_str" ]]; then
                 usage_info="$session_str  $weekly_str"
@@ -10324,8 +10394,7 @@ EOF
         fi
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
         local help_text_len=${#help_text}
-        local usage_info_len=${#usage_info}
-        local row1_padding=$((TERM_COLS - help_text_len - usage_info_len))
+        local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
         printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
         # Row 2: Action keys (left) + timing info (right)
@@ -10363,19 +10432,19 @@ EOF
             # Normal mode: show action keys
             action_text="/: jump    s: send    x: kill    !: nuke    a: new agent"
             action_text_visible_len=${#action_text}
-            # Add errors indicator if there are unread errors (in red)
+            # Add errors indicator if there are unread errors (in red, then restore dim)
             if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
-                action_text="$action_text    "$'\e[31m'"e: errors ($ERRORS_UNREAD_COUNT)"$'\e[0m'
+                action_text="$action_text    ${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}"
                 local err_text="    e: errors ($ERRORS_UNREAD_COUNT)"
                 action_text_visible_len=$((action_text_visible_len + ${#err_text}))
             fi
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
             if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
-                # At least one setup item is not installed - show in yellow
-                action_text="$action_text    "$'\e[33m'"h: setup"$'\e[0m'
+                # At least one setup item is not installed - show in yellow, then restore dim
+                action_text="$action_text    ${COLOR_YELLOW}h: setup${COLOR_RESET}${COLOR_DIM}"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
             else
-                # All setup items installed - show in normal color
+                # All setup items installed - show in normal (dim) color
                 action_text="$action_text    h: setup"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
             fi
@@ -10395,7 +10464,7 @@ EOF
         current_time=$(date +%H:%M:%S)
         printf -v right_info "%sframe:%3dms  fps:%2d  %s" "$bg_status" "$frame_ms" "$fps" "$current_time"
         local padding=$((TERM_COLS - action_text_visible_len - ${#right_info}))
-        printf "%s%*s%s" "$action_text" "$padding" "" "$right_info"
+        printf "%s%*s%s%s" "$action_text" "$padding" "" "$right_info" "$COLOR_RESET"
     }
 
     # Render tree with selection highlighting
@@ -10542,13 +10611,13 @@ EOF
             # Set terminal title (since tree rendering is skipped)
             printf '\e]0;ib watch: denials\a'
 
-            # Full-width header for denials mode
+            # Full-width header for denials mode (dim)
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
             local header="── DENIED TOOLS ($filter_name) "
             while [[ ${#header} -lt $TERM_COLS ]]; do
                 header="${header}─"
             done
-            printf "%s\n" "$header"
+            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
 
             # Load denials from background cache (non-blocking)
             load_denials_from_cache
@@ -10609,11 +10678,11 @@ EOF
                 done
             fi
 
-            # Bottom separator
+            # Bottom separator (dim)
             local separator=""
             local i
             for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s' "$separator"
+            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -10624,12 +10693,12 @@ EOF
 
         # ===== TREE MODE (MODE 3) =====
         if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
-            # Full-width header for tree mode
+            # Full-width header for tree mode (dim)
             local header="── AGENT TREE "
             while [[ ${#header} -lt $TERM_COLS ]]; do
                 header="${header}─"
             done
-            printf "%s\n" "$header"
+            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
 
             # Render full-width tree pane (hide left tmux pane)
             local content_height=$pane_height
@@ -10678,11 +10747,11 @@ EOF
                 done
             fi
 
-            # Bottom separator
+            # Bottom separator (dim)
             local separator=""
             local i
             for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s' "$separator"
+            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -10696,13 +10765,13 @@ EOF
             # Mark errors as read when viewing errors pane
             watch_mark_errors_read
 
-            # Full-width header for errors mode
+            # Full-width header for errors mode (dim)
             local error_count=${#ERRORS_CACHE[@]}
             local header="── ERRORS ($error_count) "
             while [[ ${#header} -lt $TERM_COLS ]]; do
                 header="${header}─"
             done
-            printf "%s\n" "$header"
+            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
 
             # Render full-width errors pane (hide left tmux pane)
             local content_height=$pane_height
@@ -10772,11 +10841,11 @@ EOF
                 done
             fi
 
-            # Bottom separator
+            # Bottom separator (dim)
             local separator=""
             local i
             for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s' "$separator"
+            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -10874,7 +10943,7 @@ EOF
 
         # ===== NORMAL SPLIT PANE MODE =====
 
-        # Pane headers with connected box-drawing characters
+        # Pane headers with connected box-drawing characters (dim)
         local left_header="── $selected_id "
         local right_header="── ${RIGHT_PANE_NAMES[$RIGHT_PANE_MODE]} "
         # Pad headers with ─ to fill width
@@ -10884,7 +10953,7 @@ EOF
         while [[ ${#right_header} -lt $right_pane_width ]]; do
             right_header="${right_header}─"
         done
-        printf "%s─┬─%s\n" "$left_header" "$right_header"
+        printf "%s%s─┬─%s%s\n" "$COLOR_DIM" "$left_header" "$right_header" "$COLOR_RESET"
 
         # ===== ORPHAN WARNING PANE =====
         if [[ "$is_orphaned" == "true" ]]; then
@@ -11045,19 +11114,25 @@ EOF
         _WATCH_PANE_HEIGHT=$pane_height
         for ((pane_line=0; pane_line<pane_height; pane_line++)); do
             local row=$((_WATCH_PANE_START_ROW + pane_line))
-            printf '\e[%d;1H\e[K%s\e[%d;%dH │ %s' \
+            local right_line="${visible_right_lines[$pane_line]}"
+            # Colorize log lines in agent log mode (mode 0)
+            if [[ $RIGHT_PANE_MODE -eq 0 && -n "$right_line" ]]; then
+                colorize_log_line "$right_line"
+                right_line="$_COLORIZED_LINE"
+            fi
+            printf '\e[%d;1H\e[K%s\e[%d;%dH%s │ %s%s' \
                 "$row" "${visible_tmux_lines[$pane_line]}" \
                 "$row" "$((left_pane_width + 1))" \
-                "${visible_right_lines[$pane_line]}"
+                "$COLOR_DIM" "$right_line" "$COLOR_RESET"
         done
 
-        # Bottom separator line with connected box-drawing character
+        # Bottom separator line with connected box-drawing character (dim)
         local separator_row=$((_WATCH_PANE_START_ROW + pane_height))
         local left_sep="" right_sep=""
         local i
         for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
         for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
-        printf '\e[%d;1H%s─┴─%s' "$separator_row" "$left_sep" "$right_sep"
+        printf '\e[%d;1H%s%s─┴─%s%s' "$separator_row" "$COLOR_DIM" "$left_sep" "$right_sep" "$COLOR_RESET"
     }
 
     # Background process to collect permission denials and write to cache file
@@ -11421,7 +11496,7 @@ EOF
             local left_pane_width=$TMUX_WIDTH
             local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
 
-            # Pane header with ─ padding (matching normal render)
+            # Pane header with ─ padding (matching normal render, dim)
             local left_header="── (no agent) "
             local right_header="── AGENT LOG "
             while [[ ${#left_header} -lt $left_pane_width ]]; do
@@ -11430,20 +11505,20 @@ EOF
             while [[ ${#right_header} -lt $right_pane_width ]]; do
                 right_header="${right_header}─"
             done
-            printf '%s─┬─%s\n' "$left_header" "$right_header"
+            printf '%s%s─┬─%s%s\n' "$COLOR_DIM" "$left_header" "$right_header" "$COLOR_RESET"
 
-            # Blank panes
+            # Blank panes with dim separator
             local pane_line
             for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-                printf '%-*s │ %-*s\n' "$left_pane_width" "" "$right_pane_width" ""
+                printf '%-*s%s │ %s%-*s\n' "$left_pane_width" "" "$COLOR_DIM" "$COLOR_RESET" "$right_pane_width" ""
             done
 
-            # Bottom separator with ─ characters
+            # Bottom separator with ─ characters (dim)
             local left_sep="" right_sep=""
             local i
             for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
             for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
-            printf '%s─┴─%s' "$left_sep" "$right_sep"
+            printf '%s%s─┴─%s%s' "$COLOR_DIM" "$left_sep" "$right_sep" "$COLOR_RESET"
 
             # Footer
             local footer_row=$((5 + 2 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator

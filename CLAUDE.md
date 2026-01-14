@@ -65,6 +65,55 @@ The `ib` script must work with Bash 3.2, which ships with macOS. This means avoi
 
 When adding new code, always test on the system bash (`/bin/bash --version`) to ensure compatibility.
 
+## Performance Considerations
+
+**`ib watch` redraws frequently** (10+ FPS), so performance matters in render code. Follow these guidelines for code in the rendering hot path:
+
+### Avoid Subprocess Spawning
+
+Spawning subprocesses (`sed`, `awk`, `grep`, `tail`, `head`, etc.) has significant overhead. Prefer pure bash operations:
+
+| Avoid | Prefer |
+|-------|--------|
+| `echo "$line" \| sed 's/x/y/'` | `${line//x/y}` (parameter expansion) |
+| `echo "$line" \| grep -o 'pattern'` | `[[ "$line" =~ pattern ]]` + `BASH_REMATCH` |
+| `echo "$line" \| cut -d: -f1` | `${line%%:*}` (parameter expansion) |
+| `cat "$file"` | `$(<"$file")` (bash builtin) |
+
+### Use Regex Instead of Character Iteration
+
+For pattern matching, use bash's `=~` operator with `BASH_REMATCH` instead of character-by-character loops:
+
+```bash
+# BAD: O(line_length) - iterates every character
+while [[ $i -lt $len ]]; do
+    char="${line:$i:1}"
+    # ... process char ...
+    i=$((i + 1))
+done
+
+# GOOD: O(n) where n = number of matches (typically 1-2)
+while [[ "$remaining" =~ ^([^[]*)\[([^]]*)\](.*)$ ]]; do
+    prefix="${BASH_REMATCH[1]}"
+    bracket_content="${BASH_REMATCH[2]}"
+    remaining="${BASH_REMATCH[3]}"
+done
+```
+
+### Complexity Guidelines
+
+| Context | Target | Example |
+|---------|--------|---------|
+| Per-line processing | O(1) or O(patterns) | Colorizing log lines |
+| Per-frame operations | O(agents) | Building agent tree |
+| Background processes | Can be slower | Collecting denials |
+
+### Caching Strategies
+
+- **Background collectors**: Run expensive operations (file scanning, grep) in background processes that write to cache files
+- **Parse caching**: Cache parsed results and only reparse when content length changes
+- **Frame skipping**: Check expensive conditions every N frames instead of every frame
+
 ## Bash Script Behavior (`set -e`)
 
 The `ib` script uses `set -e` (exit on error), which means **any command returning non-zero will terminate the entire script**. This is a common source of subtle bugs.
