@@ -10943,17 +10943,22 @@ EOF
 
         # ===== NORMAL SPLIT PANE MODE =====
 
-        # Pane headers with connected box-drawing characters (dim)
-        local left_header="── $selected_id "
-        local right_header="── ${RIGHT_PANE_NAMES[$RIGHT_PANE_MODE]} "
-        # Pad headers with ─ to fill width
-        while [[ ${#left_header} -lt $left_pane_width ]]; do
-            left_header="${left_header}─"
-        done
-        while [[ ${#right_header} -lt $right_pane_width ]]; do
-            right_header="${right_header}─"
-        done
-        printf "%s%s─┬─%s%s\n" "$COLOR_DIM" "$left_header" "$right_header" "$COLOR_RESET"
+        # Pane headers with box-drawing characters dim but titles white
+        local left_title="$selected_id"
+        local right_title="${RIGHT_PANE_NAMES[$RIGHT_PANE_MODE]}"
+        # Calculate padding needed after titles (account for "── " prefix and " " suffix around title)
+        local left_pad_count=$((left_pane_width - 3 - ${#left_title} - 1))  # 3 for "── ", 1 for trailing space
+        local right_pad_count=$((right_pane_width - 3 - ${#right_title} - 1))
+        [[ $left_pad_count -lt 0 ]] && left_pad_count=0
+        [[ $right_pad_count -lt 0 ]] && right_pad_count=0
+        local left_pad="" right_pad=""
+        local i
+        for ((i=0; i<left_pad_count; i++)); do left_pad="${left_pad}─"; done
+        for ((i=0; i<right_pad_count; i++)); do right_pad="${right_pad}─"; done
+        # Format: dim "── " + reset + title + dim " ─────" for each pane
+        printf "%s── %s%s%s %s─┬─── %s%s%s %s%s\n" \
+            "$COLOR_DIM" "$COLOR_RESET" "$left_title" "$COLOR_DIM" "$left_pad" \
+            "$COLOR_RESET" "$right_title" "$COLOR_DIM" "$right_pad" "$COLOR_RESET"
 
         # ===== ORPHAN WARNING PANE =====
         if [[ "$is_orphaned" == "true" ]]; then
@@ -11120,10 +11125,10 @@ EOF
                 colorize_log_line "$right_line"
                 right_line="$_COLORIZED_LINE"
             fi
-            printf '\e[%d;1H\e[K%s\e[%d;%dH%s │ %s%s' \
+            printf '\e[%d;1H\e[K%s\e[%d;%dH%s│%s %s' \
                 "$row" "${visible_tmux_lines[$pane_line]}" \
                 "$row" "$((left_pane_width + 1))" \
-                "$COLOR_DIM" "$right_line" "$COLOR_RESET"
+                "$COLOR_DIM" "$COLOR_RESET" "$right_line"
         done
 
         # Bottom separator line with connected box-drawing character (dim)
@@ -11496,21 +11501,25 @@ EOF
             local left_pane_width=$TMUX_WIDTH
             local right_pane_width=$((TERM_COLS - TMUX_WIDTH - 3))
 
-            # Pane header with ─ padding (matching normal render, dim)
-            local left_header="── (no agent) "
-            local right_header="── AGENT LOG "
-            while [[ ${#left_header} -lt $left_pane_width ]]; do
-                left_header="${left_header}─"
-            done
-            while [[ ${#right_header} -lt $right_pane_width ]]; do
-                right_header="${right_header}─"
-            done
-            printf '%s%s─┬─%s%s\n' "$COLOR_DIM" "$left_header" "$right_header" "$COLOR_RESET"
+            # Pane header with box-drawing characters dim but titles white
+            local left_title="(no agent)"
+            local right_title="AGENT LOG"
+            local left_pad_count=$((left_pane_width - 3 - ${#left_title} - 1))
+            local right_pad_count=$((right_pane_width - 3 - ${#right_title} - 1))
+            [[ $left_pad_count -lt 0 ]] && left_pad_count=0
+            [[ $right_pad_count -lt 0 ]] && right_pad_count=0
+            local left_pad="" right_pad=""
+            local i
+            for ((i=0; i<left_pad_count; i++)); do left_pad="${left_pad}─"; done
+            for ((i=0; i<right_pad_count; i++)); do right_pad="${right_pad}─"; done
+            printf '%s── %s%s%s %s─┬─── %s%s%s %s%s\n' \
+                "$COLOR_DIM" "$COLOR_RESET" "$left_title" "$COLOR_DIM" "$left_pad" \
+                "$COLOR_RESET" "$right_title" "$COLOR_DIM" "$right_pad" "$COLOR_RESET"
 
-            # Blank panes with dim separator
+            # Blank panes with dim separator (only │ is dim)
             local pane_line
             for ((pane_line=0; pane_line<pane_height; pane_line++)); do
-                printf '%-*s%s │ %s%-*s\n' "$left_pane_width" "" "$COLOR_DIM" "$COLOR_RESET" "$right_pane_width" ""
+                printf '%-*s%s│%s %-*s\n' "$left_pane_width" "" "$COLOR_DIM" "$COLOR_RESET" "$right_pane_width" ""
             done
 
             # Bottom separator with ─ characters (dim)
