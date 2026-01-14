@@ -7396,18 +7396,28 @@ cmd_setup_gitignore_uninstall() {
         return 0
     fi
 
-    # Check if installed
-    # Note: In basic grep, \? means "zero or one" (not ?)
-    if ! grep -q '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" 2>/dev/null; then
+    # Check if installed - must match the patterns in check_gitignore_has_ittybitty
+    # Uses two separate greps (same as check function) for consistency
+    # Patterns allow trailing whitespace to match how the check function detects installation
+    local found=false
+    if grep -q '^\.ittybitty/\?[[:space:]]*$' "$gitignore" 2>/dev/null; then
+        found=true
+    fi
+    if grep -q '^/\.ittybitty/\?[[:space:]]*$' "$gitignore" 2>/dev/null; then
+        found=true
+    fi
+
+    if [[ "$found" != "true" ]]; then
         echo ".ittybitty not found in $gitignore"
         return 0
     fi
 
-    # Remove the .ittybitty line(s)
+    # Remove the .ittybitty line(s) - patterns must match check_gitignore_has_ittybitty
     local tmpfile
     tmpfile=$(mktemp)
 
-    grep -v '^\.ittybitty/\?$\|^/\.ittybitty/\?$' "$gitignore" > "$tmpfile"
+    # Remove lines matching either pattern (with optional trailing whitespace)
+    grep -v '^\.ittybitty/\?[[:space:]]*$' "$gitignore" | grep -v '^/\.ittybitty/\?[[:space:]]*$' > "$tmpfile"
 
     mv "$tmpfile" "$gitignore"
     echo ".ittybitty removed from $gitignore"
