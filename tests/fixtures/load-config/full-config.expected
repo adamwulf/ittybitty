@@ -6,3 +6,4 @@ create_prs: true
 max_agents: 20
 model: sonnet
 fps: 15
+external_diff_tool: opendiff
