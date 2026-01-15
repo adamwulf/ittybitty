@@ -2105,9 +2105,12 @@ validate_agent_metadata() {
 # Global cache for meta.json data (invalidated when meta.json file changes)
 # Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
+# META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
+# Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
 META_CACHE_IDS=()
 META_CACHE_DATA=()
 META_CACHE_MTIME=()
+META_CACHE_STABLE=()
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2300,17 +2303,38 @@ build_agent_data_file() {
             fi
         done
 
-        # Get current meta.json mtime for cache validation
+        # OPTIMIZATION: meta.json is essentially immutable after agent creation
+        # (only updated once shortly after creation to store claude_pid).
+        # Once a cache entry has been stable for 30 frames (~1s at 30fps),
+        # we skip the stat call entirely to avoid subprocess overhead.
         local meta="$agent_dir/meta.json"
-        local current_mtime
-        current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0
-
-        # Check if cache is valid (exists and mtime matches)
         local cache_valid=0
+        local is_stable=0
+
         if [[ "$cache_idx" -ge 0 ]]; then
-            local cached_mtime="${META_CACHE_MTIME[$cache_idx]}"
-            if [[ "$cached_mtime" == "$current_mtime" ]]; then
+            local cached_frame="${META_CACHE_STABLE[$cache_idx]}"
+            local frames_since=$((STATE_FRAME_COUNT - cached_frame))
+            # Entry is stable if it's been in cache for 30+ frames without invalidation
+            if [[ $frames_since -ge 30 ]]; then
+                is_stable=1
                 cache_valid=1
+            fi
+        fi
+
+        # Only call stat if entry is not yet stable
+        local current_mtime=""
+        if [[ "$is_stable" -eq 0 ]]; then
+            current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0
+
+            # Check if cache is valid (exists and mtime matches)
+            if [[ "$cache_idx" -ge 0 ]]; then
+                local cached_mtime="${META_CACHE_MTIME[$cache_idx]}"
+                if [[ "$cached_mtime" == "$current_mtime" ]]; then
+                    cache_valid=1
+                else
+                    # mtime changed - reset stable frame counter
+                    META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
+                fi
             fi
         fi
 
@@ -2326,7 +2350,10 @@ build_agent_data_file() {
             prompt="${rest%%|*}"
             worker="${rest#*|}"
         else
-            # Read from disk and cache (meta variable already set above)
+            # Read from disk and cache
+            # Get mtime if we don't have it yet
+            [[ -z "$current_mtime" ]] && { current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0; }
+
             local line key value
             while IFS= read -r line; do
                 if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
@@ -2352,11 +2379,13 @@ build_agent_data_file() {
                 # Update existing cache entry (agent was restarted with same name)
                 META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
+                META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
                 # Add new cache entry
                 META_CACHE_IDS+=("$id")
                 META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
                 META_CACHE_MTIME+=("$current_mtime")
+                META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
             fi
         fi
 
