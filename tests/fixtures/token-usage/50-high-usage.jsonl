@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"Process this large task"}}
+{"type":"assistant","message":{"content":"Done","usage":{"input_tokens":50000,"output_tokens":25000,"cache_creation_input_tokens":20000,"cache_read_input_tokens":5000}}}
