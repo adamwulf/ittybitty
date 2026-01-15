@@ -57,17 +57,17 @@ for fixture_path in "$FIXTURES_DIR"/*.json; do
     description="${basename//-/ }"
 
     # Run ib test-questions with file argument
-    actual=$("$IB" test-questions "$fixture_path")
+    actual=$("$IB" test-questions "$fixture_path") || true
     expected=$(cat "$expected_file" | tr -d '\n')
 
     if [[ "$actual" == "$expected" ]]; then
         echo -e "${GREEN}PASS${NC} $description"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         echo -e "${RED}FAIL${NC} $description"
         echo "       Expected: $expected"
         echo "       Got:      $actual"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 done
 

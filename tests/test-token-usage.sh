@@ -59,22 +59,22 @@ for fixture_path in "$FIXTURES_DIR"/*.jsonl; do
     if [[ "$expected" == "error" ]]; then
         if [[ "$actual" == error:* ]]; then
             echo -e "${GREEN}PASS${NC} [$expected] $description"
-            ((PASSED++))
+            PASSED=$((PASSED + 1))
         else
             echo -e "${RED}FAIL${NC} [$expected] $description"
             echo "       Expected: error:*"
             echo "       Got:      $actual"
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
         fi
     else
         if [[ "$actual" == "$expected" ]]; then
             echo -e "${GREEN}PASS${NC} [$expected%] $description"
-            ((PASSED++))
+            PASSED=$((PASSED + 1))
         else
             echo -e "${RED}FAIL${NC} [$expected%] $description"
             echo "       Expected: $expected"
             echo "       Got:      $actual"
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
         fi
     fi
 done

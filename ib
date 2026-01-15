@@ -7452,7 +7452,7 @@ Usage: ib test-token-usage [options] <file>
 Test token usage calculation from transcript JSONL.
 
 Reads a transcript JSONL file and calculates context usage percentage.
-This tests the jq queries used in calculate_context_usage().
+This tests the jq queries used in get_agent_context_usage().
 
 Options:
   --context-size N  Set context window size (default: 200000)
