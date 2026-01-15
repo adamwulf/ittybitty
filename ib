@@ -2454,6 +2454,13 @@ DIFF_BG_PID=""                   # PID of background collector process
 DIFF_CACHE_LOADED=0              # 0=not loaded yet (show loading), 1=loaded
 DIFF_MERGE_STATUS=""             # "ok", "conflicts", or "error"
 
+# Status pane cache
+STATUS_CACHE_AGENT=""            # Which agent's status is cached
+STATUS_CACHE_LINES=()            # Cached status lines for display
+STATUS_CACHE_FILE=""             # Path to cache file (set in cmd_watch)
+STATUS_BG_PID=""                 # PID of background collector process
+STATUS_CACHE_LOADED=0            # 0=not loaded yet (show loading), 1=loaded
+
 # =============================================================================
 # Debug Timing Infrastructure (global for use by any function)
 # Set DEBUG_WATCH_MODE=1 in cmd_watch when --debug flag is passed
@@ -9333,8 +9340,9 @@ Controls:
   j/k     Select next/previous agent
   @       Quick jump to agent by name (fuzzy search)
   /       Quick jump to command/panel (fuzzy search)
-  p/n     Cycle right pane mode (agent log → prompt → denials → tree → diff)
+  p/n     Cycle right pane mode (agent log → prompt → denials → tree → diff → status)
   d       Jump to diff pane (shows changes and merge status)
+  g       Jump to status pane (shows commits and changes summary)
   e       Jump to errors pane
   ;/l     Scroll panes down/up
   s       Send message to agent
@@ -9348,7 +9356,7 @@ The display shows:
   - Agent tree (top 5 lines, scrolls with selection)
   - Selected agent info (model, prompt)
   - Split view: tmux output (left) and right pane (cycling modes)
-  - Right pane modes: agent log, initial prompt, denials, full tree view, diff with merge status
+  - Right pane modes: agent log, initial prompt, denials, full tree view, diff with merge status, git status
 
 EOF
                 exit 0
@@ -9431,8 +9439,8 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
-    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors, 5=diff
-    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF")
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors, 5=diff, 6=status
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF" "STATUS")
 
     # Dialog state variables
     local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback
@@ -9705,6 +9713,16 @@ EOF
             start_diff_collector "$selected_id"
         fi
 
+        # Stop status collector when leaving status mode
+        if [[ $old_mode -eq 6 && $new_mode -ne 6 ]]; then
+            stop_status_collector
+        fi
+
+        # Start status collector when entering status mode (needs agent id)
+        if [[ $old_mode -ne 6 && $new_mode -eq 6 && -n "$selected_id" ]]; then
+            start_status_collector "$selected_id"
+        fi
+
         RIGHT_PANE_MODE=$new_mode
     }
 
@@ -9713,6 +9731,7 @@ EOF
         # Stop background collectors
         stop_denials_collector
         stop_diff_collector
+        stop_status_collector
         # Only restore terminal state if not in debug mode
         if [[ $DEBUG_MODE -eq 0 ]]; then
             stty echo    # Restore terminal echo
@@ -11939,6 +11958,7 @@ EOF
         "tree:panel:3:Agent Tree"
         "errors:panel:4:Error Messages"
         "diff:panel:5:Git Diff"
+        "status:panel:6:Git Status - commits and changes"
     )
 
     watch_dialog_init_cmd_jump() {
@@ -13145,6 +13165,10 @@ EOF
                 help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
                 help_text_len=$((40 + errors_suffix_len))
             fi
+        elif [[ $RIGHT_PANE_MODE -eq 6 ]]; then
+            # Status mode: show scroll and pane navigation
+            help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+            help_text_len=$((40 + errors_suffix_len))
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
@@ -13185,6 +13209,10 @@ EOF
                     action_text_visible_len=${#action_text}
                     ;;
             esac
+        elif [[ $RIGHT_PANE_MODE -eq 6 ]]; then
+            # Status mode: show summary info
+            action_text="Git status: commits, uncommitted changes, files changed"
+            action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
@@ -13304,8 +13332,8 @@ EOF
         fi
 
         # Display min(agent count, 5) lines of tree with selection highlighting
-        # Skip rendering the header tree when TREE or DIFF pane is active (modes 3, 5) to use full height
-        if [[ $RIGHT_PANE_MODE -eq 3 || $RIGHT_PANE_MODE -eq 5 ]]; then
+        # Skip rendering the header tree when TREE, DIFF, or STATUS pane is active (modes 3, 5, 6) to use full height
+        if [[ $RIGHT_PANE_MODE -eq 3 || $RIGHT_PANE_MODE -eq 5 || $RIGHT_PANE_MODE -eq 6 ]]; then
             _WATCH_TREE_DISPLAY_LINES=0
         else
             _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
@@ -13706,6 +13734,81 @@ EOF
 
             # Bottom separator - uses cached full-width separator
             printf '%s' "$_SEP_FULL"
+
+            # Store pane info for footer
+            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
+            _WATCH_PANE_HEIGHT=$content_height
+
+            return  # Skip normal split pane rendering
+        fi
+
+        # ===== STATUS MODE (MODE 6) =====
+        if [[ $RIGHT_PANE_MODE -eq 6 ]]; then
+            # Load status from background cache (non-blocking)
+            load_status_from_cache "$selected_id"
+
+            # Full-width header for status mode
+            local header="── STATUS $selected_id "
+            while [[ ${#header} -lt $TERM_COLS ]]; do
+                header="${header}─"
+            done
+            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
+
+            # Render full-width status pane (hide left tmux pane)
+            local content_height=$pane_height
+            local content_width=$TERM_COLS
+
+            local total_lines=${#STATUS_CACHE_LINES[@]}
+
+            # Show loading state if cache not loaded yet
+            if [[ $STATUS_CACHE_LOADED -eq 0 ]]; then
+                local loading_msg="Loading status..."
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#loading_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$loading_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            # Show "No changes" if loaded but empty
+            elif [[ $total_lines -eq 0 ]]; then
+                local empty_msg="No status information available"
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        # Center the message
+                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        printf '%*s%s\n' "$padding" "" "$empty_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            else
+                # Calculate scroll parameters (scroll from top like a normal status view)
+                local max_scroll=$((total_lines - content_height))
+                [[ $max_scroll -lt 0 ]] && max_scroll=0
+                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+                local start_idx=$SCROLL_OFFSET
+
+                local line_num
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    local array_idx=$((start_idx + line_num))
+                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
+                        # Truncate to terminal width
+                        local display_line="${STATUS_CACHE_LINES[$array_idx]:0:$content_width}"
+                        printf '%-*s\n' "$content_width" "$display_line"
+                    else
+                        # Empty line (no content)
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            fi
+
+            # Bottom separator - uses cached full-width separator
+            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -14207,6 +14310,177 @@ EOF
         DIFF_CACHE_LOADED=1
     }
 
+    # Background process to collect git status and write to cache file
+    # Shows commits, uncommitted changes, and files changed summary
+    # Args: $1=cache_file, $2=agent_id, $3=agents_dir
+    status_background_collector() {
+        local cache_file="$1"
+        local agent_id="$2"
+        local agents_dir="$3"
+        local refresh_interval=5  # Refresh every 5 seconds
+
+        while true; do
+            local tmpfile
+            tmpfile=$(mktemp)
+
+            local agent_dir="$agents_dir/$agent_id"
+            local branch_name="agent/$agent_id"
+            local worktree_path="$agent_dir/repo"
+
+            # Check if agent exists
+            if [[ ! -d "$agent_dir" ]]; then
+                echo "STATUS:ok" > "$tmpfile"
+                echo "Agent '$agent_id' not found" >> "$tmpfile"
+                mv "$tmpfile" "$cache_file"
+                sleep $refresh_interval
+                continue
+            fi
+
+            # Check if branch exists
+            if ! git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
+                echo "STATUS:ok" > "$tmpfile"
+                echo "Branch '$branch_name' does not exist" >> "$tmpfile"
+                mv "$tmpfile" "$cache_file"
+                sleep $refresh_interval
+                continue
+            fi
+
+            # Determine target branch
+            local target_branch=""
+            if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
+                target_branch="main"
+            elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
+                target_branch="master"
+            else
+                target_branch="HEAD"
+            fi
+
+            echo "STATUS:ok" > "$tmpfile"
+
+            # Find merge-base
+            local merge_base=""
+            merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || true
+
+            # Show header info
+            echo "Agent: $agent_id" >> "$tmpfile"
+            echo "Branch: $branch_name" >> "$tmpfile"
+            echo "" >> "$tmpfile"
+
+            # Show commits
+            if [[ -n "$merge_base" ]]; then
+                local commit_count
+                commit_count=$(git log "$merge_base..$branch_name" --oneline 2>/dev/null | wc -l | tr -d ' ') || commit_count=0
+                if [[ "$commit_count" -gt 0 ]]; then
+                    echo "═══ Commits ($commit_count) vs $target_branch ═══" >> "$tmpfile"
+                    git log "$merge_base..$branch_name" --format="  %h %s" 2>/dev/null >> "$tmpfile" || true
+                    echo "" >> "$tmpfile"
+                else
+                    echo "═══ No commits vs $target_branch ═══" >> "$tmpfile"
+                    echo "" >> "$tmpfile"
+                fi
+            fi
+
+            # Show uncommitted changes (if worktree exists)
+            if [[ -d "$worktree_path" ]]; then
+                local uncommitted
+                uncommitted=$(git -C "$worktree_path" status --porcelain 2>/dev/null) || uncommitted=""
+                if [[ -n "$uncommitted" ]]; then
+                    echo "═══ Uncommitted Changes ═══" >> "$tmpfile"
+                    git -C "$worktree_path" status --short 2>/dev/null >> "$tmpfile" || true
+                    echo "" >> "$tmpfile"
+                fi
+            else
+                echo "(no worktree)" >> "$tmpfile"
+                echo "" >> "$tmpfile"
+            fi
+
+            # Show file change summary
+            if [[ -n "$merge_base" ]]; then
+                local files_changed
+                files_changed=$(git diff --stat "$merge_base..$branch_name" 2>/dev/null | tail -1) || files_changed=""
+                if [[ -n "$files_changed" && "$files_changed" != *"0 files changed"* ]]; then
+                    echo "═══ Files Changed ═══" >> "$tmpfile"
+                    echo "  $files_changed" >> "$tmpfile"
+                fi
+            fi
+
+            # Atomic write
+            mv "$tmpfile" "$cache_file"
+
+            sleep $refresh_interval
+        done
+    }
+
+    # Start the background status collector for a specific agent
+    # Args: $1=agent_id
+    start_status_collector() {
+        local agent_id="$1"
+
+        # Kill existing collector if any
+        stop_status_collector
+
+        # Create cache file path
+        STATUS_CACHE_FILE=$(mktemp)
+        STATUS_CACHE_AGENT="$agent_id"
+
+        # Start collector in background
+        status_background_collector "$STATUS_CACHE_FILE" "$agent_id" "$AGENTS_DIR" &
+        STATUS_BG_PID=$!
+
+        # Mark cache as not loaded yet
+        STATUS_CACHE_LOADED=0
+    }
+
+    # Stop the background status collector
+    stop_status_collector() {
+        if [[ -n "$STATUS_BG_PID" ]]; then
+            kill "$STATUS_BG_PID" 2>/dev/null || true
+            wait "$STATUS_BG_PID" 2>/dev/null || true
+            STATUS_BG_PID=""
+        fi
+        if [[ -n "$STATUS_CACHE_FILE" && -f "$STATUS_CACHE_FILE" ]]; then
+            rm -f "$STATUS_CACHE_FILE"
+            STATUS_CACHE_FILE=""
+        fi
+        STATUS_CACHE_LOADED=0
+        STATUS_CACHE_AGENT=""
+    }
+
+    # Load status from cache file into STATUS_CACHE_LINES array
+    # Args: $1=agent_id (to check if we need to restart collector)
+    load_status_from_cache() {
+        local agent_id="$1"
+        STATUS_CACHE_LINES=()
+
+        # Check if agent changed - need to restart collector
+        if [[ "$STATUS_CACHE_AGENT" != "$agent_id" ]]; then
+            start_status_collector "$agent_id"
+            return
+        fi
+
+        # Check if cache file exists and has content
+        if [[ -z "$STATUS_CACHE_FILE" || ! -f "$STATUS_CACHE_FILE" ]]; then
+            return
+        fi
+
+        # Read first line for status marker
+        local first_line
+        first_line=$(head -n 1 "$STATUS_CACHE_FILE" 2>/dev/null) || true
+        if [[ "$first_line" == STATUS:* ]]; then
+            # Read rest of file as status lines
+            local content
+            content=$(tail -n +2 "$STATUS_CACHE_FILE" 2>/dev/null) || true
+            if [[ -n "$content" ]]; then
+                while IFS= read -r line; do
+                    STATUS_CACHE_LINES+=("$line")
+                done <<< "$content"
+            fi
+        fi
+
+        # Mark as loaded once we have data
+        STATUS_CACHE_LOADED=1
+    }
+
     # Main render function
     watch_render() {
         local t_frame_start=$(get_ms)
@@ -14317,8 +14591,8 @@ EOF
         # Render tree and get selected agent (skip for full-width modes)
         local t_tree_start t_tree_end
         [[ $DEBUG_MODE -eq 1 ]] && t_tree_start=$(get_ms)
-        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 ]]; then
-            # Denials/Diff mode: skip tree rendering, set tree_display_lines to 0
+        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 || $RIGHT_PANE_MODE -eq 6 ]]; then
+            # Denials/Diff/Status mode: skip tree rendering, set tree_display_lines to 0
             # Still need to process agent list for state tracking
             local agent_ids=()
             local line
@@ -14533,6 +14807,12 @@ EOF
                 _WATCH_ESC_PENDING=0
                 # Switch to diff pane
                 watch_set_pane_mode 5 "$_WATCH_SELECTED_ID"
+                SCROLL_OFFSET=0
+                ;;
+            g)
+                _WATCH_ESC_PENDING=0
+                # Switch to status pane
+                watch_set_pane_mode 6 "$_WATCH_SELECTED_ID"
                 SCROLL_OFFSET=0
                 ;;
             c)
