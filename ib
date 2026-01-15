@@ -18,12 +18,22 @@ ROOT_REPO_PATH=""
 REPO_ID=""  # Unique ID for this repo instance, prevents tmux collision across repos
 
 # Convert agent ID to tmux session name
-# Checks meta.json first (for stored tmux_session), falls back to SESSION_PREFIX + id
+# First checks SESSION_NAME_CACHE_INDEX (O(1) lookup, populated by build_agent_data_file)
+# Then tries meta.json (for cases where cache isn't populated yet)
+# Falls back to SESSION_PREFIX + id if neither available
 # This ensures consistency when SESSION_PREFIX changes between agent creation and lookup
 session_name() {
     local id="$1"
 
-    # Try to read tmux_session from meta.json if agent directory exists
+    # Check cache first (O(1) lookup using index string)
+    # Format: "|id1:session1|id2:session2|"
+    if [[ -n "$SESSION_NAME_CACHE_INDEX" && "$SESSION_NAME_CACHE_INDEX" == *"|$id:"* ]]; then
+        local session_str="${SESSION_NAME_CACHE_INDEX#*"|$id:"}"
+        echo "${session_str%%"|"*}"
+        return
+    fi
+
+    # Cache miss - try to read tmux_session from meta.json if agent directory exists
     if [[ -n "$AGENTS_DIR" && -f "$AGENTS_DIR/$id/meta.json" ]]; then
         local content
         content=$(<"$AGENTS_DIR/$id/meta.json")
@@ -713,6 +723,12 @@ fetch_claude_usage() {
     fi
     if [[ -n "$weekly_util" && "$weekly_util" != "null" ]]; then
         _USAGE_WEEKLY_PCT=$(printf '%.0f' "$weekly_util" 2>/dev/null)
+    fi
+
+    # If we didn't get any utilization data, the API call effectively failed
+    # (e.g., expired token returns error JSON instead of usage data)
+    if [[ -z "$_USAGE_SESSION_PCT" && -z "$_USAGE_WEEKLY_PCT" ]]; then
+        return 1
     fi
 
     # Calculate time remaining until reset
@@ -1433,11 +1449,67 @@ capture_tmux() {
 
     # Fallback: capture directly from tmux
     # Note: || true prevents set -e from exiting when session doesn't exist
+    # Use -E - to capture TO the end of scrollback (prevents scroll jumping during heavy output)
     local raw_capture
-    raw_capture=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
+    raw_capture=$(tmux capture-pane -t "$session" -p -S "-$lines" -E - 2>/dev/null) || true
     # Strip ANSI codes for consistent pattern matching (matches background cache behavior)
     _strip_ansi "$raw_capture"
     LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
+}
+
+# Compute full state from tmux content (used by background monitor)
+# This combines the creating-state check (from get_state) with parse_state logic
+# Args: $1 = full tmux content (should be at least 100 lines for creating detection)
+# Output: State string to stdout (creating, running, waiting, complete, rate_limited, unknown)
+compute_state_from_content() {
+    local input="$1"
+
+    # Empty input = unknown (caller handles stopped for non-existent sessions)
+    if [[ -z "$input" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    # Get first 100 lines for Claude startup detection
+    # Note: subprocess head is faster than pure bash for large content
+    local first_lines
+    first_lines=$(printf '%s' "$input" | head -100)
+
+    # Check if Claude has started
+    local claude_started=false
+    if [[ "$first_lines" == *"Claude Code v"* ]] || \
+       [[ "$first_lines" == *"╭─ Claude Code"* ]] || \
+       [[ "$first_lines" == *"[USER TASK]"* ]] || \
+       [[ "$first_lines" == *"[AGENT CONTEXT]"* ]]; then
+        claude_started=true
+    fi
+
+    if [[ "$claude_started" == false ]]; then
+        # Check if permissions screen is showing (workspace trust OR external imports)
+        local old_nocasematch
+        old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+        shopt -s nocasematch
+        if [[ "$first_lines" == *"Enter to confirm"* ]]; then
+            if [[ "$first_lines" == *"trust"* ]] || \
+               [[ "$first_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
+                eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+                echo "creating"
+                return
+            fi
+        fi
+        eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+
+        # Check if session is very new (minimal output)
+        local no_newlines="${first_lines//$'\n'/}"
+        local line_count=$(( ${#first_lines} - ${#no_newlines} + 1 ))
+        if [[ "$line_count" -lt 10 ]]; then
+            echo "creating"
+            return
+        fi
+    fi
+
+    # Use parse_state for the actual state detection logic
+    parse_state "$input"
 }
 
 # Parse state from tmux output text
@@ -1654,12 +1726,54 @@ parse_context_usage() {
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
+
+    # Try to read from background-computed state cache first (much faster in watch mode)
+    # The background monitor computes state and writes to TMUX_CACHE_DIR/agent_id.state
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        local state_cache="$TMUX_CACHE_DIR/$id.state"
+        if [[ -f "$state_cache" ]]; then
+            local cached_state
+            cached_state=$(<"$state_cache")
+            if [[ -n "$cached_state" ]]; then
+                echo "$cached_state"
+                return
+            fi
+        fi
+    fi
+
+    # Fallback: compute state directly (used outside watch mode or before cache exists)
     local tmux_session=$(session_name "$id")
 
-    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
-    # This returns empty if session doesn't exist - no separate has-session needed
-    capture_tmux "$tmux_session" 20
-    local recent="$LAST_TMUX_CAPTURE"
+    # Try to read from background cache first (faster - avoids tmux calls entirely)
+    # Cache contains 500 lines of ANSI-stripped tmux output
+    local cache_file=""
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        cache_file="$TMUX_CACHE_DIR/$id"
+        [[ ! -f "$cache_file" ]] && cache_file=""
+    fi
+
+    local recent full_history
+
+    if [[ -n "$cache_file" ]]; then
+        # Use cached content - extract tail-20 and head-100 from cache file
+        # Note: subprocess head is faster than pure bash for 100 lines
+        _tail_file "$cache_file" 20
+        recent="$_TAIL_RESULT"
+        full_history=$(head -100 "$cache_file")
+        LAST_TMUX_CAPTURE="$recent"  # For debugging consistency
+    else
+        # Fallback: capture directly from tmux (when cache not available)
+        capture_tmux "$tmux_session" 20
+        recent="$LAST_TMUX_CAPTURE"
+
+        if [[ -z "$recent" ]]; then
+            echo "stopped"
+            return
+        fi
+
+        # Second tmux capture for head-100 (only when cache unavailable)
+        full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
+    fi
 
     if [[ -z "$recent" ]]; then
         echo "stopped"
@@ -1676,10 +1790,6 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    # Get first 100 lines from full tmux history
-    # Note: subprocess head is faster than pure bash for large content
-    local full_history
-    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
@@ -2223,7 +2333,7 @@ validate_agent_metadata() {
 }
 
 # Global cache for meta.json data (invalidated when meta.json file changes)
-# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
+# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker|tmux_session"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
 # META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
 # Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
@@ -2233,6 +2343,11 @@ META_CACHE_DATA=()
 META_CACHE_MTIME=()
 META_CACHE_STABLE=()
 META_CACHE_INDEX=""
+
+# Session name cache - maps agent_id to tmux_session for O(1) lookup
+# SESSION_NAME_CACHE_INDEX = lookup string "|id1:session1|id2:session2|" for O(1) lookup
+# Populated by build_agent_data_file() when parsing meta.json
+SESSION_NAME_CACHE_INDEX=""
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2421,7 +2536,7 @@ build_agent_data_file() {
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id="${agent_dir%/}"; id="${id##*/}"
-        local manager="" created_epoch="" model="" prompt="" worker="false"
+        local manager="" created_epoch="" model="" prompt="" worker="false" tmux_session=""
 
         # Check cache first using O(1) index lookup string (Bash 3.2 compatible)
         local cache_idx=-1
@@ -2466,7 +2581,7 @@ build_agent_data_file() {
         fi
 
         if [[ "$cache_valid" -eq 1 ]]; then
-            # Use cached data: manager|created_epoch|model|prompt|worker
+            # Use cached data: manager|created_epoch|model|prompt|worker|tmux_session
             local cached="${META_CACHE_DATA[$cache_idx]}"
             manager="${cached%%|*}"
             local rest="${cached#*|}"
@@ -2475,7 +2590,9 @@ build_agent_data_file() {
             model="${rest%%|*}"
             rest="${rest#*|}"
             prompt="${rest%%|*}"
-            worker="${rest#*|}"
+            rest="${rest#*|}"
+            worker="${rest%%|*}"
+            tmux_session="${rest#*|}"
         else
             # Read from disk and cache
             # Get mtime if we don't have it yet
@@ -2492,6 +2609,7 @@ build_agent_data_file() {
                         created_epoch) created_epoch="$value" ;;
                         model) model="$value" ;;
                         worker) worker="$value" ;;
+                        tmux_session) tmux_session="$value" ;;
                     esac
                 fi
             done < "$meta"
@@ -2500,22 +2618,32 @@ build_agent_data_file() {
             [[ "$manager" == "null" ]] && manager=""
             [[ "$model" == "null" || -z "$model" ]] && model="-"
             [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
+            # Fallback for tmux_session if not in meta.json (old agents)
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
 
             # Update or add to cache
             if [[ "$cache_idx" -ge 0 ]]; then
                 # Update existing cache entry (agent was restarted with same name)
-                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
+                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker|$tmux_session"
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
                 META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
                 # Add new cache entry and update index lookup string
                 local new_idx=${#META_CACHE_IDS[@]}
                 META_CACHE_IDS+=("$id")
-                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
+                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker|$tmux_session")
                 META_CACHE_MTIME+=("$current_mtime")
                 META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
                 META_CACHE_INDEX="${META_CACHE_INDEX}|$id:$new_idx|"
             fi
+        fi
+
+        # Update session name cache (O(1) lookup for session_name function)
+        # Only add if not already present
+        if [[ "$SESSION_NAME_CACHE_INDEX" != *"|$id:"* ]]; then
+            # Use cached tmux_session or fallback
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
+            SESSION_NAME_CACHE_INDEX="${SESSION_NAME_CACHE_INDEX}|$id:$tmux_session|"
         fi
 
         # Calculate age (must be fresh each time)
@@ -3345,9 +3473,15 @@ EOF
 }
 EOF
 
-    # Log agent creation
+    # Log agent creation to new agent's log
     if [[ -n "$MANAGER" ]]; then
         log_agent "$ID" "Agent created (manager: $MANAGER, prompt: $PROMPT)" --quiet
+        # Also log to the manager's log that a subagent was spawned
+        local agent_type_label="worker"
+        if [[ "$WORKER_MODE" != true ]]; then
+            agent_type_label="manager"
+        fi
+        log_agent "$MANAGER" "Spawned $agent_type_label subagent: $ID (prompt: $PROMPT)" --quiet
     else
         log_agent "$ID" "Agent created (prompt: $PROMPT)" --quiet
     fi
@@ -9377,8 +9511,9 @@ EOF
     local USAGE_WEEKLY_PCT=""    # 7-day weekly utilization percentage
     local USAGE_SESSION_RESET="" # Time until session reset (e.g., "44m")
     local USAGE_WEEKLY_RESET=""  # Time until weekly reset (e.g., "3d 8h")
-    local USAGE_LAST_FETCH=0     # Timestamp of last successful fetch
+    local USAGE_LAST_FETCH=0     # Timestamp of last attempted fetch
     local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
+    local USAGE_FETCH_FAILED=0   # 1 if last fetch failed (show "unavailable")
 
     # Check if main repo safety hooks are installed
     watch_check_hooks_status() {
@@ -9466,6 +9601,14 @@ EOF
                 USAGE_WEEKLY_PCT="$_USAGE_WEEKLY_PCT"
                 USAGE_SESSION_RESET="$_USAGE_SESSION_RESET"
                 USAGE_WEEKLY_RESET="$_USAGE_WEEKLY_RESET"
+                USAGE_FETCH_FAILED=0
+            else
+                # Fetch failed - clear values and mark as failed
+                USAGE_SESSION_PCT=""
+                USAGE_WEEKLY_PCT=""
+                USAGE_SESSION_RESET=""
+                USAGE_WEEKLY_RESET=""
+                USAGE_FETCH_FAILED=1
             fi
         fi
     }
@@ -9584,9 +9727,10 @@ EOF
     # Trap Ctrl-C and other exits
     trap watch_cleanup EXIT
 
-    # Hide cursor and disable terminal echo (skip in debug mode - no TTY)
+    # Hide cursor, clear screen, and disable terminal echo (skip in debug mode - no TTY)
     if [[ $DEBUG_MODE -eq 0 ]]; then
         tput civis
+        tput clear
         stty -echo
     fi
 
@@ -9747,6 +9891,17 @@ EOF
     # Dialog Helper Functions
     # ==========================================================================
 
+    # Text-only dirty flag for optimized partial redraws
+    # When only text content changes, we redraw just the text field instead of the whole dialog
+    local _DIALOG_TEXT_DIRTY=0
+
+    # Cached dialog geometry for partial redraws
+    local _DIALOG_START_ROW=0
+    local _DIALOG_TEXT_START_ROW=0   # Row where text area starts
+    local _DIALOG_TEXT_WIDTH=0       # Width of text content area
+    local _DIALOG_TEXT_HEIGHT=0      # Height of text area
+    local _DIALOG_BUTTONS_ROW=0      # Row where buttons are drawn
+
     # Calculate starting column for centered dialog
     # Sets: _DIALOG_START_COL
     dialog_calc_position() {
@@ -9845,6 +10000,100 @@ EOF
             # No newline, delete everything
             _DIALOG_TEXT_RESULT=""
         fi
+    }
+
+    # Redraw a multi-line text area without redrawing entire dialog
+    # Uses cached geometry from _DIALOG_TEXT_START_ROW, _DIALOG_TEXT_WIDTH, _DIALOG_TEXT_HEIGHT
+    # Args: $1=text content, $2=focused (0/1)
+    dialog_redraw_text_area() {
+        local text="$1" focused="${2:-0}"
+        local text_width=$_DIALOG_TEXT_WIDTH
+        local text_height=$_DIALOG_TEXT_HEIGHT
+        local start_row=$_DIALOG_TEXT_START_ROW
+
+        [[ $text_width -le 0 || $text_height -le 0 || $start_row -le 0 ]] && return
+
+        # Add cursor if focused
+        local display_text="$text"
+        [[ $focused == "1" ]] && display_text="${display_text}_"
+
+        # Split text by newlines and wrap long lines
+        local -a display_lines=()
+        local line="" char i
+        local len=${#display_text}
+        for ((i=0; i<len; i++)); do
+            char="${display_text:$i:1}"
+            if [[ "$char" == $'\n' ]]; then
+                display_lines+=("$line")
+                line=""
+            else
+                line="${line}${char}"
+                if [[ ${#line} -ge $text_width ]]; then
+                    display_lines+=("$line")
+                    line=""
+                fi
+            fi
+        done
+        [[ -n "$line" ]] && display_lines+=("$line")
+
+        # Show last N lines (scroll to bottom)
+        local total_lines=${#display_lines[@]}
+        local start_line=0
+        if [[ $total_lines -gt $text_height ]]; then
+            start_line=$((total_lines - text_height))
+        fi
+
+        # Draw text area lines
+        local row=$start_row line_idx content_idx content
+        for ((line_idx=0; line_idx<text_height; line_idx++)); do
+            content_idx=$((start_line + line_idx))
+            content=""
+            if [[ $content_idx -lt $total_lines ]]; then
+                content="${display_lines[$content_idx]}"
+            fi
+            printf '\e[%d;%dH│ │' "$row" "$_DIALOG_START_COL"
+            if [[ $focused == "1" ]]; then
+                printf '\e[7m%-*s\e[0m' "$text_width" "$content"
+            else
+                printf '%-*s' "$text_width" "$content"
+            fi
+            printf '│ │'
+            ((row++))
+        done
+    }
+
+    # Redraw just the buttons row for Send dialog
+    # Uses cached geometry from _DIALOG_BUTTONS_ROW, _DIALOG_START_COL
+    # Reads SEND_TEXT and SEND_FOCUS globals
+    dialog_redraw_send_buttons() {
+        local row=$_DIALOG_BUTTONS_ROW
+        [[ $row -le 0 ]] && return
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local send_disabled=$([[ -z "$SEND_TEXT" ]] && echo 1 || echo 0)
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$send_disabled")
+        local btn_visual_width=18  # [Cancel] = 8, [Send] = 6, gap = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$send_btn" "$right_pad" ""
+    }
+
+    # Redraw just the buttons row for New Agent dialog
+    # Uses cached geometry from _DIALOG_BUTTONS_ROW, _DIALOG_START_COL
+    # Reads NEW_AGENT_PROMPT and NEW_AGENT_FOCUS globals
+    dialog_redraw_new_agent_buttons() {
+        local row=$_DIALOG_BUTTONS_ROW
+        [[ $row -le 0 ]] && return
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local create_disabled=$([[ -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
+        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
+        local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$create_btn" "$right_pad" ""
     }
 
     # ==========================================================================
@@ -10007,9 +10256,27 @@ EOF
             return
         fi
 
-        # Only redraw when dirty
+        # Calculate geometry once for text-only redraws
+        local dialog_height=13  # Total dialog height
+        local text_area_height=4  # Lines in the text area
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))  # 44 chars for content
+
+        # Check for text-only redraw (optimization to reduce flicker)
+        if [[ "${_DIALOG_TEXT_DIRTY:-0}" == "1" && "${_DIALOG_DIRTY:-0}" != "1" ]]; then
+            _DIALOG_TEXT_DIRTY=0
+            # Use cached geometry for partial redraw
+            local text_focused=$([[ $SEND_FOCUS -eq 0 ]] && echo 1 || echo 0)
+            dialog_redraw_text_area "$SEND_TEXT" "$text_focused"
+            # Also redraw buttons since enabled state depends on text content
+            dialog_redraw_send_buttons
+            return
+        fi
+
+        # Only full redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
+        _DIALOG_TEXT_DIRTY=0  # Clear text dirty too since we're doing full redraw
 
         # Get terminal size
         TERM_LINES=$(tput lines)
@@ -10017,8 +10284,6 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=13  # Total dialog height
-        local text_area_height=4  # Lines in the text area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
 
@@ -10054,13 +10319,16 @@ EOF
         # Both lines: │ ┌───┐ │ and │ │xxx│ │ should total DIALOG_WIDTH
         # │ ┌ (3) + dashes + ┐ │ (3) = 50, so dashes = 44
         # │ │ (3) + content + │ │ (3) = 50, so content = 44
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local text_width=$((inner_width - 2))  # 44 chars for content
         printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
         local i
         for ((i=0; i<text_width; i++)); do printf '─'; done
         printf '┐ │'
         ((row++))
+
+        # Cache geometry for text-only redraws
+        _DIALOG_TEXT_START_ROW=$row
+        _DIALOG_TEXT_WIDTH=$text_width
+        _DIALOG_TEXT_HEIGHT=$text_area_height
 
         # Parse text into lines and display in text area
         local text_focused=$([[ $SEND_FOCUS -eq 0 ]] && echo 1 || echo 0)
@@ -10123,13 +10391,9 @@ EOF
         ((row++))
 
         # Buttons (Cancel on left, Send on right)
-        local send_disabled=$([[ -z "$SEND_TEXT" ]] && echo 1 || echo 0)
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)")
-        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$send_disabled")
-        local btn_visual_width=18  # [Cancel] = 8, [Send] = 6, gap = 4
-        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
-        local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$send_btn" "$right_pad" ""
+        # Cache button row for text-only redraws
+        _DIALOG_BUTTONS_ROW=$row
+        dialog_redraw_send_buttons
         ((row++))
 
         # Bottom border
@@ -10164,14 +10428,14 @@ EOF
                 else
                     # In text area, type the character
                     SEND_TEXT="${SEND_TEXT}a"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x1e')  # Enter
                 if [[ $SEND_FOCUS -eq 0 ]]; then
                     # In text area, add newline
                     SEND_TEXT="${SEND_TEXT}"$'\n'
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 elif [[ $SEND_FOCUS -eq 1 ]]; then
                     # Cancel button
                     DIALOG_MODE=0
@@ -10204,7 +10468,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}["
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'Z')  # Shift+Tab (part of \e[Z sequence)
@@ -10221,7 +10485,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}Z"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'A'|'B'|'C'|'D')  # Arrow keys (as part of escape sequence) or regular letters
@@ -10247,14 +10511,14 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field - add the letter
                     SEND_TEXT="${SEND_TEXT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
                 if [[ $SEND_FOCUS -eq 0 && -n "$SEND_TEXT" ]]; then
                     dialog_delete_line "$SEND_TEXT"
                     SEND_TEXT="$_DIALOG_TEXT_RESULT"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
@@ -10268,7 +10532,7 @@ EOF
                         # Regular backspace - delete one char
                         SEND_TEXT="${SEND_TEXT%?}"
                     fi
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             *)  # Any other key
@@ -10278,7 +10542,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 _DIALOG_ESC_PENDING=0
                 ;;
@@ -10543,9 +10807,27 @@ EOF
             return
         fi
 
-        # Only redraw when dirty
+        # Calculate geometry constants
+        local dialog_height=16  # Total dialog height
+        local prompt_area_height=3  # Lines in the prompt area
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))  # 44 chars for content
+
+        # Check for text-only redraw (optimization for prompt area)
+        if [[ "${_DIALOG_TEXT_DIRTY:-0}" == "1" && "${_DIALOG_DIRTY:-0}" != "1" ]]; then
+            _DIALOG_TEXT_DIRTY=0
+            # Use cached geometry for partial redraw
+            local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
+            dialog_redraw_text_area "$NEW_AGENT_PROMPT" "$prompt_focused"
+            # Also redraw buttons since enabled state depends on prompt content
+            dialog_redraw_new_agent_buttons
+            return
+        fi
+
+        # Only full redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
+        _DIALOG_TEXT_DIRTY=0  # Clear text dirty too since we're doing full redraw
 
         # Get terminal size
         TERM_LINES=$(tput lines)
@@ -10553,8 +10835,6 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=16  # Total dialog height
-        local prompt_area_height=3  # Lines in the prompt area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
 
@@ -10635,13 +10915,16 @@ EOF
         ((row++))
 
         # Prompt text area box - top border
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local text_width=$((inner_width - 2))  # 44 chars for content
         printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
         local i
         for ((i=0; i<text_width; i++)); do printf '─'; done
         printf '┐ │'
         ((row++))
+
+        # Cache geometry for text-only redraws
+        _DIALOG_TEXT_START_ROW=$row
+        _DIALOG_TEXT_WIDTH=$text_width
+        _DIALOG_TEXT_HEIGHT=$prompt_area_height
 
         # Parse prompt text into lines and display
         local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
@@ -10704,13 +10987,9 @@ EOF
         ((row++))
 
         # Buttons - Create disabled if prompt empty (name uses default if not provided)
-        local create_disabled=$([[ -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
-        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
-        local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
-        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
-        local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$create_btn" "$right_pad" ""
+        # Cache button row for text-only redraws
+        _DIALOG_BUTTONS_ROW=$row
+        dialog_redraw_new_agent_buttons
         ((row++))
 
         # Bottom border
@@ -10753,7 +11032,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field - add space
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT} "
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x1e')  # Enter
@@ -10764,7 +11043,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # In prompt area, add newline
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}"$'\n'
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 4 ]]; then
                     # Cancel button
                     DIALOG_MODE=0
@@ -10812,7 +11091,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'k'|'K')  # k - previous model (when on model field)
@@ -10828,7 +11107,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\e')  # Escape - check for sequence
@@ -10842,7 +11121,7 @@ EOF
                     :
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}["
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'Z')  # Shift+Tab (part of \e[Z sequence)
@@ -10865,7 +11144,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}Z"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'A')  # Up arrow - previous model (when on model field), or backward navigation
@@ -10893,7 +11172,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}A"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'B')  # Down arrow - next model (when on model field), or forward navigation
@@ -10921,7 +11200,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}B"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'D')  # Left arrow - backward navigation (like Shift+Tab)
@@ -10945,7 +11224,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}D"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'C')  # Right arrow - forward navigation (like Tab)
@@ -10969,7 +11248,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}C"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
@@ -10980,7 +11259,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 && -n "$NEW_AGENT_PROMPT" ]]; then
                     dialog_delete_line "$NEW_AGENT_PROMPT"
                     NEW_AGENT_PROMPT="$_DIALOG_TEXT_RESULT"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
@@ -11003,7 +11282,7 @@ EOF
                     else
                         NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT%?}"
                     fi
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             *)  # Any other key
@@ -11019,7 +11298,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 _DIALOG_ESC_PENDING=0
                 ;;
@@ -12838,27 +13117,42 @@ EOF
             else
                 usage_info="$weekly_str"
             fi
+        elif [[ $USAGE_FETCH_FAILED -eq 1 ]]; then
+            # Fetch was attempted but failed - show unavailable indicator
+            usage_info="session:--  weekly:--"
+            usage_info_visible_len=21  # "session:--  weekly:--" = 21 chars
         fi
 
         # Row 1: Navigation keys (left) + Usage stats (right)
         local help_text
+        local help_text_len
+        # Build errors indicator if there are unread errors (shown before Ctrl-C: quit)
+        local errors_suffix=""
+        local errors_suffix_len=0
+        if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
+            errors_suffix="${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}    "
+            errors_suffix_len=$((16 + ${#ERRORS_UNREAD_COUNT}))  # "e: errors ()    " = 16 chars + digits
+        fi
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
             # Denials mode: show time filter toggle
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
-            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    Ctrl-C: quit"
+            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+            help_text_len=$((56 + ${#filter_name} + errors_suffix_len))
         elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
             # Diff mode: show scroll and pane navigation, plus external diff if configured
             if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" ]]; then
-                help_text=";/l: scroll    o: ext diff    n/p: pane    Ctrl-C: quit"
+                help_text=";/l: scroll    o: ext diff    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+                help_text_len=$((55 + errors_suffix_len))
             else
-                help_text=";/l: scroll    n/p: pane    Ctrl-C: quit"
+                help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+                help_text_len=$((40 + errors_suffix_len))
             fi
         else
             # Normal mode
-            help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
+            help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+            help_text_len=$((55 + errors_suffix_len))
         fi
-        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
-        local help_text_len=${#help_text}
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 5 + ${#SCROLL_OFFSET}))
         local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
         printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
@@ -12897,12 +13191,6 @@ EOF
             # Normal mode: show action keys
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
             action_text_visible_len=${#action_text}
-            # Add errors indicator if there are unread errors (in red, then restore dim)
-            if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
-                action_text="$action_text    ${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}"
-                local err_text="    e: errors ($ERRORS_UNREAD_COUNT)"
-                action_text_visible_len=$((action_text_visible_len + ${#err_text}))
-            fi
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
             if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
@@ -13482,7 +13770,8 @@ EOF
         else
             # Fallback: capture directly from tmux and strip ANSI codes
             local raw_output
-            raw_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
+            # Use -E - to capture TO the end of scrollback (prevents scroll jumping during heavy output)
+            raw_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" -E - 2>/dev/null) || true
             if [[ -n "$raw_output" ]]; then
                 _strip_ansi "$raw_output"
                 tmux_output="$_STRIP_ANSI_RESULT"
@@ -14340,15 +14629,28 @@ EOF
                 else
                     continue
                 fi
-                # Only capture if session exists in current sessions list
-                [[ "$sessions" == *"$tmux_session"* ]] || continue
+                # Check if session exists in current sessions list
+                if [[ "$sessions" != *"$tmux_session"* ]]; then
+                    # Session doesn't exist - write stopped state and continue
+                    printf 'stopped' > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    continue
+                fi
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
                 local raw_capture
-                raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 2>/dev/null) || true
+                # Use -E - to explicitly capture TO the end of scrollback, preventing
+                # scroll position jumping during heavy output (otherwise -S -500 captures
+                # relative to current cursor position which can shift during active output)
+                raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 -E - 2>/dev/null) || true
                 if [[ -n "$raw_capture" ]]; then
                     _strip_ansi "$raw_capture"
                     printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                    # Compute and cache state from the stripped content
+                    local computed_state
+                    computed_state=$(compute_state_from_content "$_STRIP_ANSI_RESULT")
+                    printf '%s' "$computed_state" > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
                 fi
             done
 

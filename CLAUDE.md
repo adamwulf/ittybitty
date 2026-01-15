@@ -346,6 +346,7 @@ log_agent "$ID" "message" --quiet   # logs only, no stdout
 | Event | Command | Logged Message |
 |-------|---------|----------------|
 | Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
+| Subagent spawned | `new-agent` | "Spawned worker/manager subagent: ID (prompt: Y)" (manager's log) |
 | Message received | `send` | "Received message from X: Y" (recipient's log) |
 | Message sent | `send` | "Sent message to X: Y" (sender's log) |
 | Tool denied (not in allow list) | PermissionRequest hook | "[PermissionRequest] Permission denied: TOOL_NAME" |
