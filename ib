@@ -2574,7 +2574,11 @@ build_agent_data_file() {
             if [[ "$session_exists" == "true" ]]; then
                 # Refresh one agent per frame (round-robin) or if not cached
                 if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
+                    # Debug timing: duplicates get_ms() because get_ms is defined inside cmd_watch and not accessible here
+                    local t_state_start t_state_end
+                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_state_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
                     state=$(get_state "$id")
+                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_state_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "state_detection" $((t_state_end - t_state_start)); }
                     [[ "$state" == "unknown" ]] && state="waiting"
                     # Update cache
                     if [[ $state_cache_idx -ge 0 ]]; then
