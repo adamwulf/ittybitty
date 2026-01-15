@@ -53,6 +53,1160 @@ session_name() {
 # HELPERS
 # =============================================================================
 
+# =============================================================================
+# JSON HELPERS - Pure bash/osascript alternatives to jq
+# These use macOS's built-in osascript with JavaScript for JSON parsing
+# Base64 encoding ensures safe handling of special characters
+# =============================================================================
+
+# Read a value from JSON file or string by keypath
+# Usage: json_get "file.json" "config.settings.debug"
+# Usage: json_get - "keypath" <<< "$json_string"
+# Returns empty string if key doesn't exist
+json_get() {
+    local file_or_dash="$1"
+    local keypath="$2"
+    local default="${3:-}"
+    local json_content
+    local json_b64
+
+    if [[ "$file_or_dash" == "-" ]]; then
+        json_content=$(cat)
+    elif [[ -f "$file_or_dash" ]]; then
+        json_content=$(<"$file_or_dash")
+    else
+        echo "$default"
+        return 0
+    fi
+
+    json_b64=$(echo -n "$json_content" | base64)
+
+    local result
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var keys = '$keypath'.split('.');
+    var result = data;
+    for (var i = 0; i < keys.length; i++) {
+        if (result === null || result === undefined) break;
+        result = result[keys[i]];
+    }
+    if (result === null || result === undefined) {
+        '';
+    } else if (typeof result === 'object') {
+        JSON.stringify(result);
+    } else {
+        String(result);
+    }
+} catch(e) {
+    '';
+}
+" 2>/dev/null) || true
+
+    if [[ -z "$result" && -n "$default" ]]; then
+        echo "$default"
+    else
+        echo "$result"
+    fi
+}
+
+# Read an array from JSON and output as newline-separated values
+# Usage: json_get_array "file.json" "tags" | while read -r item; do ...; done
+# For JSON array output, use json_get which returns JSON for objects/arrays
+json_get_array() {
+    local file_or_dash="$1"
+    local keypath="$2"
+    local json_content
+    local json_b64
+
+    if [[ "$file_or_dash" == "-" ]]; then
+        json_content=$(cat)
+    elif [[ -f "$file_or_dash" ]]; then
+        json_content=$(<"$file_or_dash")
+    else
+        return 0
+    fi
+
+    json_b64=$(echo -n "$json_content" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var keys = '$keypath'.split('.');
+    var result = data;
+    for (var i = 0; i < keys.length; i++) {
+        if (result === null || result === undefined) break;
+        result = result[keys[i]];
+    }
+    if (Array.isArray(result)) {
+        result.join('\\n');
+    } else {
+        '';
+    }
+} catch(e) {
+    '';
+}
+" 2>/dev/null || true
+}
+
+# Get length of a JSON array
+# Usage: json_array_length "file.json" "items"
+json_array_length() {
+    local file_or_dash="$1"
+    local keypath="$2"
+    local json_content
+    local json_b64
+
+    if [[ "$file_or_dash" == "-" ]]; then
+        json_content=$(cat)
+    elif [[ -f "$file_or_dash" ]]; then
+        json_content=$(<"$file_or_dash")
+    else
+        echo "0"
+        return 0
+    fi
+
+    json_b64=$(echo -n "$json_content" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var keys = '$keypath'.split('.');
+    var result = data;
+    for (var i = 0; i < keys.length; i++) {
+        if (result === null || result === undefined) break;
+        result = result[keys[i]];
+    }
+    if (Array.isArray(result)) {
+        result.length;
+    } else {
+        0;
+    }
+} catch(e) {
+    0;
+}
+" 2>/dev/null || echo "0"
+}
+
+# Escape a string for safe JSON embedding
+# Usage: escaped=$(json_escape "string with \"quotes\" and special chars")
+json_escape() {
+    local str="$1"
+    local str_b64
+    str_b64=$(echo -n "$str" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$str_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+JSON.stringify(decoded);
+" 2>/dev/null
+}
+
+# Create a JSON object from key-value pairs
+# Usage: json_object "key1" "value1" "key2" "value2" ...
+# String values are auto-escaped, prefix with : for literals (numbers, booleans, arrays)
+# Example: json_object "name" "John" "age" ":42" "active" ":true"
+json_object() {
+    local pairs=""
+    local first=true
+
+    while [[ $# -ge 2 ]]; do
+        local key="$1"
+        local value="$2"
+        shift 2
+
+        if [[ "$first" != true ]]; then
+            pairs="$pairs,"
+        fi
+        first=false
+
+        # Escape key
+        local key_escaped
+        key_escaped=$(json_escape "$key")
+
+        if [[ "$value" == :* ]]; then
+            # Literal value (number, boolean, array, object, null)
+            pairs="$pairs $key_escaped: ${value:1}"
+        else
+            # String value - escape it
+            local val_escaped
+            val_escaped=$(json_escape "$value")
+            pairs="$pairs $key_escaped: $val_escaped"
+        fi
+    done
+
+    echo "{$pairs}"
+}
+
+# Set a value in a JSON file (modifies in place)
+# Usage: json_set "file.json" "keypath" "value"
+# Use :prefix for literal values: json_set "file.json" "count" ":42"
+json_set() {
+    local file="$1"
+    local keypath="$2"
+    local value="$3"
+
+    local existing_b64=""
+    if [[ -f "$file" ]]; then
+        existing_b64=$(base64 < "$file")
+    fi
+
+    local is_literal=false
+    local actual_value="$value"
+    if [[ "$value" == :* ]]; then
+        is_literal=true
+        actual_value="${value:1}"
+    fi
+
+    local val_b64=""
+    if [[ "$is_literal" != true ]]; then
+        val_b64=$(echo -n "$actual_value" | base64)
+    fi
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var data = {};
+if ('$existing_b64' !== '') {
+    var existingJson = $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions('$existing_b64', 0),
+        $.NSUTF8StringEncoding
+    ).js;
+    try {
+        data = JSON.parse(existingJson);
+    } catch(e) {
+        data = {};
+    }
+}
+
+var value;
+if ($is_literal) {
+    value = $actual_value;
+} else {
+    value = $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions('$val_b64', 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+// Navigate/create nested path
+var keys = '$keypath'.split('.');
+var obj = data;
+for (var i = 0; i < keys.length - 1; i++) {
+    if (!(keys[i] in obj) || typeof obj[keys[i]] !== 'object') {
+        obj[keys[i]] = {};
+    }
+    obj = obj[keys[i]];
+}
+obj[keys[keys.length - 1]] = value;
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null
+}
+
+# Add a value to a JSON array (modifies file in place)
+# Usage: json_array_add "file.json" "keypath" "value"
+# For literal JSON values, prefix with colon: json_array_add file.json key ":123"
+json_array_add() {
+    local file="$1"
+    local keypath="$2"
+    local value="$3"
+
+    local existing_b64=""
+    if [[ -f "$file" ]]; then
+        existing_b64=$(base64 < "$file")
+    fi
+
+    local is_literal="false"
+    local actual_value="$value"
+    if [[ "$value" == :* ]]; then
+        is_literal="true"
+        actual_value="${value:1}"
+    fi
+
+    # Always base64 encode the value - we'll handle literal vs string in JavaScript
+    local val_b64
+    val_b64=$(echo -n "$actual_value" | base64)
+
+    local result
+    # Use subshell to capture result without triggering set -e exit
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var data = {};
+if ('$existing_b64' !== '') {
+    var existingJson = $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions('$existing_b64', 0),
+        $.NSUTF8StringEncoding
+    ).js;
+    try {
+        data = JSON.parse(existingJson);
+    } catch(e) {
+        data = {};
+    }
+}
+
+var decodedValue = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$val_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+var value;
+if ('$is_literal' === 'true') {
+    // Parse as JSON literal (number, boolean, null, etc.)
+    try {
+        value = JSON.parse(decodedValue);
+    } catch(e) {
+        value = decodedValue;  // Fall back to string if not valid JSON
+    }
+} else {
+    value = decodedValue;
+}
+
+// Navigate/create nested path
+var keys = '$keypath'.split('.');
+var obj = data;
+for (var i = 0; i < keys.length - 1; i++) {
+    if (!(keys[i] in obj) || typeof obj[keys[i]] !== 'object') {
+        obj[keys[i]] = {};
+    }
+    obj = obj[keys[i]];
+}
+var lastKey = keys[keys.length - 1];
+if (!Array.isArray(obj[lastKey])) {
+    obj[lastKey] = [];
+}
+if (obj[lastKey].indexOf(value) === -1) {
+    obj[lastKey].push(value);
+}
+
+JSON.stringify(data, null, 2);
+" 2>/dev/null || true)
+
+    if [[ -n "$result" ]]; then
+        echo "$result" > "$file"
+        return 0
+    fi
+    return 1
+}
+
+# Remove a value from a JSON array (modifies file in place)
+# Usage: json_array_remove "file.json" "keypath" "value"
+json_array_remove() {
+    local file="$1"
+    local keypath="$2"
+    local value="$3"
+
+    local existing_b64=""
+    if [[ -f "$file" ]]; then
+        existing_b64=$(base64 < "$file")
+    fi
+
+    local val_b64
+    val_b64=$(echo -n "$value" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var data = {};
+if ('$existing_b64' !== '') {
+    var existingJson = $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions('$existing_b64', 0),
+        $.NSUTF8StringEncoding
+    ).js;
+    try {
+        data = JSON.parse(existingJson);
+    } catch(e) {
+        data = {};
+    }
+}
+
+var valueToRemove = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$val_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+// Navigate to the array
+var keys = '$keypath'.split('.');
+var obj = data;
+for (var i = 0; i < keys.length - 1; i++) {
+    if (!(keys[i] in obj)) break;
+    obj = obj[keys[i]];
+}
+var lastKey = keys[keys.length - 1];
+if (Array.isArray(obj[lastKey])) {
+    obj[lastKey] = obj[lastKey].filter(function(item) {
+        return item !== valueToRemove;
+    });
+}
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null
+}
+
+# Check if a value exists in a JSON array
+# Usage: if json_array_contains "file.json" "keypath" "value"; then ...
+json_array_contains() {
+    local file_or_dash="$1"
+    local keypath="$2"
+    local value="$3"
+    local json_content
+    local json_b64
+
+    if [[ "$file_or_dash" == "-" ]]; then
+        json_content=$(cat)
+    elif [[ -f "$file_or_dash" ]]; then
+        json_content=$(<"$file_or_dash")
+    else
+        return 1
+    fi
+
+    json_b64=$(echo -n "$json_content" | base64)
+    local val_b64
+    val_b64=$(echo -n "$value" | base64)
+
+    local result
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+var valueToFind = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$val_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var keys = '$keypath'.split('.');
+    var result = data;
+    for (var i = 0; i < keys.length; i++) {
+        if (result === null || result === undefined) break;
+        result = result[keys[i]];
+    }
+    if (Array.isArray(result) && result.indexOf(valueToFind) !== -1) {
+        'true';
+    } else {
+        'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+
+    [[ "$result" == "true" ]]
+}
+
+# Delete a key from JSON file
+# Usage: json_delete "file.json" "keypath"
+json_delete() {
+    local file="$1"
+    local keypath="$2"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    local existing_b64
+    existing_b64=$(base64 < "$file")
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var existingJson = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$existing_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+var data;
+try {
+    data = JSON.parse(existingJson);
+} catch(e) {
+    data = {};
+}
+
+// Navigate to parent and delete
+var keys = '$keypath'.split('.');
+var obj = data;
+for (var i = 0; i < keys.length - 1; i++) {
+    if (!(keys[i] in obj)) {
+        // Path doesn't exist, nothing to delete
+        JSON.stringify(data, null, 2);
+    }
+    obj = obj[keys[i]];
+}
+delete obj[keys[keys.length - 1]];
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null
+}
+
+# Build agent settings JSON (replaces complex jq pipeline in build_agent_settings)
+# Usage: build_settings_json "manager|worker" "base_settings" "config_allow_json" "config_deny_json" "agent_id"
+build_settings_json() {
+    local agent_type="$1"
+    local base_settings="$2"
+    local cfg_allow="$3"
+    local cfg_deny="$4"
+    local agent_id="$5"
+
+    # Mandatory permissions that are always added
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
+    local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
+
+    # Build the PermissionRequest hook command - this logs and auto-denies
+    # Note: This still uses a simplified approach since we can't easily replicate jq's complex pipeline
+    local hook_cmd="ib hook-permission-denied $agent_id"
+
+    local base_b64
+    base_b64=$(echo -n "$base_settings" | base64)
+    local ib_b64
+    ib_b64=$(echo -n "$ib_perms" | base64)
+    local blocked_b64
+    blocked_b64=$(echo -n "$blocked_tools" | base64)
+    local allow_b64
+    allow_b64=$(echo -n "$cfg_allow" | base64)
+    local deny_b64
+    deny_b64=$(echo -n "$cfg_deny" | base64)
+    local hook_b64
+    hook_b64=$(echo -n "$hook_cmd" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var base = JSON.parse(decodeB64('$base_b64'));
+var ibPerms = JSON.parse(decodeB64('$ib_b64'));
+var blocked = JSON.parse(decodeB64('$blocked_b64'));
+var cfgAllow = JSON.parse(decodeB64('$allow_b64'));
+var cfgDeny = JSON.parse(decodeB64('$deny_b64'));
+var hookCmd = decodeB64('$hook_b64');
+
+// Initialize permissions if not present
+if (!base.permissions) base.permissions = {};
+if (!Array.isArray(base.permissions.allow)) base.permissions.allow = [];
+if (!Array.isArray(base.permissions.deny)) base.permissions.deny = [];
+
+// Merge allow permissions and deduplicate
+var allAllow = base.permissions.allow.concat(ibPerms).concat(cfgAllow);
+base.permissions.allow = allAllow.filter(function(item, pos) {
+    return allAllow.indexOf(item) === pos;
+});
+
+// Merge deny permissions and deduplicate
+var allDeny = base.permissions.deny.concat(blocked).concat(cfgDeny);
+base.permissions.deny = allDeny.filter(function(item, pos) {
+    return allDeny.indexOf(item) === pos;
+});
+
+// Add hooks
+if (!base.hooks) base.hooks = {};
+
+base.hooks.Stop = [{
+    matcher: '*',
+    hooks: [{
+        type: 'command',
+        command: 'ib hook-status $agent_id'
+    }]
+}];
+
+base.hooks.PermissionRequest = [{
+    matcher: '*',
+    hooks: [{
+        type: 'command',
+        command: hookCmd
+    }]
+}];
+
+base.hooks.PreToolUse = [{
+    matcher: '*',
+    hooks: [{
+        type: 'command',
+        command: 'ib hook-check-path $agent_id'
+    }]
+}];
+
+JSON.stringify(base, null, 2);
+" 2>/dev/null
+}
+
+# Filter questions by status and format output
+# Usage: json_filter_questions "file.json" "pending|all"
+json_filter_questions() {
+    local file="$1"
+    local filter_status="$2"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    local json_b64
+    json_b64=$(base64 < "$file")
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var questions = data.questions || [];
+    if ('$filter_status' === 'pending') {
+        questions = questions.filter(function(q) { return q.status === 'pending'; });
+    }
+    questions.forEach(function(q) {
+        console.log('[' + q.status + '] ' + q.id);
+        console.log('  From: ' + q.agent);
+        console.log('  Time: ' + q.timestamp);
+        console.log('  Question: ' + q.question);
+        console.log('');
+    });
+} catch(e) {
+    '';
+}
+" 2>/dev/null || true
+}
+
+# Count questions by status
+# Usage: count=$(json_count_questions "file.json" "pending")
+json_count_questions() {
+    local file="$1"
+    local filter_status="$2"
+
+    if [[ ! -f "$file" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    local json_b64
+    json_b64=$(base64 < "$file")
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var data = JSON.parse(decoded);
+    var questions = data.questions || [];
+    if ('$filter_status' === 'pending') {
+        questions = questions.filter(function(q) { return q.status === 'pending'; });
+    }
+    questions.length;
+} catch(e) {
+    0;
+}
+" 2>/dev/null || echo "0"
+}
+
+# Add a question to questions file
+# Usage: json_add_question "file.json" "id" "agent" "question" "timestamp"
+json_add_question() {
+    local file="$1"
+    local id="$2"
+    local agent="$3"
+    local question="$4"
+    local timestamp="$5"
+
+    local existing_b64=""
+    if [[ -f "$file" ]]; then
+        existing_b64=$(base64 < "$file")
+    fi
+
+    local id_b64
+    id_b64=$(echo -n "$id" | base64)
+    local agent_b64
+    agent_b64=$(echo -n "$agent" | base64)
+    local question_b64
+    question_b64=$(echo -n "$question" | base64)
+    local timestamp_b64
+    timestamp_b64=$(echo -n "$timestamp" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    if (!b64) return '';
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var data = {questions: []};
+if ('$existing_b64' !== '') {
+    try {
+        data = JSON.parse(decodeB64('$existing_b64'));
+        if (!data.questions) data.questions = [];
+    } catch(e) {
+        data = {questions: []};
+    }
+}
+
+data.questions.push({
+    id: decodeB64('$id_b64'),
+    agent: decodeB64('$agent_b64'),
+    question: decodeB64('$question_b64'),
+    timestamp: decodeB64('$timestamp_b64'),
+    status: 'pending'
+});
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null
+}
+
+# Acknowledge a question (update status)
+# Usage: json_acknowledge_question "file.json" "question_id" "timestamp"
+json_acknowledge_question() {
+    local file="$1"
+    local question_id="$2"
+    local timestamp="$3"
+
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    local existing_b64
+    existing_b64=$(base64 < "$file")
+    local id_b64
+    id_b64=$(echo -n "$question_id" | base64)
+    local ts_b64
+    ts_b64=$(echo -n "$timestamp" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var data = JSON.parse(decodeB64('$existing_b64'));
+var questionId = decodeB64('$id_b64');
+var timestamp = decodeB64('$ts_b64');
+
+if (data.questions) {
+    data.questions.forEach(function(q) {
+        if (q.id === questionId) {
+            q.status = 'acknowledged';
+            q.acknowledged_at = timestamp;
+        }
+    });
+}
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null
+}
+
+# Get agent ID from question
+# Usage: agent_id=$(json_get_question_agent "file.json" "question_id")
+json_get_question_agent() {
+    local file="$1"
+    local question_id="$2"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    local json_b64
+    json_b64=$(base64 < "$file")
+    local id_b64
+    id_b64=$(echo -n "$question_id" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var data = JSON.parse(decodeB64('$json_b64'));
+var questionId = decodeB64('$id_b64');
+
+var agent = '';
+if (data.questions) {
+    data.questions.forEach(function(q) {
+        if (q.id === questionId) {
+            agent = q.agent;
+        }
+    });
+}
+agent;
+" 2>/dev/null || true
+}
+
+# Check if question exists
+# Usage: if json_question_exists "file.json" "question_id"; then ...
+json_question_exists() {
+    local file="$1"
+    local question_id="$2"
+
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    local json_b64
+    json_b64=$(base64 < "$file")
+    local id_b64
+    id_b64=$(echo -n "$question_id" | base64)
+
+    local result
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var data = JSON.parse(decodeB64('$json_b64'));
+var questionId = decodeB64('$id_b64');
+
+var found = false;
+if (data.questions) {
+    data.questions.forEach(function(q) {
+        if (q.id === questionId) {
+            found = true;
+        }
+    });
+}
+found ? 'true' : 'false';
+" 2>/dev/null)
+
+    [[ "$result" == "true" ]]
+}
+
+# Parse JSONL file and extract last usage entry
+# Usage: usage_data=$(json_parse_usage_jsonl "session_file")
+# Returns: "input_tokens cache_creation cache_read output_tokens" (space-separated)
+json_parse_usage_jsonl() {
+    local file="$1"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    local content_b64
+    content_b64=$(base64 < "$file")
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$content_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+var lines = decoded.split('\\n').filter(function(l) { return l.trim() !== ''; });
+var entries = [];
+lines.forEach(function(line) {
+    try {
+        var obj = JSON.parse(line);
+        if (!obj.isSidechain && obj.message && obj.message.usage) {
+            entries.push(obj);
+        }
+    } catch(e) {}
+});
+
+if (entries.length > 0) {
+    var usage = entries[entries.length - 1].message.usage;
+    var input = usage.input_tokens || 0;
+    var cache_creation = usage.cache_creation_input_tokens || 0;
+    var cache_read = usage.cache_read_input_tokens || 0;
+    var output = usage.output_tokens || 0;
+    input + ' ' + cache_creation + ' ' + cache_read + ' ' + output;
+} else {
+    '';
+}
+" 2>/dev/null || true
+}
+
+# Format tool input for permission denied logging
+# Usage: formatted=$(json_format_tool_input "$tool_input_json")
+json_format_tool_input() {
+    local tool_input="$1"
+
+    if [[ -z "$tool_input" || "$tool_input" == "{}" || "$tool_input" == "null" ]]; then
+        return 0
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$tool_input" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    var parts = [];
+    Object.keys(obj).forEach(function(key) {
+        parts.push(key + ': ' + String(obj[key]));
+    });
+    parts.join(', ');
+} catch(e) {
+    '';
+}
+" 2>/dev/null || true
+}
+
+# Check if main-path hook is installed in settings JSON
+# Usage: json_has_main_path_hook "settings_json_or_file"
+# Returns: 0 if hook found, 1 if not found
+json_has_main_path_hook() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$json_content" | base64)
+
+    local result
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks || !hooks.PreToolUse || !Array.isArray(hooks.PreToolUse)) {
+        'false';
+    } else {
+        var found = false;
+        for (var i = 0; i < hooks.PreToolUse.length; i++) {
+            var entry = hooks.PreToolUse[i];
+            if (entry.hooks && Array.isArray(entry.hooks)) {
+                for (var j = 0; j < entry.hooks.length; j++) {
+                    var hook = entry.hooks[j];
+                    if (hook.command && hook.command.indexOf('ib hooks main-path') !== -1) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        found ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+
+    [[ "$result" == "true" ]]
+}
+
+# Add main-path hook to settings JSON
+# Usage: json_add_main_path_hook "settings_json"
+# Outputs: modified JSON with hook added
+json_add_main_path_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$json_content" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+
+    // Initialize hooks structure if needed
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.PreToolUse) obj.hooks.PreToolUse = [];
+
+    // Add our hook
+    var newHook = {
+        matcher: 'Bash',
+        hooks: [{type: 'command', command: 'ib hooks main-path'}]
+    };
+    obj.hooks.PreToolUse.push(newHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+}
+
+# Remove main-path hook from settings JSON
+# Usage: json_remove_main_path_hook "settings_json"
+# Outputs: modified JSON with hook removed
+json_remove_main_path_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$json_content" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+
+    if (obj.hooks && obj.hooks.PreToolUse && Array.isArray(obj.hooks.PreToolUse)) {
+        // Filter out entries that have our hook
+        obj.hooks.PreToolUse = obj.hooks.PreToolUse.filter(function(entry) {
+            if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+            // Keep entry only if none of its hooks contain 'ib hooks main-path'
+            return entry.hooks.every(function(hook) {
+                return !hook.command || hook.command.indexOf('ib hooks main-path') === -1;
+            });
+        });
+
+        // Clean up empty arrays/objects
+        if (obj.hooks.PreToolUse.length === 0) {
+            delete obj.hooks.PreToolUse;
+        }
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+}
+
+# Check if JSON object is empty (has no keys)
+# Usage: json_is_empty "json_string"
+# Returns: 0 if empty, 1 if has keys
+json_is_empty() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" || "$json_content" == "{}" ]]; then
+        return 0
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$json_content" | base64)
+
+    local result
+    result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    Object.keys(obj).length === 0 ? 'true' : 'false';
+} catch(e) {
+    'true';
+}
+" 2>/dev/null)
+
+    [[ "$result" == "true" ]]
+}
+
+# Pretty-print JSON (for writing to files)
+# Usage: json_pretty "json_string"
+# Outputs: formatted JSON
+json_pretty() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    local input_b64
+    input_b64=$(echo -n "$json_content" | base64)
+
+    osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+}
+
+# =============================================================================
+# END JSON HELPERS
+# =============================================================================
+
 # Archive an agent's output before cleanup
 # Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json
 archive_agent_output() {
@@ -355,10 +1509,8 @@ get_descendants_recursive() {
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id="${agent_dir%/}"; id="${id##*/}"
-        local manager=$(jq -r '.manager // ""' "$agent_dir/meta.json" 2>/dev/null)
-        if [[ "$manager" == "null" ]]; then
-            manager=""
-        fi
+        local manager
+        manager=$(json_get "$agent_dir/meta.json" "manager" "")
 
         if [[ "$manager" == "$manager_id" ]]; then
             # Recursively get this child's descendants
@@ -571,53 +1723,39 @@ load_config() {
         return 0
     fi
 
-    if ! command -v jq &>/dev/null; then
-        echo "Warning: jq not available, cannot read $config_file" >&2
-        return 0
-    fi
+    # Read manager permissions (returns JSON array as string)
+    CONFIG_MANAGER_ALLOW=$(json_get "$config_file" "permissions.manager.allow" "[]")
+    CONFIG_MANAGER_DENY=$(json_get "$config_file" "permissions.manager.deny" "[]")
 
-    # Read manager permissions
-    CONFIG_MANAGER_ALLOW=$(jq -r '.permissions.manager.allow // [] | @json' "$config_file" 2>/dev/null)
-    CONFIG_MANAGER_DENY=$(jq -r '.permissions.manager.deny // [] | @json' "$config_file" 2>/dev/null)
-
-    # Read worker permissions
-    CONFIG_WORKER_ALLOW=$(jq -r '.permissions.worker.allow // [] | @json' "$config_file" 2>/dev/null)
-    CONFIG_WORKER_DENY=$(jq -r '.permissions.worker.deny // [] | @json' "$config_file" 2>/dev/null)
+    # Read worker permissions (returns JSON array as string)
+    CONFIG_WORKER_ALLOW=$(json_get "$config_file" "permissions.worker.allow" "[]")
+    CONFIG_WORKER_DENY=$(json_get "$config_file" "permissions.worker.deny" "[]")
 
     # Read PR creation setting
-    CONFIG_CREATE_PRS=$(jq -r '.createPullRequests // false' "$config_file" 2>/dev/null)
+    CONFIG_CREATE_PRS=$(json_get "$config_file" "createPullRequests" "false")
 
     # Read max agents setting
-    CONFIG_MAX_AGENTS=$(jq -r '.maxAgents // 10' "$config_file" 2>/dev/null)
+    CONFIG_MAX_AGENTS=$(json_get "$config_file" "maxAgents" "10")
 
     # Read model setting
-    CONFIG_MODEL=$(jq -r '.model // ""' "$config_file" 2>/dev/null)
-    if [[ "$CONFIG_MODEL" == "null" ]]; then
-        CONFIG_MODEL=""
-    fi
+    CONFIG_MODEL=$(json_get "$config_file" "model" "")
 
     # Read fps setting for watch screen
-    CONFIG_FPS=$(jq -r '.fps // 10' "$config_file" 2>/dev/null)
+    CONFIG_FPS=$(json_get "$config_file" "fps" "10")
 
     # Read allowAgentQuestions setting (defaults to true)
-    CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$config_file" 2>/dev/null)
+    CONFIG_ALLOW_AGENT_QUESTIONS=$(json_get "$config_file" "allowAgentQuestions" "true")
 
     # Read externalDiffTool setting
-    CONFIG_EXTERNAL_DIFF_TOOL=$(jq -r '.externalDiffTool // ""' "$config_file" 2>/dev/null)
-    if [[ "$CONFIG_EXTERNAL_DIFF_TOOL" == "null" ]]; then
-        CONFIG_EXTERNAL_DIFF_TOOL=""
-    fi
+    CONFIG_EXTERNAL_DIFF_TOOL=$(json_get "$config_file" "externalDiffTool" "")
 
     # Read autoCompactThreshold setting (1-100 to enable, unset or >100 for auto)
     # When set to a value 1-100, the watchdog will send /compact when context usage
     # exceeds this percentage. When unset or >100, Claude handles compaction automatically.
-    CONFIG_AUTO_COMPACT_THRESHOLD=$(jq -r '.autoCompactThreshold // ""' "$config_file" 2>/dev/null)
-    if [[ "$CONFIG_AUTO_COMPACT_THRESHOLD" == "null" ]]; then
-        CONFIG_AUTO_COMPACT_THRESHOLD=""
-    fi
+    CONFIG_AUTO_COMPACT_THRESHOLD=$(json_get "$config_file" "autoCompactThreshold" "")
 
     # Read noFastForward setting (defaults to false, allowing fast-forward merges)
-    CONFIG_NO_FF=$(jq -r '.noFastForward // false' "$config_file" 2>/dev/null)
+    CONFIG_NO_FF=$(json_get "$config_file" "noFastForward" "false")
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -697,10 +1835,7 @@ fetch_claude_usage() {
     fi
 
     # Parse JSON to get the access token
-    if ! command -v jq &>/dev/null; then
-        return 1
-    fi
-    token=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+    token=$(json_get - "claudeAiOauth.accessToken" <<< "$creds")
     if [[ -z "$token" ]]; then
         return 1
     fi
@@ -716,10 +1851,10 @@ fetch_claude_usage() {
     fi
 
     local session_util weekly_util session_reset weekly_reset
-    session_util=$(echo "$response" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
-    weekly_util=$(echo "$response" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
-    session_reset=$(echo "$response" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
-    weekly_reset=$(echo "$response" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+    session_util=$(json_get - "five_hour.utilization" <<< "$response")
+    weekly_util=$(json_get - "seven_day.utilization" <<< "$response")
+    session_reset=$(json_get - "five_hour.resets_at" <<< "$response")
+    weekly_reset=$(json_get - "seven_day.resets_at" <<< "$response")
 
     # API returns utilization as percentage (0-100), just round to integer
     if [[ -n "$session_util" && "$session_util" != "null" ]]; then
@@ -810,7 +1945,7 @@ tool_matches_pattern() {
         local prefix="${BASH_REMATCH[1]}"
         if [[ "$tool_name" == "Bash" ]]; then
             local command
-            command=$(echo "$tool_input" | jq -r '.command // ""')
+            command=$(json_get - "command" "" <<< "$tool_input")
             # Check if command starts with prefix (with space or end of string)
             if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
                 return 0
@@ -839,9 +1974,9 @@ tool_in_allow_list() {
         return 1
     fi
 
-    # Read allow list from settings
+    # Read allow list from settings (newline-separated values)
     local allow_list
-    allow_list=$(jq -r '.permissions.allow // [] | .[]' "$settings_file" 2>/dev/null)
+    allow_list=$(json_get_array "$settings_file" "permissions.allow")
 
     # Check each pattern
     while IFS= read -r pattern; do
@@ -862,7 +1997,7 @@ build_agent_settings() {
 
     # Start with existing settings if available
     if [[ -f ".claude/settings.local.json" ]]; then
-        base_settings=$(cat ".claude/settings.local.json")
+        base_settings=$(<".claude/settings.local.json")
     fi
 
     # Load config
@@ -880,53 +2015,8 @@ build_agent_settings() {
         deny_json="${CONFIG_MANAGER_DENY:-[]}"
     fi
 
-    # Always include ib, git, task management, and basic file tool permissions
-    # Git commands are safe in worktrees: agents can't switch branches or push
-    # TodoWrite helps agents track and communicate progress
-    # Basic file tools (Read, Write, Edit, etc.) are allowed by default because
-    # the PreToolUse hook enforces path isolation - agents can only access their
-    # own worktree, preventing access to main repo or other agents' files
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "TodoWrite", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
-
-    # Always deny plan mode tools (agents should work directly, not enter planning mode)
-    # Plan mode creates complexity and agents often get stuck trying to exit
-    local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
-
-    # Build the PermissionRequest hook command
-    # The hook receives JSON via stdin with tool_name, tool_input, etc.
-    # Format: "[PermissionRequest] Permission denied: ToolName (key1: val1, key2: val2)"
-    local hook_cmd="jq -r '\"[PermissionRequest] Permission denied: \" + .tool_name + if .tool_input then \" (\" + (.tool_input | to_entries | map(.key + \": \" + (.value | tostring)) | join(\", \")) + \")\" else \"\" end' | xargs -I {} ib log --id __AGENT_ID__ --quiet \"{}\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\"}}}'"
-
-    # Merge everything together and add hooks
-    echo "$base_settings" | jq --argjson ib "$ib_perms" \
-        --argjson blocked "$blocked_tools" \
-        --argjson cfg_allow "$allow_json" \
-        --argjson cfg_deny "$deny_json" \
-        --arg perm_hook "$hook_cmd" '
-        .permissions.allow = ((.permissions.allow // []) + $ib + $cfg_allow | unique) |
-        .permissions.deny = ((.permissions.deny // []) + $blocked + $cfg_deny | unique) |
-        .hooks.Stop = [{
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": "ib hook-status __AGENT_ID__"
-            }]
-        }] |
-        .hooks.PermissionRequest = [{
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": $perm_hook
-            }]
-        }] |
-        .hooks.PreToolUse = [{
-            "matcher": "*",
-            "hooks": [{
-                "type": "command",
-                "command": "ib hook-check-path __AGENT_ID__"
-            }]
-        }]
-    '
+    # Build settings using the JSON helper
+    build_settings_json "$agent_type" "$base_settings" "$allow_json" "$deny_json" "__AGENT_ID__"
 }
 
 # Resolve a partial agent ID to a full ID
@@ -1749,8 +2839,7 @@ get_agent_context_usage() {
     # Read the last entry with usage data (skip sidechain entries)
     # We read from the end and find the first non-sidechain entry with usage
     local usage_json
-    usage_json=$(tail -100 "$transcript_file" 2>/dev/null | \
-        jq -s 'map(select(.isSidechain != true and .message.usage != null)) | last | .message.usage // empty' 2>/dev/null)
+    usage_json=$(json_parse_usage_jsonl "$transcript_file")
 
     if [[ -z "$usage_json" || "$usage_json" == "null" ]]; then
         return 1
@@ -1758,10 +2847,10 @@ get_agent_context_usage() {
 
     # Calculate total tokens used
     local input_tokens cache_creation cache_read output_tokens total_tokens
-    input_tokens=$(echo "$usage_json" | jq -r '.input_tokens // 0' 2>/dev/null)
-    cache_creation=$(echo "$usage_json" | jq -r '.cache_creation_input_tokens // 0' 2>/dev/null)
-    cache_read=$(echo "$usage_json" | jq -r '.cache_read_input_tokens // 0' 2>/dev/null)
-    output_tokens=$(echo "$usage_json" | jq -r '.output_tokens // 0' 2>/dev/null)
+    input_tokens=$(json_get - "input_tokens" "0" <<< "$usage_json")
+    cache_creation=$(json_get - "cache_creation_input_tokens" "0" <<< "$usage_json")
+    cache_read=$(json_get - "cache_read_input_tokens" "0" <<< "$usage_json")
+    output_tokens=$(json_get - "output_tokens" "0" <<< "$usage_json")
 
     total_tokens=$((input_tokens + cache_creation + cache_read + output_tokens))
 
@@ -2308,7 +3397,8 @@ generate_questions_block() {
     fi
 
     # Count pending questions
-    local pending_count=$(jq '.questions | map(select(.status == "pending")) | length' "$questions_file" 2>/dev/null)
+    local pending_count
+    pending_count=$(json_count_questions "$questions_file" "pending")
 
     if [[ -z "$pending_count" || "$pending_count" -eq 0 ]]; then
         return
@@ -2321,7 +3411,7 @@ generate_questions_block() {
     echo ""
 
     # Format each pending question
-    jq -r '.questions | map(select(.status == "pending")) | .[] | "- **\(.id)** from \(.agent) (\(.timestamp)):\n  \"\(.question)\"\n"' "$questions_file" 2>/dev/null
+    json_filter_questions "$questions_file" "pending"
 }
 
 # Update .ittybitty/STATUS.md with current agent status
@@ -2364,7 +3454,7 @@ validate_agent_metadata() {
 
         # Check for created_epoch field (required for age calculation)
         local created_epoch
-        created_epoch=$(jq -r '.created_epoch // empty' "$meta" 2>/dev/null)
+        created_epoch=$(json_get "$meta" "created_epoch" "")
 
         if [[ -z "$created_epoch" ]]; then
             errors+=("Agent '$id': missing 'created_epoch' field in meta.json")
@@ -2537,7 +3627,7 @@ read_meta_field() {
     local meta_file="$1"
     local field="$2"
     local default="${3:-}"
-    jq -r ".$field // \"$default\"" "$meta_file" 2>/dev/null
+    json_get "$meta_file" "$field" "$default"
 }
 
 # Build agent data file for tree operations
@@ -3476,35 +4566,25 @@ EOF
             agent_type="worker"
         fi
 
-        if command -v jq &>/dev/null; then
-            # Run build_agent_settings from root repo context
-            (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type") > "$AGENT_DIR/repo/.claude/settings.local.json"
-            # Replace agent ID placeholder in hook configuration
-            sed -i '' "s|__AGENT_ID__|$ID|g" "$AGENT_DIR/repo/.claude/settings.local.json"
-        else
-            # Fallback: minimal settings if jq not available
-            if [[ -f "$ROOT_REPO_PATH/.claude/settings.local.json" ]]; then
-                cp "$ROOT_REPO_PATH/.claude/settings.local.json" "$AGENT_DIR/repo/.claude/"
-            else
-                echo '{"permissions":{"allow":["Bash(ib:*)","Bash(./ib:*)"]}}' > "$AGENT_DIR/repo/.claude/settings.local.json"
-            fi
-        fi
+        # Run build_agent_settings from root repo context
+        (cd "$ROOT_REPO_PATH" && build_agent_settings "$agent_type") > "$AGENT_DIR/repo/.claude/settings.local.json"
+        # Replace agent ID placeholder in hook configuration
+        sed -i '' "s|__AGENT_ID__|$ID|g" "$AGENT_DIR/repo/.claude/settings.local.json"
     else
         # Non-worktree mode: ensure ib permissions are in root repo settings
         local ROOT_SETTINGS="$ROOT_REPO_PATH/.claude/settings.local.json"
-        if command -v jq &>/dev/null && [[ -f "$ROOT_SETTINGS" ]]; then
+        if [[ -f "$ROOT_SETTINGS" ]]; then
             # Check if both patterns are already allowed
             local needs_update=false
-            if ! jq -e '.permissions.allow | index("Bash(ib:*)")' "$ROOT_SETTINGS" &>/dev/null; then
+            if ! json_array_contains "$ROOT_SETTINGS" "permissions.allow" "Bash(ib:*)"; then
                 needs_update=true
             fi
-            if ! jq -e '.permissions.allow | index("Bash(./ib:*)")' "$ROOT_SETTINGS" &>/dev/null; then
+            if ! json_array_contains "$ROOT_SETTINGS" "permissions.allow" "Bash(./ib:*)"; then
                 needs_update=true
             fi
             if [[ "$needs_update" == true ]]; then
-                local tmp=$(mktemp)
-                jq '.permissions.allow += ["Bash(ib:*)", "Bash(./ib:*)"] | .permissions.allow |= unique' \
-                    "$ROOT_SETTINGS" > "$tmp" && mv "$tmp" "$ROOT_SETTINGS"
+                json_array_add "$ROOT_SETTINGS" "permissions.allow" "Bash(ib:*)"
+                json_array_add "$ROOT_SETTINGS" "permissions.allow" "Bash(./ib:*)"
                 echo "Added Bash(ib:*) and Bash(./ib:*) to .claude/settings.local.json" >&2
             fi
         elif [[ ! -f "$ROOT_SETTINGS" ]]; then
@@ -3518,12 +4598,14 @@ EOF
     local SESSION_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
     # Write metadata
+    local PROMPT_ESCAPED
+    PROMPT_ESCAPED=$(json_escape "$PROMPT")
     cat > "$AGENT_DIR/meta.json" <<EOF
 {
   "id": "$ID",
   "session_id": "$SESSION_UUID",
   "tmux_session": "$TMUX_SESSION",
-  "prompt": $(echo "$PROMPT" | jq -Rs .),
+  "prompt": $PROMPT_ESCAPED,
   "manager": $(if [[ -n "$MANAGER" ]]; then echo "\"$MANAGER\""; else echo "null"; fi),
   "created": "$(date -Iseconds)",
   "created_epoch": $(date +%s),
@@ -3861,10 +4943,11 @@ export PATH="$GIT_ROOT:\$PATH"
 claude --session-id "$SESSION_UUID" $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')" &
 CLAUDE_PID=\$!
 
-# Store PID in meta.json for recovery if needed
-if command -v jq &>/dev/null; then
-    TMP_FILE="\$(mktemp)"
-    jq --arg pid "\$CLAUDE_PID" '. + {claude_pid: \$pid}' "$ABS_AGENT_DIR/meta.json" > "\$TMP_FILE" && mv "\$TMP_FILE" "$ABS_AGENT_DIR/meta.json"
+# Store PID in meta.json using sed (no jq dependency)
+# This adds claude_pid field to existing JSON
+if [[ -f "$ABS_AGENT_DIR/meta.json" ]]; then
+    # Insert claude_pid before the closing brace
+    sed -i '' "s/}$/,\\n  \"claude_pid\": \"\$CLAUDE_PID\"\\n}/" "$ABS_AGENT_DIR/meta.json"
 fi
 
 # Wait for Claude to complete
@@ -4068,7 +5151,9 @@ EOF
         fi
 
         if [[ "$JSON_OUTPUT" == true ]]; then
-            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"manager\":\"$manager\",\"model\":\"$model\",\"prompt\":$(echo "$prompt" | jq -Rs .)}")
+            local prompt_escaped
+            prompt_escaped=$(json_escape "$prompt")
+            agents+=("{\"id\":\"$id\",\"state\":\"$state\",\"age\":\"$age\",\"manager\":\"$manager\",\"model\":\"$model\",\"prompt\":$prompt_escaped}")
         else
             # Truncate agent name to 30 chars if needed
             local display_id="$id"
@@ -5138,10 +6223,11 @@ export PATH="$GIT_ROOT:\$PATH"
 claude --resume "$SESSION_UUID" $CLAUDE_ARGS &
 CLAUDE_PID=\$!
 
-# Store PID in meta.json for recovery if needed
-if command -v jq &>/dev/null; then
-    TMP_FILE="\$(mktemp)"
-    jq --arg pid "\$CLAUDE_PID" '. + {claude_pid: \$pid}' "$ABS_AGENT_DIR/meta.json" > "\$TMP_FILE" && mv "\$TMP_FILE" "$ABS_AGENT_DIR/meta.json"
+# Store PID in meta.json using sed (no jq dependency)
+# This adds claude_pid field to existing JSON
+if [[ -f "$ABS_AGENT_DIR/meta.json" ]]; then
+    # Insert claude_pid before the closing brace
+    sed -i '' "s/}$/,\\n  \"claude_pid\": \"\$CLAUDE_PID\"\\n}/" "$ABS_AGENT_DIR/meta.json"
 fi
 
 # Wait for Claude to complete
@@ -5754,7 +6840,7 @@ cmd_hooks_agent_path() {
         local tool="$1"
         local input_json="$2"
         local params
-        params=$(echo "$input_json" | jq -r 'to_entries | map(.key + ": " + (.value | tostring)) | join(", ")' 2>/dev/null || echo "")
+        params=$(json_format_tool_input "$input_json")
         if [[ -n "$params" ]]; then
             log_agent "$ID" "[PreToolUse] Permission denied: $tool ($params)" --quiet
         else
@@ -5774,8 +6860,8 @@ cmd_hooks_agent_path() {
     # Extract tool name and tool_input from input
     local tool_name
     local tool_input
-    tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
-    tool_input=$(echo "$json_input" | jq -c '.tool_input // {}')
+    tool_name=$(json_get - "tool_name" "" <<< "$json_input")
+    tool_input=$(json_get - "tool_input" "{}" <<< "$json_input")
 
     # Resolve AGENTS_DIR to absolute path for proper comparison
     local ABS_AGENTS_DIR
@@ -5805,14 +6891,17 @@ cmd_hooks_agent_path() {
 
     # Tool is in allow list - now check path isolation
 
-    # Extract file path from input
+    # Extract file path from input (check both file_path and path fields)
     local file_path
-    file_path=$(echo "$json_input" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+    file_path=$(json_get - "tool_input.file_path" "" <<< "$json_input")
+    if [[ -z "$file_path" ]]; then
+        file_path=$(json_get - "tool_input.path" "" <<< "$json_input")
+    fi
 
     # Special handling for Bash tool - check for cd commands
     if [[ "$tool_name" == "Bash" ]]; then
         local bash_command
-        bash_command=$(echo "$json_input" | jq -r '.tool_input.command // ""')
+        bash_command=$(json_get - "tool_input.command" "" <<< "$json_input")
 
         # Check if command is a cd command (handle various forms: cd, cd dir, cd "dir", cd 'dir')
         if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
@@ -5851,7 +6940,7 @@ cmd_hooks_agent_path() {
     # Resolve to absolute path
     if [[ "$file_path" != /* ]]; then
         local cwd
-        cwd=$(echo "$json_input" | jq -r '.cwd // ""')
+        cwd=$(json_get - "cwd" "" <<< "$json_input")
         if [[ -n "$cwd" ]]; then
             file_path="$cwd/$file_path"
         fi
@@ -6166,10 +7255,10 @@ EOF
 
     # Extract test parameters
     local tool_name tool_input pattern patterns
-    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
-    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
-    pattern=$(echo "$input" | jq -r '.pattern // ""')
-    patterns=$(echo "$input" | jq -c '.patterns // []')
+    tool_name=$(json_get - "tool_name" "" <<< "$input")
+    tool_input=$(json_get - "tool_input" "{}" <<< "$input")
+    pattern=$(json_get - "pattern" "" <<< "$input")
+    patterns=$(json_get - "patterns" "[]" <<< "$input")
 
     # Validate required fields
     if [[ -z "$tool_name" ]]; then
@@ -6185,11 +7274,11 @@ EOF
 
     # Add patterns from array if present
     local patterns_len
-    patterns_len=$(echo "$patterns" | jq 'length')
+    patterns_len=$(json_array_length - "patterns" <<< "$input")
     if [[ "$patterns_len" -gt 0 ]]; then
         while IFS= read -r p; do
             [[ -n "$p" ]] && patterns_to_test+=("$p")
-        done < <(echo "$patterns" | jq -r '.[]')
+        done < <(json_get_array - "patterns" <<< "$input")
     fi
 
     if [[ ${#patterns_to_test[@]} -eq 0 ]]; then
@@ -6204,7 +7293,7 @@ EOF
             local prefix="${BASH_REMATCH[1]}"
             if [[ "$tool_name" == "Bash" ]]; then
                 local command
-                command=$(echo "$tool_input" | jq -r '.command // ""')
+                command=$(json_get - "command" "" <<< "$tool_input")
                 # Check if command starts with prefix (with space or end of string)
                 if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
                     if $verbose; then
@@ -6287,14 +7376,14 @@ cmd_test_pretooluse() {
 
     # Extract test parameters
     local tool_name tool_input cwd allow_list worktree_path agent_dir agents_dir root_repo
-    tool_name=$(echo "$fixture" | jq -r '.tool_name // ""')
-    tool_input=$(echo "$fixture" | jq -c '.tool_input // {}')
-    cwd=$(echo "$fixture" | jq -r '.cwd // ""')
-    allow_list=$(echo "$fixture" | jq -r '.allow_list // []')
-    worktree_path=$(echo "$fixture" | jq -r '.worktree_path // ""')
-    agent_dir=$(echo "$fixture" | jq -r '.agent_dir // ""')
-    agents_dir=$(echo "$fixture" | jq -r '.agents_dir // ""')
-    root_repo=$(echo "$fixture" | jq -r '.root_repo // ""')
+    tool_name=$(json_get - "tool_name" "" <<< "$fixture")
+    tool_input=$(json_get - "tool_input" "{}" <<< "$fixture")
+    cwd=$(json_get - "cwd" "" <<< "$fixture")
+    allow_list=$(json_get - "allow_list" "[]" <<< "$fixture")
+    worktree_path=$(json_get - "worktree_path" "" <<< "$fixture")
+    agent_dir=$(json_get - "agent_dir" "" <<< "$fixture")
+    agents_dir=$(json_get - "agents_dir" "" <<< "$fixture")
+    root_repo=$(json_get - "root_repo" "" <<< "$fixture")
 
     # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
     test_tool_matches_pattern() {
@@ -6307,7 +7396,7 @@ cmd_test_pretooluse() {
             local prefix="${BASH_REMATCH[1]}"
             if [[ "$t_name" == "Bash" ]]; then
                 local command
-                command=$(echo "$t_input" | jq -r '.command // ""')
+                command=$(json_get - "command" "" <<< "$t_input")
                 if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
                     return 0
                 fi
@@ -6331,7 +7420,7 @@ cmd_test_pretooluse() {
             in_allow_list=true
             break
         fi
-    done < <(echo "$allow_list" | jq -r '.[]')
+    done < <(json_get_array - "allow_list" <<< "$fixture")
 
     if [[ "$in_allow_list" == "false" ]]; then
         echo "deny"
@@ -6340,14 +7429,17 @@ cmd_test_pretooluse() {
 
     # Tool is in allow list - now check path isolation
 
-    # Extract file path from input
+    # Extract file path from input (check both file_path and path)
     local file_path
-    file_path=$(echo "$tool_input" | jq -r '.file_path // .path // ""')
+    file_path=$(json_get - "file_path" "" <<< "$tool_input")
+    if [[ -z "$file_path" ]]; then
+        file_path=$(json_get - "path" "" <<< "$tool_input")
+    fi
 
     # Special handling for Bash tool - check for cd commands
     if [[ "$tool_name" == "Bash" ]]; then
         local bash_command
-        bash_command=$(echo "$tool_input" | jq -r '.command // ""')
+        bash_command=$(json_get - "command" "" <<< "$tool_input")
 
         # Check if command is a cd command
         if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
@@ -6448,7 +7540,7 @@ cmd_test_validate_meta() {
 
     # Check for created_epoch field (required for age calculation)
     local created_epoch
-    created_epoch=$(jq -r '.created_epoch // empty' "$fixture_file" 2>/dev/null)
+    created_epoch=$(json_get "$fixture_file" "created_epoch" "")
 
     if [[ -z "$created_epoch" ]]; then
         echo "invalid"
@@ -6675,9 +7767,9 @@ EOF
 
     # Extract test parameters from JSON
     local tool_name tool_input allow_list
-    tool_name=$(echo "$input" | jq -r '.tool_name // ""')
-    tool_input=$(echo "$input" | jq -c '.tool_input // {}')
-    allow_list=$(echo "$input" | jq -r '.settings.permissions.allow // []')
+    tool_name=$(json_get - "tool_name" "" <<< "$input")
+    tool_input=$(json_get - "tool_input" "{}" <<< "$input")
+    allow_list=$(json_get - "settings.permissions.allow" "[]" <<< "$input")
 
     if [[ -z "$tool_name" ]]; then
         echo "Error: tool_name is required in input" >&2
@@ -6695,7 +7787,7 @@ EOF
             local prefix="${BASH_REMATCH[1]}"
             if [[ "$t_name" == "Bash" ]]; then
                 local command
-                command=$(echo "$t_input" | jq -r '.command // ""')
+                command=$(json_get - "command" "" <<< "$t_input")
                 if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
                     return 0
                 fi
@@ -6719,13 +7811,13 @@ EOF
             matched_pattern="$pattern"
             break
         fi
-    done < <(echo "$allow_list" | jq -r '.[]')
+    done < <(json_get_array - "settings.permissions.allow" <<< "$input")
 
     if [[ -n "$matched_pattern" ]]; then
         if $verbose; then
             if [[ "$tool_name" == "Bash" ]]; then
                 local command
-                command=$(echo "$tool_input" | jq -r '.command // ""')
+                command=$(json_get - "command" "" <<< "$tool_input")
                 echo "allowed (matched pattern: $matched_pattern, tool: $tool_name, command: $command)"
             else
                 echo "allowed (matched pattern: $matched_pattern, tool: $tool_name)"
@@ -6735,8 +7827,16 @@ EOF
         fi
     else
         if $verbose; then
-            local allow_list_str
-            allow_list_str=$(echo "$allow_list" | jq -r '. | join(", ")')
+            # Build comma-separated list of allow patterns
+            local allow_list_str=""
+            while IFS= read -r p; do
+                [[ -z "$p" ]] && continue
+                if [[ -n "$allow_list_str" ]]; then
+                    allow_list_str="$allow_list_str, $p"
+                else
+                    allow_list_str="$p"
+                fi
+            done < <(json_get_array - "settings.permissions.allow" <<< "$input")
             echo "denied (tool: $tool_name, allow list: [$allow_list_str])"
         else
             echo "denied"
@@ -6914,32 +8014,21 @@ EOF
         input=$(cat)
     fi
 
-    # Parse config values using jq (similar to load_config but from input instead of file)
+    # Parse config values using json_get (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
     local create_prs max_agents model fps external_diff_tool auto_compact_threshold no_ff
 
-    manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
-    manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
-    worker_allow=$(echo "$input" | jq -r '.permissions.worker.allow // [] | @json' 2>/dev/null || echo "[]")
-    worker_deny=$(echo "$input" | jq -r '.permissions.worker.deny // [] | @json' 2>/dev/null || echo "[]")
-    create_prs=$(echo "$input" | jq -r '.createPullRequests // false' 2>/dev/null || echo "false")
-    max_agents=$(echo "$input" | jq -r '.maxAgents // 10' 2>/dev/null || echo "10")
-    model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
-    fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
-    external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
-    auto_compact_threshold=$(echo "$input" | jq -r '.autoCompactThreshold // ""' 2>/dev/null || echo "")
-    no_ff=$(echo "$input" | jq -r '.noFastForward // false' 2>/dev/null || echo "false")
-
-    # Handle null values
-    if [[ "$model" == "null" ]]; then
-        model=""
-    fi
-    if [[ "$external_diff_tool" == "null" ]]; then
-        external_diff_tool=""
-    fi
-    if [[ "$auto_compact_threshold" == "null" ]]; then
-        auto_compact_threshold=""
-    fi
+    manager_allow=$(json_get - "permissions.manager.allow" "[]" <<< "$input")
+    manager_deny=$(json_get - "permissions.manager.deny" "[]" <<< "$input")
+    worker_allow=$(json_get - "permissions.worker.allow" "[]" <<< "$input")
+    worker_deny=$(json_get - "permissions.worker.deny" "[]" <<< "$input")
+    create_prs=$(json_get - "createPullRequests" "false" <<< "$input")
+    max_agents=$(json_get - "maxAgents" "10" <<< "$input")
+    model=$(json_get - "model" "" <<< "$input")
+    fps=$(json_get - "fps" "10" <<< "$input")
+    external_diff_tool=$(json_get - "externalDiffTool" "" <<< "$input")
+    auto_compact_threshold=$(json_get - "autoCompactThreshold" "" <<< "$input")
+    no_ff=$(json_get - "noFastForward" "false" <<< "$input")
 
     # Output in expected format
     echo "manager_allow: $manager_allow"
@@ -7117,8 +8206,8 @@ EOF
 
     # Extract test parameters from JSON
     local partial agents_json
-    partial=$(echo "$input" | jq -r '.partial // ""')
-    agents_json=$(echo "$input" | jq -r '.agents // []')
+    partial=$(json_get - "partial" "" <<< "$input")
+    agents_json=$(json_get - "agents" "[]" <<< "$input")
 
     if [[ -z "$partial" ]]; then
         echo "Error: partial is required in input" >&2
@@ -7144,7 +8233,7 @@ EOF
         if [[ "$agent" == *"$partial"* ]]; then
             matches+=("$agent")
         fi
-    done < <(echo "$agents_json" | jq -r '.[]')
+    done < <(json_get_array - "agents" <<< "$input")
 
     case ${#matches[@]} in
         0)
@@ -7250,7 +8339,7 @@ EOF
 
     # Extract test parameters from JSON
     local query_manager
-    query_manager=$(echo "$input" | jq -r '.query.manager // ""')
+    query_manager=$(json_get - "query.manager" "" <<< "$input")
 
     if [[ -z "$query_manager" ]]; then
         echo "Error: query.manager is required in input" >&2
@@ -7259,11 +8348,17 @@ EOF
 
     # Find all agents whose manager matches the query
     local children=""
-    while IFS= read -r agent_json; do
-        [[ -z "$agent_json" ]] && continue
+    local agents_array
+    agents_array=$(json_get - "agents" "[]" <<< "$input")
+    local agents_len
+    agents_len=$(json_array_length - "agents" <<< "$input")
+
+    local i=0
+    while [[ $i -lt $agents_len ]]; do
         local agent_id agent_manager
-        agent_id=$(echo "$agent_json" | jq -r '.id // ""')
-        agent_manager=$(echo "$agent_json" | jq -r '.manager // ""')
+        # Use index-based access for each agent object
+        agent_id=$(json_get - "$i.id" "" <<< "$agents_array")
+        agent_manager=$(json_get - "$i.manager" "" <<< "$agents_array")
 
         if [[ "$agent_manager" == "$query_manager" ]]; then
             if [[ -n "$children" ]]; then
@@ -7272,7 +8367,8 @@ EOF
                 children="$agent_id"
             fi
         fi
-    done < <(echo "$input" | jq -c '.agents[]')
+        i=$((i + 1))
+    done
 
     if [[ -n "$children" ]]; then
         echo "$children"
@@ -7420,9 +8516,9 @@ EOF
         exit 1
     fi
 
-    # Count pending questions - same jq query as generate_questions_block()
+    # Count pending questions using json_count_questions helper
     local pending_count
-    pending_count=$(jq '.questions | map(select(.status == "pending")) | length' "$input_file" 2>/dev/null)
+    pending_count=$(json_count_questions "$input_file" "pending")
 
     if [[ -z "$pending_count" ]]; then
         echo "0"
@@ -7494,22 +8590,19 @@ EOF
         exit 1
     fi
 
-    # Parse usage from JSONL - same jq query as calculate_context_usage()
-    local usage_json
-    usage_json=$(tail -100 "$input_file" 2>/dev/null | \
-        jq -s 'map(select(.isSidechain != true and .message.usage != null)) | last | .message.usage // empty' 2>/dev/null)
+    # Parse usage from JSONL using json_parse_usage_jsonl helper
+    local usage_data
+    usage_data=$(json_parse_usage_jsonl "$input_file")
 
-    if [[ -z "$usage_json" || "$usage_json" == "null" ]]; then
+    if [[ -z "$usage_data" || "$usage_data" == "error" ]]; then
         echo "error:no_usage_data"
         return 1
     fi
 
-    # Calculate total tokens - same as calculate_context_usage()
+    # Parse the space-separated values from json_parse_usage_jsonl
+    # Format: "input_tokens cache_creation cache_read output_tokens"
     local input_tokens cache_creation cache_read output_tokens total_tokens
-    input_tokens=$(echo "$usage_json" | jq -r '.input_tokens // 0' 2>/dev/null)
-    cache_creation=$(echo "$usage_json" | jq -r '.cache_creation_input_tokens // 0' 2>/dev/null)
-    cache_read=$(echo "$usage_json" | jq -r '.cache_read_input_tokens // 0' 2>/dev/null)
-    output_tokens=$(echo "$usage_json" | jq -r '.output_tokens // 0' 2>/dev/null)
+    read -r input_tokens cache_creation cache_read output_tokens <<< "$usage_data"
 
     total_tokens=$((input_tokens + cache_creation + cache_read + output_tokens))
 
@@ -7909,10 +9002,10 @@ EOF
         input=$(cat)
     fi
 
-    # Parse JSON
+    # Parse JSON using json_get helper
     local check_type content
-    check_type=$(echo "$input" | jq -r '.check_type // ""')
-    content=$(echo "$input" | jq -r '.content // ""')
+    check_type=$(json_get - "check_type" "" <<< "$input")
+    content=$(json_get - "content" "" <<< "$input")
 
     if [[ -z "$check_type" ]]; then
         echo "Error: check_type is required" >&2
@@ -8020,10 +9113,10 @@ EOF
         input=$(cat)
     fi
 
-    # Parse JSON - use -r to get raw strings with actual newlines
+    # Parse JSON using json_get helper
     local content expected
-    content=$(echo "$input" | jq -r '.input // ""')
-    expected=$(echo "$input" | jq -r '.expected // ""')
+    content=$(json_get - "input" "" <<< "$input")
+    expected=$(json_get - "expected" "" <<< "$input")
 
     # Run the filter
     local actual
@@ -8193,11 +9286,11 @@ EOF
         input=$(cat)
     fi
 
-    # Extract test parameters
+    # Extract test parameters using json_get helper
     local is_agent cmd subcmd
-    is_agent=$(echo "$input" | jq -r '.is_agent // false')
-    cmd=$(echo "$input" | jq -r '.cmd // ""')
-    subcmd=$(echo "$input" | jq -r '.subcmd // ""')
+    is_agent=$(json_get - "is_agent" "false" <<< "$input")
+    cmd=$(json_get - "cmd" "" <<< "$input")
+    subcmd=$(json_get - "subcmd" "" <<< "$input")
 
     # If not simulating agent context, always allow
     if [[ "$is_agent" != "true" ]]; then
@@ -8248,18 +9341,18 @@ cmd_hooks_main_path() {
     local json_input
     json_input=$(cat)
 
-    # Extract tool name
+    # Extract tool name using json_get helper
     local tool_name
-    tool_name=$(echo "$json_input" | jq -r '.tool_name // ""')
+    tool_name=$(json_get - "tool_name" "" <<< "$json_input")
 
     # Only check Bash commands - allow all other tools
     if [[ "$tool_name" != "Bash" ]]; then
         exit 0
     fi
 
-    # Extract bash command
+    # Extract bash command using json_get helper
     local bash_command
-    bash_command=$(echo "$json_input" | jq -r '.tool_input.command // ""')
+    bash_command=$(json_get - "tool_input.command" "" <<< "$json_input")
 
     # Only check cd commands - allow all other Bash commands
     if [[ ! "$bash_command" =~ ^cd[[:space:]]+ ]]; then
@@ -8299,7 +9392,7 @@ cmd_hooks_main_path() {
     local file_path="$cd_target"
     if [[ "$file_path" != /* ]]; then
         local cwd
-        cwd=$(echo "$json_input" | jq -r '.cwd // ""')
+        cwd=$(json_get - "cwd" "" <<< "$json_input")
         if [[ -n "$cwd" ]]; then
             file_path="$cwd/$file_path"
         fi
@@ -8336,9 +9429,8 @@ cmd_hooks_status() {
         exit 0
     fi
 
-    # Check if our hook exists in the file
-    # Correct format: .hooks.PreToolUse[].hooks[].command contains "ib hooks main-path"
-    if jq -e '.hooks.PreToolUse[]?.hooks[]? | select(.command != null and (.command | contains("ib hooks main-path")))' "$SETTINGS_FILE" >/dev/null 2>&1; then
+    # Check if our hook exists in the file using json_has_main_path_hook helper
+    if json_has_main_path_hook "$SETTINGS_FILE"; then
         echo "installed"
     else
         echo "not-installed"
@@ -8362,29 +9454,20 @@ cmd_hooks_install() {
     # Start with existing settings or empty object
     local settings="{}"
     if [[ -f "$SETTINGS_FILE" ]]; then
-        settings=$(cat "$SETTINGS_FILE")
+        settings=$(<"$SETTINGS_FILE")
     fi
 
-    # Check if hook already exists
-    # Correct format: .hooks.PreToolUse[].hooks[].command contains "ib hooks main-path"
-    if echo "$settings" | jq -e '.hooks.PreToolUse[]?.hooks[]? | select(.command != null and (.command | contains("ib hooks main-path")))' >/dev/null 2>&1; then
+    # Check if hook already exists using json_has_main_path_hook helper
+    if json_has_main_path_hook "$settings"; then
         echo "Hook already installed"
         exit 0
     fi
 
-    # Define our hook using correct Claude Code format:
-    # Each PreToolUse entry has a "matcher" and a "hooks" array of hook objects
-    local our_hook='{"matcher":"Bash","hooks":[{"type":"command","command":"ib hooks main-path"}]}'
-
-    # Add the hook to settings, preserving existing content
-    settings=$(echo "$settings" | jq --argjson hook "$our_hook" '
-        .hooks //= {} |
-        .hooks.PreToolUse //= [] |
-        .hooks.PreToolUse += [$hook]
-    ')
+    # Add the hook to settings using json_add_main_path_hook helper
+    settings=$(json_add_main_path_hook "$settings")
 
     # Write settings
-    echo "$settings" | jq '.' > "$SETTINGS_FILE"
+    echo "$settings" > "$SETTINGS_FILE"
     echo "Hook installed to $SETTINGS_FILE"
 }
 
@@ -8402,32 +9485,17 @@ cmd_hooks_uninstall() {
     fi
 
     local settings
-    settings=$(cat "$SETTINGS_FILE")
+    settings=$(<"$SETTINGS_FILE")
 
-    # Remove our hook from PreToolUse array
-    # Correct format: filter out entries where .hooks[].command contains "ib hooks main-path"
-    settings=$(echo "$settings" | jq '
-        if .hooks.PreToolUse then
-            .hooks.PreToolUse = [.hooks.PreToolUse[] | select(
-                (.hooks // []) | all(.command == null or (.command | contains("ib hooks main-path") | not))
-            )]
-        else
-            .
-        end
-    ')
-
-    # Clean up empty arrays/objects
-    settings=$(echo "$settings" | jq '
-        if .hooks.PreToolUse == [] then del(.hooks.PreToolUse) else . end |
-        if .hooks == {} then del(.hooks) else . end
-    ')
+    # Remove our hook using json_remove_main_path_hook helper
+    settings=$(json_remove_main_path_hook "$settings")
 
     # Write settings (or delete file if empty)
-    if [[ $(echo "$settings" | jq 'keys | length') -eq 0 ]]; then
+    if json_is_empty "$settings"; then
         rm -f "$SETTINGS_FILE"
         echo "Hook uninstalled, removed empty settings file"
     else
-        echo "$settings" | jq '.' > "$SETTINGS_FILE"
+        echo "$settings" > "$SETTINGS_FILE"
         echo "Hook uninstalled from $SETTINGS_FILE"
     fi
 }
@@ -8887,19 +9955,9 @@ EOF
         echo '{"questions":[]}' > "$questions_file"
     fi
 
-    # Add the question
+    # Add the question using our JSON helper
     local iso_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    local new_question=$(jq -n \
-        --arg id "$question_id" \
-        --arg agent "$AGENT_ID" \
-        --arg question "$QUESTION" \
-        --arg timestamp "$iso_timestamp" \
-        --arg status "pending" \
-        '{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: $status}')
-
-    # Append to questions array
-    jq --argjson q "$new_question" '.questions += [$q]' "$questions_file" > "$questions_file.tmp" \
-        && mv "$questions_file.tmp" "$questions_file"
+    json_add_question "$questions_file" "$question_id" "$AGENT_ID" "$QUESTION" "$iso_timestamp"
 
     # Log the question
     log_agent "$AGENT_ID" "Asked user question ($question_id): $QUESTION"
@@ -8975,23 +10033,20 @@ EOF
         exit 1
     fi
 
-    # Check if question exists
-    local question_exists=$(jq --arg id "$QUESTION_ID" '.questions | map(select(.id == $id)) | length' "$questions_file")
-    if [[ "$question_exists" -eq 0 ]]; then
+    # Check if question exists using json_question_exists helper
+    if ! json_question_exists "$questions_file" "$QUESTION_ID"; then
         echo "Error: Question '$QUESTION_ID' not found" >&2
         echo "Use 'ib questions' to list pending questions." >&2
         exit 1
     fi
 
-    # Get the agent ID for the response hint
-    local agent_id=$(jq -r --arg id "$QUESTION_ID" '.questions[] | select(.id == $id) | .agent' "$questions_file")
+    # Get the agent ID for the response hint using json_get_question_agent helper
+    local agent_id
+    agent_id=$(json_get_question_agent "$questions_file" "$QUESTION_ID")
 
-    # Mark as acknowledged
+    # Mark as acknowledged using json_acknowledge_question helper
     local iso_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    jq --arg id "$QUESTION_ID" --arg ts "$iso_timestamp" \
-        '(.questions[] | select(.id == $id)) |= . + {status: "acknowledged", acknowledged_at: $ts}' \
-        "$questions_file" > "$questions_file.tmp" \
-        && mv "$questions_file.tmp" "$questions_file"
+    json_acknowledge_question "$questions_file" "$QUESTION_ID" "$iso_timestamp"
 
     # Update STATUS.md
     update_claude_status
@@ -9051,12 +10106,15 @@ EOF
         exit 0
     fi
 
-    local filter='.questions | map(select(.status == "pending"))'
+    # Determine filter status for json_count_questions and json_filter_questions
+    local filter_status="pending"
     if [[ "$SHOW_ALL" == true ]]; then
-        filter='.questions'
+        filter_status="all"
     fi
 
-    local count=$(jq "$filter | length" "$questions_file")
+    # Use json_count_questions helper
+    local count
+    count=$(json_count_questions "$questions_file" "$filter_status")
 
     if [[ "$count" -eq 0 ]]; then
         if [[ "$SHOW_ALL" == true ]]; then
@@ -9070,8 +10128,8 @@ EOF
     echo "Questions ($count):"
     echo ""
 
-    # Format output
-    jq -r "$filter | .[] | \"[\(.status)] \(.id)\n  From: \(.agent)\n  Time: \(.timestamp)\n  Question: \(.question)\n\"" "$questions_file"
+    # Format output using json_filter_questions helper
+    json_filter_questions "$questions_file" "$filter_status"
 }
 
 cmd_watchdog() {
@@ -10958,10 +12016,10 @@ EOF
         _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
 
-        # Get default model from .ittybitty.json
+        # Get default model from .ittybitty.json using json_get helper
         local config_model=""
         if [[ -f ".ittybitty.json" ]]; then
-            config_model=$(jq -r '.model // ""' ".ittybitty.json" 2>/dev/null)
+            config_model=$(json_get ".ittybitty.json" "model" "")
         fi
 
         # Find index for the configured model (default to 0 if not found)
@@ -12996,26 +14054,12 @@ EOF
             echo "{}" > "$config_file"
         fi
 
-        if ! command -v jq &>/dev/null; then
-            return 1
-        fi
-
-        local tmpfile
-        tmpfile=$(mktemp)
         if [[ -z "$value" ]]; then
-            # Remove the key if value is empty
-            if jq 'del(.externalDiffTool)' "$config_file" > "$tmpfile" 2>/dev/null; then
-                mv "$tmpfile" "$config_file"
-            else
-                rm -f "$tmpfile"
-            fi
+            # Remove the key if value is empty using json_delete helper
+            json_delete "$config_file" "externalDiffTool"
         else
-            # Set the value
-            if jq --arg val "$value" '.externalDiffTool = $val' "$config_file" > "$tmpfile" 2>/dev/null; then
-                mv "$tmpfile" "$config_file"
-            else
-                rm -f "$tmpfile"
-            fi
+            # Set the value using json_set helper
+            json_set "$config_file" "externalDiffTool" "\"$value\""
         fi
 
         # Update the global config variable
@@ -15259,13 +16303,9 @@ cmd_config() {
             local config_file=".ittybitty.json"
             local value=""
 
-            # Try to read from file if it exists
+            # Try to read from file if it exists using json_get helper
             if [[ -f "$config_file" ]]; then
-                if ! command -v jq &>/dev/null; then
-                    echo "Error: jq is required for config commands" >&2
-                    exit 1
-                fi
-                value=$(jq -r ".$KEY // empty" "$config_file" 2>/dev/null)
+                value=$(json_get "$config_file" "$KEY" "")
             fi
 
             # If no value from file, use default
@@ -15305,11 +16345,6 @@ cmd_config() {
             # Create default config if it doesn't exist
             if [[ ! -f "$config_file" ]]; then
                 echo "{}" > "$config_file"
-            fi
-
-            if ! command -v jq &>/dev/null; then
-                echo "Error: jq is required for config commands" >&2
-                exit 1
             fi
 
             # Validate type for known configuration keys
@@ -15359,13 +16394,10 @@ cmd_config() {
                 json_value="\"$VALUE\""
             fi
 
-            # Use jq to set the value at the specified key path
-            local tmpfile=$(mktemp)
-            if jq ".$KEY = $json_value" "$config_file" > "$tmpfile" 2>/dev/null; then
-                mv "$tmpfile" "$config_file"
+            # Use json_set helper to set the value at the specified key path
+            if json_set "$config_file" "$KEY" "$json_value"; then
                 echo "Set $KEY = $VALUE"
             else
-                rm -f "$tmpfile"
                 echo "Error: Failed to set key '$KEY' to value '$VALUE'" >&2
                 exit 1
             fi
@@ -15418,27 +16450,16 @@ cmd_config() {
                 echo "{}" > "$config_file"
             fi
 
-            if ! command -v jq &>/dev/null; then
-                echo "Error: jq is required for config commands" >&2
-                exit 1
-            fi
-
-            # Check if value already exists in array
-            local current_array
-            current_array=$(jq -r ".$KEY // []" "$config_file" 2>/dev/null)
-
-            if echo "$current_array" | jq -e "index(\"$VALUE\")" &>/dev/null; then
+            # Check if value already exists in array using json_array_contains helper
+            if json_array_contains "$config_file" "$KEY" "$VALUE"; then
                 echo "Value '$VALUE' already exists in $KEY"
                 exit 0
             fi
 
-            # Add value to array (creates array if it doesn't exist)
-            local tmpfile=$(mktemp)
-            if jq ".$KEY = ((.$KEY // []) + [\"$VALUE\"])" "$config_file" > "$tmpfile" 2>/dev/null; then
-                mv "$tmpfile" "$config_file"
+            # Add value to array using json_array_add helper
+            if json_array_add "$config_file" "$KEY" "$VALUE"; then
                 echo "Added '$VALUE' to $KEY"
             else
-                rm -f "$tmpfile"
                 echo "Error: Failed to add '$VALUE' to '$KEY'" >&2
                 exit 1
             fi
@@ -15491,27 +16512,16 @@ cmd_config() {
                 exit 1
             fi
 
-            if ! command -v jq &>/dev/null; then
-                echo "Error: jq is required for config commands" >&2
-                exit 1
-            fi
-
-            # Check if value exists in array
-            local current_array
-            current_array=$(jq -r ".$KEY // []" "$config_file" 2>/dev/null)
-
-            if ! echo "$current_array" | jq -e "index(\"$VALUE\")" &>/dev/null; then
+            # Check if value exists in array using json_array_contains helper
+            if ! json_array_contains "$config_file" "$KEY" "$VALUE"; then
                 echo "Value '$VALUE' not found in $KEY"
                 exit 0
             fi
 
-            # Remove value from array
-            local tmpfile=$(mktemp)
-            if jq ".$KEY = ((.$KEY // []) | map(select(. != \"$VALUE\")))" "$config_file" > "$tmpfile" 2>/dev/null; then
-                mv "$tmpfile" "$config_file"
+            # Remove value from array using json_array_remove helper
+            if json_array_remove "$config_file" "$KEY" "$VALUE"; then
                 echo "Removed '$VALUE' from $KEY"
             else
-                rm -f "$tmpfile"
                 echo "Error: Failed to remove '$VALUE' from '$KEY'" >&2
                 exit 1
             fi
