@@ -12665,23 +12665,34 @@ EOF
 
         # Row 1: Navigation keys (left) + Usage stats (right)
         local help_text
+        local help_text_len
+        # Build errors indicator if there are unread errors (shown before Ctrl-C: quit)
+        local errors_suffix=""
+        local errors_suffix_len=0
+        if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
+            errors_suffix="${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}    "
+            errors_suffix_len=$((16 + ${#ERRORS_UNREAD_COUNT}))  # "e: errors ()    " = 16 chars + digits
+        fi
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
             # Denials mode: show time filter toggle
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
-            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    Ctrl-C: quit"
+            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+            help_text_len=$((52 + ${#filter_name} + errors_suffix_len))
         elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
             # Diff mode: show scroll and pane navigation, plus external diff if configured
             if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" ]]; then
-                help_text=";/l: scroll    o: ext diff    n/p: pane    Ctrl-C: quit"
+                help_text=";/l: scroll    o: ext diff    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+                help_text_len=$((55 + errors_suffix_len))
             else
-                help_text=";/l: scroll    n/p: pane    Ctrl-C: quit"
+                help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+                help_text_len=$((40 + errors_suffix_len))
             fi
         else
             # Normal mode
-            help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
+            help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
+            help_text_len=$((53 + errors_suffix_len))
         fi
-        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text"
-        local help_text_len=${#help_text}
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 2 + ${#SCROLL_OFFSET} + 2))
         local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
         printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
@@ -12720,12 +12731,6 @@ EOF
             # Normal mode: show action keys
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
             action_text_visible_len=${#action_text}
-            # Add errors indicator if there are unread errors (in red, then restore dim)
-            if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
-                action_text="$action_text    ${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}"
-                local err_text="    e: errors ($ERRORS_UNREAD_COUNT)"
-                action_text_visible_len=$((action_text_visible_len + ${#err_text}))
-            fi
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
             if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
