@@ -564,6 +564,7 @@ load_config() {
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
+    CONFIG_NO_FF="false"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -614,6 +615,9 @@ load_config() {
     if [[ "$CONFIG_AUTO_COMPACT_THRESHOLD" == "null" ]]; then
         CONFIG_AUTO_COMPACT_THRESHOLD=""
     fi
+
+    # Read noFastForward setting (defaults to false, allowing fast-forward merges)
+    CONFIG_NO_FF=$(jq -r '.noFastForward // false' "$config_file" 2>/dev/null)
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -5379,7 +5383,11 @@ EOF
         }
         log_agent "$ID" "Merging $BRANCH_NAME..."
         local merge_error
-        merge_error=$(git merge "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
+        local merge_flags=""
+        if [[ "$CONFIG_NO_FF" == "true" ]]; then
+            merge_flags="--no-ff"
+        fi
+        merge_error=$(git merge $merge_flags "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
             echo "Error: merge failed" >&2
             echo "$merge_error" >&2
             log_agent "$ID" "ERROR: Merge failed - $merge_error"
@@ -5647,8 +5655,11 @@ cmd_hooks_agent_status() {
         [[ "$manager" == "null" ]] && manager=""
     fi
 
-    if [[ "$state" == "unknown" ]]; then
-        log_agent "$ID" "[hook] State unknown, sending nudge prompt" --quiet
+    if [[ "$state" == "unknown" || "$state" == "running" ]]; then
+        # Both "unknown" and "running" indicate the agent is actually idle
+        # (the Stop hook only fires when Claude stops) but tmux output still
+        # has stale indicators that make state detection think it's running.
+        log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
@@ -5702,7 +5713,9 @@ cmd_hooks_agent_status() {
             log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
         fi
     else
-        # State is running, stopped, or other - no action needed
+        # State is stopped, creating, rate_limited, or other - no action needed
+        # Note: "running" is handled above (treated same as "unknown" since
+        # Stop hook only fires when Claude is actually idle)
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
 
@@ -6896,7 +6909,7 @@ EOF
 
     # Parse config values using jq (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
-    local create_prs max_agents model fps external_diff_tool auto_compact_threshold
+    local create_prs max_agents model fps external_diff_tool auto_compact_threshold no_ff
 
     manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
     manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
@@ -6908,6 +6921,7 @@ EOF
     fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
     external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
     auto_compact_threshold=$(echo "$input" | jq -r '.autoCompactThreshold // ""' 2>/dev/null || echo "")
+    no_ff=$(echo "$input" | jq -r '.noFastForward // false' 2>/dev/null || echo "false")
 
     # Handle null values
     if [[ "$model" == "null" ]]; then
@@ -6931,6 +6945,7 @@ EOF
     echo "fps: $fps"
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
     echo "auto_compact_threshold:${auto_compact_threshold:+ $auto_compact_threshold}"
+    echo "no_ff: $no_ff"
 }
 
 # =============================================================================

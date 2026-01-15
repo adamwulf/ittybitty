@@ -8,3 +8,4 @@ model:
 fps: 10
 external_diff_tool:
 auto_compact_threshold:
+no_ff: false

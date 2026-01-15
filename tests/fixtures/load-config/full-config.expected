@@ -8,3 +8,4 @@ model: sonnet
 fps: 15
 external_diff_tool: opendiff
 auto_compact_threshold:
+no_ff: false

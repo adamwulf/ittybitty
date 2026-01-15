@@ -186,6 +186,7 @@ If the script exits unexpectedly:
 - `permissions.worker.allow/deny` - tools for worker agents
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
+- `noFastForward` - when `true`, `ib merge` always creates a merge commit with `--no-ff` (default: false)
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
 ### Auto-Compact Threshold
