@@ -12517,7 +12517,12 @@ EOF
                     if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
                         # Truncate to terminal width
                         local display_line="${tree_lines[$array_idx]:0:$content_width}"
-                        printf '%-*s\n' "$content_width" "$display_line"
+                        if [[ $array_idx -eq $SELECTED_INDEX ]]; then
+                            # Highlight selected line with reverse video (same as mini-tree)
+                            printf "\e[7m%-${content_width}.${content_width}s\e[0m\n" "$display_line"
+                        else
+                            printf '%-*s\n' "$content_width" "$display_line"
+                        fi
                     else
                         # Empty line (no content)
                         printf '%-*s\n' "$content_width" ""
@@ -13247,11 +13252,17 @@ EOF
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
-        # Build agent data (only get state for visible tree indices)
+        # Build agent data (get state for visible indices, or all agents in tree mode)
         # Called directly (not in subshell) to preserve meta.json cache
         local t_build_start t_build_end
         [[ $DEBUG_MODE -eq 1 ]] && t_build_start=$(get_ms)
-        build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
+        if [[ $RIGHT_PANE_MODE -eq 3 ]]; then
+            # Tree mode: update state for ALL agents since full tree is shown
+            build_agent_data_file 0 999999
+        else
+            # Normal mode: only update state for visible tree indices (5 around scroll)
+            build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
+        fi
         [[ $DEBUG_MODE -eq 1 ]] && { t_build_end=$(get_ms); _debug_timing_record "build_agent_data" $((t_build_end - t_build_start)); }
         local tmpfile="$BUILD_AGENT_DATA_RESULT"
         # Ensure tmpfile cleanup on any exit path
