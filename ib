@@ -12805,7 +12805,7 @@ EOF
             # Denials mode: show time filter toggle
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
             help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-            help_text_len=$((52 + ${#filter_name} + errors_suffix_len))
+            help_text_len=$((56 + ${#filter_name} + errors_suffix_len))
         elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
             # Diff mode: show scroll and pane navigation, plus external diff if configured
             if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" ]]; then
@@ -12818,9 +12818,9 @@ EOF
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-            help_text_len=$((53 + errors_suffix_len))
+            help_text_len=$((55 + errors_suffix_len))
         fi
-        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 2 + ${#SCROLL_OFFSET} + 2))
+        [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 5 + ${#SCROLL_OFFSET}))
         local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
         printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
