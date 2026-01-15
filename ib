@@ -5552,8 +5552,11 @@ cmd_hooks_agent_status() {
         [[ "$manager" == "null" ]] && manager=""
     fi
 
-    if [[ "$state" == "unknown" ]]; then
-        log_agent "$ID" "[hook] State unknown, sending nudge prompt" --quiet
+    if [[ "$state" == "unknown" || "$state" == "running" ]]; then
+        # Both "unknown" and "running" indicate the agent is actually idle
+        # (the Stop hook only fires when Claude stops) but tmux output still
+        # has stale indicators that make state detection think it's running.
+        log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
@@ -5607,7 +5610,9 @@ cmd_hooks_agent_status() {
             log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
         fi
     else
-        # State is running, stopped, or other - no action needed
+        # State is stopped, creating, rate_limited, or other - no action needed
+        # Note: "running" is handled above (treated same as "unknown" since
+        # Stop hook only fires when Claude is actually idle)
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
 
