@@ -1168,9 +1168,24 @@ parse_state() {
         fi
     fi
 
-    # Get last 5 lines for active execution detection (very recent window)
-    local very_recent
-    very_recent=$(echo "$input" | tail -5)
+    # Get last 15 lines once (covers both 5-line and 15-line windows)
+    # This single tail call is more efficient than two separate tail calls
+    local last_lines
+    last_lines=$(printf '%s' "$input" | tail -15)
+
+    # Count lines efficiently: line count = (total length - length without newlines) + 1
+    local no_newlines="${last_lines//$'\n'/}"
+    local newline_count=$(( ${#last_lines} - ${#no_newlines} ))
+    local line_count=$((newline_count + 1))
+
+    # Extract last 5 lines from the window
+    # Skip (line_count - 5) lines, but at least 0
+    local skip=$((line_count > 5 ? line_count - 5 : 0))
+    local very_recent="$last_lines"
+    local i
+    for (( i = 0; i < skip; i++ )); do
+        very_recent="${very_recent#*$'\n'}"
+    done
 
     # Check for ACTIVE running indicators FIRST in very recent output
     # These indicate something is definitely executing RIGHT NOW:
@@ -1185,9 +1200,7 @@ parse_state() {
         return
     fi
 
-    # Get last 15 lines for completion/waiting detection (broader window)
-    local last_lines
-    last_lines=$(echo "$input" | tail -15)
+    # last_lines already contains the last 15 lines (computed above)
 
     # Check for completion signal
     # The agent saying "I HAVE COMPLETED THE GOAL" is the definitive completion signal
