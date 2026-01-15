@@ -9740,39 +9740,6 @@ EOF
         done
     }
 
-    # Redraw a single-line input field without redrawing entire dialog
-    # Args: $1=row, $2=label (e.g., "Search: "), $3=text, $4=width, $5=focused (0/1), $6=placeholder (optional)
-    dialog_redraw_input_line() {
-        local row="$1" label="$2" text="$3" width="$4" focused="${5:-0}" placeholder="${6:-}"
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local label_len=${#label}
-        local input_width=$((inner_width - label_len))
-        [[ $input_width -gt $width ]] && input_width=$width
-
-        local display_text="$text"
-        local show_placeholder=0
-        [[ -z "$text" && -n "$placeholder" ]] && show_placeholder=1
-        [[ $focused == "1" && -n "$text" ]] && display_text="${display_text}_"
-        [[ $focused == "1" && -z "$text" ]] && display_text="_"
-
-        printf '\e[%d;%dH│ %s' "$row" "$_DIALOG_START_COL" "$label"
-        if [[ $focused == "1" ]]; then
-            if [[ $show_placeholder == "1" ]]; then
-                printf '\e[7m_\e[0m\e[2m%-*s\e[0m' "$((input_width - 1))" "${placeholder:0:$((input_width - 1))}"
-            else
-                printf '\e[7m%-*s\e[0m' "$input_width" "${display_text:0:$input_width}"
-            fi
-        else
-            if [[ $show_placeholder == "1" ]]; then
-                printf '\e[2m%-*s\e[0m' "$input_width" "${placeholder:0:$input_width}"
-            else
-                printf '%-*s' "$input_width" "${display_text:0:$input_width}"
-            fi
-        fi
-        local remaining=$((inner_width - label_len - input_width))
-        printf '%*s│' "$remaining" ""
-    }
-
     # ==========================================================================
     # End Dialog Helper Functions
     # ==========================================================================
