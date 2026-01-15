@@ -3301,13 +3301,13 @@ EOF
             if ! grep -q '<ittybitty-status>' "$claude_md" && ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
                 echo "Warning: CLAUDE.md does not import .ittybitty/STATUS.md" >&2
                 echo "The 'ib ask' feature requires this to show agent questions to the primary Claude." >&2
-                echo "Run 'ib init' to set up the integration." >&2
+                echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
                 echo "" >&2
             fi
         else
             echo "Warning: No CLAUDE.md found in repository root" >&2
             echo "The 'ib ask' feature requires CLAUDE.md to import .ittybitty/STATUS.md" >&2
-            echo "Run 'ib init' to set up the integration." >&2
+            echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
             echo "" >&2
         fi
     fi
@@ -14641,27 +14641,46 @@ cmd_config() {
                 exit 1
             fi
 
+            # Define default values for known keys
+            local default_value=""
+            local has_default=false
+            case "$KEY" in
+                maxAgents) default_value="10"; has_default=true ;;
+                model) default_value=""; has_default=true ;;
+                fps) default_value="10"; has_default=true ;;
+                createPullRequests) default_value="false"; has_default=true ;;
+                allowAgentQuestions) default_value="true"; has_default=true ;;
+                noFastForward) default_value="false"; has_default=true ;;
+                externalDiffTool) default_value=""; has_default=true ;;
+                permissions.manager.allow) default_value="[]"; has_default=true ;;
+                permissions.manager.deny) default_value="[]"; has_default=true ;;
+                permissions.worker.allow) default_value="[]"; has_default=true ;;
+                permissions.worker.deny) default_value="[]"; has_default=true ;;
+            esac
+
             local config_file=".ittybitty.json"
-            if [[ ! -f "$config_file" ]]; then
-                echo "Error: .ittybitty.json not found" >&2
-                exit 1
+            local value=""
+
+            # Try to read from file if it exists
+            if [[ -f "$config_file" ]]; then
+                if ! command -v jq &>/dev/null; then
+                    echo "Error: jq is required for config commands" >&2
+                    exit 1
+                fi
+                value=$(jq -r ".$KEY // empty" "$config_file" 2>/dev/null)
             fi
 
-            if ! command -v jq &>/dev/null; then
-                echo "Error: jq is required for config commands" >&2
-                exit 1
-            fi
-
-            # Use jq to get the value at the specified key path
-            local value
-            value=$(jq -r ".$KEY // empty" "$config_file" 2>/dev/null)
-
+            # If no value from file, use default
             if [[ -z "$value" ]]; then
-                echo "Error: Key '$KEY' not found in $config_file" >&2
-                exit 1
+                if [[ "$has_default" == "true" ]]; then
+                    echo "$default_value"
+                else
+                    echo "Error: Key '$KEY' not found (no default value)" >&2
+                    exit 1
+                fi
+            else
+                echo "$value"
             fi
-
-            echo "$value"
             ;;
 
         set)

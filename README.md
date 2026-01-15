@@ -1,308 +1,241 @@
 # ittybitty (`ib`)
 
-How simple can multi-agent orchestration be? Just four features: agents that spawn agents, inter-agent communication, status tracking, and isolated git worktrees.
+A minimal multi-agent orchestration tool for Claude Code. Spawn persistent background agents that work in isolated git worktrees while you continue your conversation.
 
-`ib` uses only `claude`, `tmux`, `jq`, and `git` to provide a single CLI for spawning and coordinating background agents. Use directly from command line or within a Claude Code session.
+**How simple can multi-agent orchestration be?** Just four features: agents that spawn agents, inter-agent communication, status tracking, and isolated git worktrees.
+
+`ib` uses only `claude`, `tmux`, `jq`, and `git` to provide a single CLI for spawning and coordinating background agents.
+
+## How It Works
+
+When you spawn an agent with `ib`, it:
+
+1. Creates a **git worktree** on a new branch (`agent/<id>`) - isolated from your main working tree
+2. Starts a **tmux session** running Claude Code in that worktree
+3. Monitors the agent's state (running, waiting, complete, stopped)
+
+Agents can spawn sub-agents, creating a hierarchy. Manager agents coordinate work; worker agents execute focused tasks. When an agent completes, you review its changes and merge them back to your branch.
+
+```
+You (human)
+  ↕ conversation
+Primary Claude (your main session)
+  ↓ spawns via ib
+Manager Agent (can spawn sub-agents)
+  ↓ spawns via ib
+Worker Agents (focused execution, no sub-agents)
+```
 
 ## Installation
 
+### Prerequisites
+
+- **tmux** - terminal multiplexer
+- **jq** - JSON processor
+- **git** - version control
+- **claude** - Claude Code CLI
+
+### Add to PATH
+
 ```bash
-# Clone and add to PATH
-git clone <repo-url> /path/to/ittybitty
+# Clone the repository
+git clone https://github.com/anthropics/ittybitty /path/to/ittybitty
+
+# Add to PATH (add to your shell profile for persistence)
 export PATH="/path/to/ittybitty:$PATH"
 
-# Or symlink
+# Or symlink to a directory already in PATH
 ln -s /path/to/ittybitty/ib /usr/local/bin/ib
 ```
 
-**Requirements:** tmux, jq, git
+### Project Setup
 
-**Add to .gitignore:** The `.ittybitty` directory stores agent data (worktrees, logs, metadata). Add it to your project's `.gitignore`:
-
-```bash
-echo ".ittybitty" >> .gitignore
-```
-
-## How `ib` Works
-
-`ib` helps you manage two Claude agent types:
-
-1. **Manager agents** — Can spawn other agents (both manager and/or worker). Analyze tasks and delegate work.
-2. **Worker agents** — Cannot spawn new agents. Must complete their work themselves.
-
-**Task sizing strategy (manager agents):**
-
-When a manager agent receives a task, it thinks through what's needed and decides:
-
-- **Small task** — Easy enough to be completed quickly by a single agent. Manager does it directly without spawning sub-agents.
-- **Medium task** — Needs to be done by a few agents in parallel. Manager spawns sub-agents (manager or worker) to work concurrently.
-- **Large task** — Needs to be done in stages with multiple agents. Manager spawns agents for each stage as the task progresses.
-
-**Two ways to use `ib`:**
-
-1. **Manual mode** — Run `ib` commands directly from your terminal at the repo root to create, list, merge, and kill agents.
-2. **Integrated mode** — Copy the prompt from "Adding `ib` to Your Project" below into your project's `CLAUDE.md`. Then Claude can spawn and coordinate agents automatically during your normal Claude workflow.
-
-**Managing subagents:**
-
-When a manager spawns subagents, it will automatically track their progress and keep them working if they are stuck. This is done with a watchdog process that spawns in parallel to the child agent. This watchdog does not use Claude, which helps keep your Claude session use low when many agents are running and coordinating.
-
-## Adding `ib` to Your Project
-
-To make Claude aware of `ib`, run the setup from your project's root directory:
+Run `ib watch` in your project directory and press `h` to open the setup dialog:
 
 ```bash
-# Run the interactive setup
+cd your-project
 ib watch
-# Press 'h' to open the setup dialog
-# Toggle options with number keys, press 'h' again to close
+# Press 'h' to open setup dialog
 ```
 
-The setup dialog will configure:
-1. **ittybitty instructions** - Adds the `<ittybitty>` block to your CLAUDE.md (creates file if needed)
-2. **STATUS.md import** - Adds `@.ittybitty/STATUS.md` import for agent status visibility
-3. **.gitignore** - Adds `.ittybitty/` to your .gitignore
+The setup dialog configures:
 
-All three options should be enabled (checked) for full functionality.
+| Option | Purpose |
+|--------|---------|
+| **Safety hooks** | Prevents your main Claude from `cd`-ing into agent worktrees |
+| **ib instructions** | Adds `<ittybitty>` block to CLAUDE.md so Claude knows how to use `ib` |
+| **STATUS.md import** | Enables visibility into agent questions via `@.ittybitty/STATUS.md` |
+| **.gitignore** | Adds `.ittybitty/` to your .gitignore |
 
-**Alternative: Manual setup**
+Toggle options with number keys. All options should be enabled for full functionality.
 
-If you prefer not to use the interactive setup, you can view the canonical `<ittybitty>` block in [CLAUDE.md](CLAUDE.md) and copy it to your project's CLAUDE.md file.
+## Your First Agent
 
-**More examples:**
-```bash
-# Multi-file refactoring
-ib new-agent "Refactor the authentication system. Spawn one agent per file that needs changes (api/auth.ts, components/Login.tsx, hooks/useAuth.ts). Each agent should complete its refactoring, then you review all changes and ensure consistency." --model haiku
-
-# Parallel research
-ib new-agent "Research best practices for React performance. Spawn 3 agents: one for React docs, one for community articles, one for benchmarking tools. Collect and synthesize their findings into a single report."
-```
-
-### Primary Agent Workflow
-
-1. **Spawn root**: `ib new-agent "complete task description including structure"`
-2. **Inform user**: Tell them you've spawned agents and suggest `ib watch` in another terminal
-3. **Wait for user**: The user will notify you when agents need attention or are complete
-4. **Check when notified**: Use `ib look <id>` to review agent output
-5. **Interact if needed**: If agent needs input, use `ib send <id> "answer"`
-6. **Respond to questions**: If agents ask questions (shown in STATUS.md), use `ib acknowledge <question-id>` then `ib send <agent-id> "answer"`
-7. **Merge/kill**: When complete, check with `ib diff <id>` then `ib merge <id> --force` or `ib kill <id> --force`
-
-### Responding to Agent Questions
-
-Top-level manager agents can ask you questions using `ib ask`. These questions appear in `.ittybitty/STATUS.md` (visible via @import). To respond:
-
-1. **See pending questions**: Check STATUS.md or run `ib questions`
-2. **Acknowledge**: `ib acknowledge <question-id>` — marks the question as handled
-3. **Respond**: `ib send <agent-id> "your answer"` — sends your answer to the agent
-
-**Note**: Only YOU (the primary agent) can acknowledge questions. Background agents cannot use `ib acknowledge`.
-
-**IMPORTANT - Question Visibility Limitation:**
-Questions from agents are stored in STATUS.md, which is imported at conversation start. If you spawn agents and continue working, you will NOT automatically see new questions that arrive mid-conversation.
-
-To stay aware of agent questions:
-- Periodically run `ib questions` to check for pending questions
-- The user can run `ib watch` in another terminal for real-time monitoring
-- If an agent seems stuck, check `ib questions` - it may be waiting for your answer
-
-### When to Use
-
-- Large or complex tasks that benefit from isolation
-- Long-running research or analysis
-- When the user explicitly requests background agents
-- Tasks that can run while you continue other work
-- Hierarchical tasks that benefit from recursive delegation
-
----
-
-## For Manager Agents
-
-You were spawned via `ib new-agent` without the `--worker` flag. You run in a tmux session with your own git worktree.
-
-**Key capabilities:**
-- You CAN spawn child agents (manager or worker)
-- You DO get automatic watchdog notifications for your children
-- If you're a **top-level manager** (no manager above you), you can ask the user questions via `ib ask "question?"`
-- You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
-
-### Manager Agent Workflow
-
-1. **Understand your goal**: Your prompt contains your specific task
-2. **Decide your approach**:
-   - **Simple task?** Do it yourself without spawning children
-   - **Complex task?** Spawn child agents for sub-tasks
-   - **Need user input?** If you're a top-level manager, use `ib ask "question?"` then enter WAITING mode
-3. **If spawning children**:
-   - Spawn each child with a clear, focused goal
-   - Use `--worker` for workers that should just execute (no sub-agents)
-   - Don't use `--worker` for managers that may need to delegate further
-   - Enter WAITING mode after spawning (`read` or similar)
-4. **When notified about children**:
-   - Use `ib look <id>` to review their work
-   - Use `ib send <id> "message"` if they need input
-   - Use `ib diff <id>` to see their changes
-   - Use `ib merge <id> --force` to accept their work
-   - Use `ib kill <id> --force` to reject and close them
-5. **Signal completion**: When all children are merged and your work is done, output "I HAVE COMPLETED THE GOAL"
-
-### Asking the User Questions (Top-Level Managers Only)
-
-If you have NO manager above you, you can ask the primary (user-level) Claude questions:
+### Spawn an Agent
 
 ```bash
-ib ask "Should I proceed with approach A or B?"
+# Basic usage
+ib new-agent "Refactor the authentication module to use JWT tokens"
+
+# With a custom name
+ib new-agent --name auth-refactor "Refactor authentication to use JWT"
+
+# Using a specific model
+ib new-agent --model haiku "Write unit tests for the utils module"
 ```
 
-Then enter WAITING mode. The user will see your question and respond via `ib send`.
+The command returns an agent ID (or uses your `--name`) that you'll use for all subsequent commands.
 
-**Note**: Sub-managers and workers cannot use `ib ask`. They should ask their manager via `ib send <manager-id> "question"`. However, if a manager has been merged/killed, orphaned agents are allowed to escalate to the user directly.
+### Monitor Progress
 
-### Watchdog Notifications
+**Interactive dashboard (recommended):**
 
-When you spawn a child agent:
-- A watchdog automatically monitors the child
-- You'll be notified when:
-  - Child has been waiting >30 seconds (may need input)
-  - Child completes (ready to review/merge)
-- No need to poll `ib list` - watchdogs handle it
+```bash
+ib watch
+```
 
----
+The watch UI shows all agents, their states, and recent activity. Press `?` for keyboard shortcuts.
 
-## For Worker Agents
+**Command-line monitoring:**
 
-You were spawned via `ib new-agent --worker`. You run in a tmux session with your own git worktree.
-
-**Key restrictions:**
-- You CANNOT spawn child agents - you must complete the work yourself
-- You should signal completion when done (output "I HAVE COMPLETED THE GOAL")
-
-### Worker Agent Workflow
-
-1. **Understand your goal**: Your prompt contains your specific task
-2. **Do the work**: Use all available tools (Read, Edit, Write, Bash, etc.) to complete your task
-3. **Signal completion**: When your work is done, output "I HAVE COMPLETED THE GOAL"
-
----
-
-### All Commands
-
-| Command | Description |
-|---------|-------------|
-| `ib new-agent "goal"` | Spawn a new agent, returns its ID |
-| `ib list` | Show all agents and their status |
-| `ib look <id>` | View an agent's recent output |
-| `ib send <id> "msg"` | Send input to an agent |
-| `ib status <id>` | Show agent's git commits and changes |
-| `ib diff <id>` | Show full diff of agent's work vs main |
-| `ib info <id>` | Show agent's meta.json configuration |
-| `ib merge <id>` | Merge agent's work and permanently close it |
-| `ib kill <id>` | Permanently close agent without merging |
-| `ib resume <id>` | Restart a stopped agent's session |
-| `ib watchdog <id>` | Monitor agent and notify manager (auto-spawned for child agents) |
-| `ib ask "question"` | Ask user-level Claude a question (top-level managers only) |
-| `ib questions` | List pending questions from agents |
-| `ib acknowledge <id>` | Mark a question as handled (primary agent only, alias: `ack`) |
+```bash
+ib list                     # Show all agents and their states
+ib look <id>                # View agent's recent output
+ib status <id>              # Show agent's git commits and changes
+```
 
 ### Agent States
 
 | State | Meaning |
 |-------|---------|
-| `running` | Agent is actively processing |
-| `waiting` | Agent is idle, may need input |
-| `complete` | Agent signaled task completion (merge or kill to close) |
-| `stopped` | Session ended unexpectedly, needs user intervention |
+| `creating` | Agent is starting up |
+| `running` | Actively working |
+| `waiting` | Idle, may need input |
+| `complete` | Agent signaled it finished |
+| `stopped` | Session ended (crashed or user killed) |
 
-### Key Differences from Claude's Task Tool
-
-| Task Tool | `ib` Agents |
-|-----------|-----------|
-| Blocks until complete | Runs in background |
-| Shares your context | Isolated conversation |
-| No git isolation | Own branch + worktree |
-| Cannot spawn children | Can manage sub-agents |
-| Lost on crash | Resumable via session ID |
-
-</ittybitty>
-```
-
-## Quick Example
+### Interact with Agents
 
 ```bash
-# Spawn a research agent
-ib new-agent --name research "Research competitor pricing and summarize findings"
+# Send input to an agent (answers questions, provides guidance)
+ib send <id> "Focus on the login flow first"
 
-# Monitor in another terminal
-ib watch                    # Interactive TUI showing all agent states
-
-# Or check manually when needed
-ib list                     # See state: running, waiting, complete, or stopped
-ib look research            # View recent output
-
-# If it's waiting with a question
-ib send research "Focus on the top 3 competitors only"
-
-# When complete, review and merge
-ib diff research            # See what changed
-ib merge research --force   # Merge branch into main and cleanup
+# View what the agent has done
+ib diff <id>                # Full diff of changes
+ib status <id>              # Commits and file changes
 ```
 
-Agents can spawn their own sub-agents for hierarchical task breakdown. Use `--worker` for worker agents that shouldn't spawn children.
-
-## Eek! Too Many Agents!
-
-If agents spawn out of control and you need to stop everything immediately:
+### Merge or Discard Work
 
 ```bash
-ib nuke
+# Review changes first
+ib diff <id>
+
+# Merge agent's branch into your current branch
+ib merge <id>
+
+# Or discard the agent's work
+ib kill <id>
 ```
 
-This emergency command will:
-- Kill **ALL** active agents without merging their work
-- Show a warning with agent count and ask for confirmation
-- Archive each agent's output for review
-- Clean up all sessions, worktrees, branches, and directories
+Use `--force` to skip confirmation prompts.
 
-Use `ib nuke --force` to skip the confirmation prompt.
+## Using with Claude Code
 
-**Note:** This command is intentionally undocumented in `ib help` to prevent agents from casually using it, but it's available as a safety switch for humans.
+Once you've run the setup dialog (`ib watch` → `h`), Claude can spawn agents during your conversation:
+
+**You:** "Refactor the API layer. This is a big task, so spawn some agents to help."
+
+**Claude:** *spawns agents using `ib new-agent`*
+
+Claude will tell you to run `ib watch` in another terminal to monitor progress. Agents work in the background while your conversation continues.
+
+### Agent Questions
+
+Agents can ask questions that appear in your Claude conversation (via the STATUS.md import). When you see a question:
+
+```bash
+ib questions               # List pending questions
+ib acknowledge <q-id>      # Mark question as handled
+ib send <agent-id> "answer"  # Send your response
+```
 
 ## Configuration
 
-**Spawn options:**
-- `--name <name>` — Custom agent name (default: auto-generated ID)
-- `--no-worktree` — Work in repo root instead of isolated worktree
-- `--worker` — Worker agent that cannot spawn sub-agents
-- `--manager <id>` — Track manager relationship for hierarchical coordination
-- `--yolo` — Full autonomy, skip all permission prompts
-- `--model <model>` — Use a specific model (opus, sonnet, haiku)
-- `--print` — One-shot mode: run and exit, no interaction
+### Quick Config with `ib config`
 
-**Permissions:** Agents inherit your `.claude/settings.local.json`. The `Bash(ib:*)` permission is automatically added so agents can coordinate sub-agents.
+```bash
+# View a setting (returns default if not set)
+ib config get maxAgents
 
-**Project config (`.ittybitty.json`):**
+# Change a setting
+ib config set maxAgents 20
+ib config set model sonnet
+```
+
+### Configuration File
+
+Create `.ittybitty.json` in your project root for full configuration:
+
 ```json
 {
   "maxAgents": 10,
-  "createPullRequests": true,
-  "allowAgentQuestions": true
+  "model": "sonnet",
+  "fps": 10,
+  "createPullRequests": false,
+  "allowAgentQuestions": true,
+  "noFastForward": false,
+  "externalDiffTool": "",
+  "permissions": {
+    "manager": {
+      "allow": ["Bash(npm:*)"],
+      "deny": []
+    },
+    "worker": {
+      "allow": [],
+      "deny": ["WebSearch"]
+    }
+  }
 }
 ```
-- **`maxAgents`**: Maximum number of concurrent agents allowed (default: 10). This is a safety limit for the entire repository to prevent runaway agent spawning.
-- **`createPullRequests`**: When enabled (and `gh` CLI is installed with a git remote configured), agents will create a pull request when their work is complete instead of leaving changes on their branch.
-- **`allowAgentQuestions`**: Allow root managers to ask user questions via `ib ask` (default: true). Set to `false` to disable this feature.
 
-**Environment:** Set `ITTYBITTY_DIR` to change the base directory (default: `.ittybitty`).
+| Option | Default | Description |
+|--------|---------|-------------|
+| `maxAgents` | 10 | Maximum concurrent agents (safety limit) |
+| `model` | (none) | Default model for new agents (opus, sonnet, haiku) |
+| `fps` | 10 | Refresh rate for `ib watch` |
+| `createPullRequests` | false | Create PRs instead of leaving changes on branch |
+| `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
+| `noFastForward` | false | Always create merge commits with `--no-ff` |
+| `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
+| `permissions.manager.allow` | [] | Additional tools to allow for manager agents |
+| `permissions.manager.deny` | [] | Tools to deny for manager agents |
+| `permissions.worker.allow` | [] | Additional tools to allow for worker agents |
+| `permissions.worker.deny` | [] | Tools to deny for worker agents |
+
+### Spawn Options
+
+```bash
+ib new-agent [options] "prompt"
+
+Options:
+  --name <name>      Custom agent name (default: auto-generated)
+  --worker           Worker agent that cannot spawn sub-agents
+  --model <model>    Model to use (opus, sonnet, haiku)
+  --no-worktree      Work in repo root instead of isolated worktree
+  --yolo             Full autonomy, skip all permission prompts
+  --print            One-shot mode: run and exit
+```
 
 ## Extensibility
 
-### Custom Prompts
+### Custom Agent Prompts
 
-Add custom instructions to all agents by creating markdown files in `.ittybitty/prompts/`:
+Add project-specific instructions to agents by creating markdown files in `.ittybitty/prompts/`:
 
 | File | Applied To |
 |------|------------|
-| `all.md` | All agents (managers and workers) |
+| `all.md` | All agents |
 | `manager.md` | Manager agents only |
 | `worker.md` | Worker agents only |
 
@@ -311,27 +244,110 @@ Add custom instructions to all agents by creating markdown files in `.ittybitty/
 ## Project Standards
 - Use TypeScript strict mode
 - Run `npm test` before committing
+- Follow existing code style
 ```
 
 ### User Hooks
 
-Run custom scripts when agents are created by placing executable scripts in `.ittybitty/hooks/`:
+Run custom scripts when agents are created:
 
-| Hook | Trigger |
-|------|---------|
-| `post-create-agent` | After agent is created |
-
-The hook receives agent info via environment variables: `IB_AGENT_ID`, `IB_AGENT_TYPE`, `IB_AGENT_DIR`, `IB_AGENT_BRANCH`, `IB_AGENT_MANAGER`, `IB_AGENT_PROMPT`, `IB_AGENT_MODEL`.
-
-**Example `.ittybitty/hooks/post-create-agent`:**
 ```bash
+# Create the hooks directory
+mkdir -p .ittybitty/hooks
+
+# Create your hook
+cat > .ittybitty/hooks/post-create-agent << 'EOF'
 #!/bin/bash
 echo "[$(date -Iseconds)] Agent $IB_AGENT_ID ($IB_AGENT_TYPE)" >> .ittybitty/creation.log
+EOF
+
+# Make it executable
+chmod +x .ittybitty/hooks/post-create-agent
 ```
 
-Make sure to make the hook executable: `chmod +x .ittybitty/hooks/post-create-agent`
+Available environment variables in hooks:
 
-## Limitations
+| Variable | Description |
+|----------|-------------|
+| `IB_AGENT_ID` | Agent's unique ID |
+| `IB_AGENT_TYPE` | "manager" or "worker" |
+| `IB_AGENT_DIR` | Path to agent's data directory |
+| `IB_AGENT_BRANCH` | Git branch name |
+| `IB_AGENT_MANAGER` | Parent manager ID (if any) |
+| `IB_AGENT_PROMPT` | The task prompt |
+| `IB_AGENT_MODEL` | Model being used |
 
-- **Merge conflicts**: If `ib merge` fails due to conflicts, the merging agent resolves them manually (edit files, `git add`, `git commit`)
-- **Context limits**: Long-running agents may hit existing Claude context windows; break large tasks into smaller agents
+## Command Reference
+
+### Agent Lifecycle
+
+| Command | Description |
+|---------|-------------|
+| `ib new-agent "prompt"` | Spawn a new agent |
+| `ib resume <id>` | Restart a stopped agent |
+| `ib kill <id>` | Close agent without merging |
+| `ib merge <id>` | Merge agent's work and close |
+
+### Monitoring
+
+| Command | Description |
+|---------|-------------|
+| `ib watch` | Interactive dashboard |
+| `ib list` | Show all agents |
+| `ib look <id>` | View agent's output |
+| `ib status <id>` | Show git commits/changes |
+| `ib diff <id>` | Full diff of agent's work |
+| `ib info <id>` | Show agent configuration |
+
+### Communication
+
+| Command | Description |
+|---------|-------------|
+| `ib send <id> "msg"` | Send input to agent |
+| `ib questions` | List pending questions |
+| `ib acknowledge <id>` | Mark question as handled |
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `ib config get <key>` | Get a config value |
+| `ib config set <key> <value>` | Set a config value |
+| `ib hooks status` | Check hook installation |
+| `ib hooks install` | Install safety hooks |
+
+## Emergency Stop
+
+If agents spawn out of control:
+
+```bash
+ib nuke
+```
+
+This kills ALL active agents without merging, archives their output, and cleans up. Use `--force` to skip confirmation.
+
+## Troubleshooting
+
+### Agent stuck in "creating" state
+
+The agent may be waiting on a workspace trust prompt. Check with `ib look <id>`.
+
+### "Path violation" errors in agent logs
+
+The agent tried to access files outside its worktree. This is expected behavior - agents are isolated to their own worktree.
+
+### Merge conflicts
+
+If `ib merge` fails due to conflicts, you can:
+1. Resolve manually in your working tree
+2. Use `ib kill <id>` to discard the agent's work
+
+### View agent logs
+
+```bash
+# Each agent has a log file
+cat .ittybitty/agents/<id>/agent.log
+
+# Archived agents (after kill/merge)
+ls .ittybitty/archive/
+```
