@@ -563,6 +563,7 @@ load_config() {
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
     CONFIG_EXTERNAL_DIFF_TOOL=""
+    CONFIG_NO_FF="false"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -605,6 +606,9 @@ load_config() {
     if [[ "$CONFIG_EXTERNAL_DIFF_TOOL" == "null" ]]; then
         CONFIG_EXTERNAL_DIFF_TOOL=""
     fi
+
+    # Read noFastForward setting (defaults to false, allowing fast-forward merges)
+    CONFIG_NO_FF=$(jq -r '.noFastForward // false' "$config_file" 2>/dev/null)
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -5276,7 +5280,11 @@ EOF
         }
         log_agent "$ID" "Merging $BRANCH_NAME..."
         local merge_error
-        merge_error=$(git merge "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
+        local merge_flags=""
+        if [[ "$CONFIG_NO_FF" == "true" ]]; then
+            merge_flags="--no-ff"
+        fi
+        merge_error=$(git merge $merge_flags "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
             echo "Error: merge failed" >&2
             echo "$merge_error" >&2
             log_agent "$ID" "ERROR: Merge failed - $merge_error"
@@ -6793,7 +6801,7 @@ EOF
 
     # Parse config values using jq (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
-    local create_prs max_agents model fps external_diff_tool
+    local create_prs max_agents model fps external_diff_tool no_ff
 
     manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
     manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
@@ -6804,6 +6812,7 @@ EOF
     model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
     fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
     external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
+    no_ff=$(echo "$input" | jq -r '.noFastForward // false' 2>/dev/null || echo "false")
 
     # Handle null values
     if [[ "$model" == "null" ]]; then
@@ -6823,6 +6832,7 @@ EOF
     echo "model:${model:+ $model}"
     echo "fps: $fps"
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
+    echo "no_ff: $no_ff"
 }
 
 # =============================================================================

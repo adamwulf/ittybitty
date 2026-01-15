@@ -285,12 +285,14 @@ Use `ib nuke --force` to skip the confirmation prompt.
 {
   "maxAgents": 10,
   "createPullRequests": true,
-  "allowAgentQuestions": true
+  "allowAgentQuestions": true,
+  "noFastForward": false
 }
 ```
 - **`maxAgents`**: Maximum number of concurrent agents allowed (default: 10). This is a safety limit for the entire repository to prevent runaway agent spawning.
 - **`createPullRequests`**: When enabled (and `gh` CLI is installed with a git remote configured), agents will create a pull request when their work is complete instead of leaving changes on their branch.
 - **`allowAgentQuestions`**: Allow root managers to ask user questions via `ib ask` (default: true). Set to `false` to disable this feature.
+- **`noFastForward`**: When `true`, `ib merge` always creates a merge commit (uses `git merge --no-ff`). When `false` (default), fast-forward merges are allowed when possible.
 
 **Environment:** Set `ITTYBITTY_DIR` to change the base directory (default: `.ittybitty`).
 

@@ -7,4 +7,4 @@ max_agents: 10
 model:
 fps: 10
 external_diff_tool:
-no_ff: false
+no_ff: true
