@@ -2655,11 +2655,24 @@ format_tree_lines() {
     [[ ${#_BUILD_TREE_LINES[@]} -eq 0 ]] && return
 
     # Find max width of tree column (first column)
+    # Account for orphan warning emoji prefix (⚠️ = 3 chars) when calculating width
     local max_tree_width=0
-    local line tree_part
+    local line tree_part rest orphan_status effective_width
     for line in "${_BUILD_TREE_LINES[@]}"; do
         tree_part="${line%%|*}"
-        [[ ${#tree_part} -gt $max_tree_width ]] && max_tree_width=${#tree_part}
+        # Parse to check orphan status: tree|state|age|model|orphan|prompt
+        rest="${line#*|}"         # state|age|model|orphan|prompt
+        rest="${rest#*|}"         # age|model|orphan|prompt
+        rest="${rest#*|}"         # model|orphan|prompt
+        rest="${rest#*|}"         # orphan|prompt
+        orphan_status="${rest%%|*}"
+        # Calculate effective width including emoji prefix if orphaned
+        effective_width=${#tree_part}
+        if [[ "$orphan_status" == "orphan" ]]; then
+            # ⚠️ + space = 3 characters
+            effective_width=$((effective_width + 3))
+        fi
+        [[ $effective_width -gt $max_tree_width ]] && max_tree_width=$effective_width
     done
 
     # Calculate fixed column widths: tree + 2 + state(8) + 2 + age(5) + 2 + model(10) + 2 = tree + 31
