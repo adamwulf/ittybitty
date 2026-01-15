@@ -716,6 +716,12 @@ fetch_claude_usage() {
         _USAGE_WEEKLY_PCT=$(printf '%.0f' "$weekly_util" 2>/dev/null)
     fi
 
+    # If we didn't get any utilization data, the API call effectively failed
+    # (e.g., expired token returns error JSON instead of usage data)
+    if [[ -z "$_USAGE_SESSION_PCT" && -z "$_USAGE_WEEKLY_PCT" ]]; then
+        return 1
+    fi
+
     # Calculate time remaining until reset
     # The resets_at field is ISO 8601 format: "2025-12-12T20:59:59.707736+00:00"
     local now_epoch
@@ -9328,8 +9334,9 @@ EOF
     local USAGE_WEEKLY_PCT=""    # 7-day weekly utilization percentage
     local USAGE_SESSION_RESET="" # Time until session reset (e.g., "44m")
     local USAGE_WEEKLY_RESET=""  # Time until weekly reset (e.g., "3d 8h")
-    local USAGE_LAST_FETCH=0     # Timestamp of last successful fetch
+    local USAGE_LAST_FETCH=0     # Timestamp of last attempted fetch
     local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
+    local USAGE_FETCH_FAILED=0   # 1 if last fetch failed (show "unavailable")
 
     # Check if main repo safety hooks are installed
     watch_check_hooks_status() {
@@ -9417,6 +9424,14 @@ EOF
                 USAGE_WEEKLY_PCT="$_USAGE_WEEKLY_PCT"
                 USAGE_SESSION_RESET="$_USAGE_SESSION_RESET"
                 USAGE_WEEKLY_RESET="$_USAGE_WEEKLY_RESET"
+                USAGE_FETCH_FAILED=0
+            else
+                # Fetch failed - clear values and mark as failed
+                USAGE_SESSION_PCT=""
+                USAGE_WEEKLY_PCT=""
+                USAGE_SESSION_RESET=""
+                USAGE_WEEKLY_RESET=""
+                USAGE_FETCH_FAILED=1
             fi
         fi
     }
@@ -12925,6 +12940,10 @@ EOF
             else
                 usage_info="$weekly_str"
             fi
+        elif [[ $USAGE_FETCH_FAILED -eq 1 ]]; then
+            # Fetch was attempted but failed - show unavailable indicator
+            usage_info="session:--  weekly:--"
+            usage_info_visible_len=21  # "session:--  weekly:--" = 21 chars
         fi
 
         # Row 1: Navigation keys (left) + Usage stats (right)
