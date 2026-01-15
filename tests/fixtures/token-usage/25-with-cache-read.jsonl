@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"Continue the task"}}
+{"type":"assistant","message":{"content":"Continuing...","usage":{"input_tokens":10000,"output_tokens":5000,"cache_creation_input_tokens":0,"cache_read_input_tokens":35000}}}

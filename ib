@@ -7366,6 +7366,165 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-questions
+# =============================================================================
+
+# Test questions JSON parsing (count pending questions)
+# This is for testing only - blocked from running inside agents
+# Input: JSON questions file
+cmd_test_questions() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-questions [options] <file>
+
+Test questions JSON parsing.
+
+Reads a questions JSON file and outputs the count of pending questions.
+This tests the jq queries used in generate_questions_block() and cmd_questions().
+
+Options:
+  -h, --help      Show this help
+
+Input format:
+  JSON file with .questions array containing objects with .status field
+
+Examples:
+  ib test-questions tests/fixtures/questions/one-pending.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-questions <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Count pending questions - same jq query as generate_questions_block()
+    local pending_count
+    pending_count=$(jq '.questions | map(select(.status == "pending")) | length' "$input_file" 2>/dev/null)
+
+    if [[ -z "$pending_count" ]]; then
+        echo "0"
+    else
+        echo "$pending_count"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-token-usage
+# =============================================================================
+
+# Test token usage parsing from transcript JSONL
+# This is for testing only - blocked from running inside agents
+# Input: JSONL file with transcript entries
+cmd_test_token_usage() {
+    local input_file=""
+    local context_size=200000
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-token-usage [options] <file>
+
+Test token usage calculation from transcript JSONL.
+
+Reads a transcript JSONL file and calculates context usage percentage.
+This tests the jq queries used in calculate_context_usage().
+
+Options:
+  --context-size N  Set context window size (default: 200000)
+  -h, --help        Show this help
+
+Input format:
+  JSONL file with entries containing .message.usage object
+
+Examples:
+  ib test-token-usage tests/fixtures/token-usage/basic.jsonl
+  ib test-token-usage --context-size 1000000 tests/fixtures/token-usage/large.jsonl
+EOF
+                exit 0
+                ;;
+            --context-size)
+                shift
+                context_size="$1"
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-token-usage <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Parse usage from JSONL - same jq query as calculate_context_usage()
+    local usage_json
+    usage_json=$(tail -100 "$input_file" 2>/dev/null | \
+        jq -s 'map(select(.isSidechain != true and .message.usage != null)) | last | .message.usage // empty' 2>/dev/null)
+
+    if [[ -z "$usage_json" || "$usage_json" == "null" ]]; then
+        echo "error:no_usage_data"
+        return 1
+    fi
+
+    # Calculate total tokens - same as calculate_context_usage()
+    local input_tokens cache_creation cache_read output_tokens total_tokens
+    input_tokens=$(echo "$usage_json" | jq -r '.input_tokens // 0' 2>/dev/null)
+    cache_creation=$(echo "$usage_json" | jq -r '.cache_creation_input_tokens // 0' 2>/dev/null)
+    cache_read=$(echo "$usage_json" | jq -r '.cache_read_input_tokens // 0' 2>/dev/null)
+    output_tokens=$(echo "$usage_json" | jq -r '.output_tokens // 0' 2>/dev/null)
+
+    total_tokens=$((input_tokens + cache_creation + cache_read + output_tokens))
+
+    # Calculate percentage
+    if [[ $context_size -gt 0 ]]; then
+        local pct=$((total_tokens * 100 / context_size))
+        echo "$pct"
+        return 0
+    fi
+
+    echo "error:invalid_context_size"
+    return 1
+}
+
+# =============================================================================
 # COMMAND: test-display-width
 # =============================================================================
 
@@ -15574,6 +15733,14 @@ case "${1:-help}" in
     test-log-format)
         shift
         cmd_test_log_format "$@"
+        ;;
+    test-questions)
+        shift
+        cmd_test_questions "$@"
+        ;;
+    test-token-usage)
+        shift
+        cmd_test_token_usage "$@"
         ;;
     test-parse-denial)
         shift

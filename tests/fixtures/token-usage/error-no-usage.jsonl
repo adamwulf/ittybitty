@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"Hello"}}
+{"type":"assistant","message":{"content":"Response without usage data"}}
