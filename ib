@@ -14949,13 +14949,161 @@ cmd_config() {
             fi
             ;;
 
+        add)
+            # ib config add <key> <value>
+            # Add a value to an array config key (prevents duplicates)
+            local KEY="${1:-}"
+            local VALUE="${2:-}"
+
+            if [[ -z "$KEY" ]]; then
+                echo "Error: Key required" >&2
+                echo "Usage: ib config add <key> <value>" >&2
+                echo "" >&2
+                echo "Array keys:" >&2
+                echo "  permissions.manager.allow   Tools allowed for manager agents" >&2
+                echo "  permissions.manager.deny    Tools denied for manager agents" >&2
+                echo "  permissions.worker.allow    Tools allowed for worker agents" >&2
+                echo "  permissions.worker.deny     Tools denied for worker agents" >&2
+                exit 1
+            fi
+
+            if [[ -z "$VALUE" ]]; then
+                echo "Error: Value required" >&2
+                echo "Usage: ib config add <key> <value>" >&2
+                exit 1
+            fi
+
+            # Validate key is an array key
+            case "$KEY" in
+                permissions.manager.allow|permissions.manager.deny|permissions.worker.allow|permissions.worker.deny)
+                    ;;
+                *)
+                    echo "Error: 'add' only works with array keys" >&2
+                    echo "" >&2
+                    echo "Array keys:" >&2
+                    echo "  permissions.manager.allow   Tools allowed for manager agents" >&2
+                    echo "  permissions.manager.deny    Tools denied for manager agents" >&2
+                    echo "  permissions.worker.allow    Tools allowed for worker agents" >&2
+                    echo "  permissions.worker.deny     Tools denied for worker agents" >&2
+                    exit 1
+                    ;;
+            esac
+
+            local config_file=".ittybitty.json"
+
+            # Create default config if it doesn't exist
+            if [[ ! -f "$config_file" ]]; then
+                echo "{}" > "$config_file"
+            fi
+
+            if ! command -v jq &>/dev/null; then
+                echo "Error: jq is required for config commands" >&2
+                exit 1
+            fi
+
+            # Check if value already exists in array
+            local current_array
+            current_array=$(jq -r ".$KEY // []" "$config_file" 2>/dev/null)
+
+            if echo "$current_array" | jq -e "index(\"$VALUE\")" &>/dev/null; then
+                echo "Value '$VALUE' already exists in $KEY"
+                exit 0
+            fi
+
+            # Add value to array (creates array if it doesn't exist)
+            local tmpfile=$(mktemp)
+            if jq ".$KEY = ((.$KEY // []) + [\"$VALUE\"])" "$config_file" > "$tmpfile" 2>/dev/null; then
+                mv "$tmpfile" "$config_file"
+                echo "Added '$VALUE' to $KEY"
+            else
+                rm -f "$tmpfile"
+                echo "Error: Failed to add '$VALUE' to '$KEY'" >&2
+                exit 1
+            fi
+            ;;
+
+        remove)
+            # ib config remove <key> <value>
+            # Remove a value from an array config key
+            local KEY="${1:-}"
+            local VALUE="${2:-}"
+
+            if [[ -z "$KEY" ]]; then
+                echo "Error: Key required" >&2
+                echo "Usage: ib config remove <key> <value>" >&2
+                echo "" >&2
+                echo "Array keys:" >&2
+                echo "  permissions.manager.allow   Tools allowed for manager agents" >&2
+                echo "  permissions.manager.deny    Tools denied for manager agents" >&2
+                echo "  permissions.worker.allow    Tools allowed for worker agents" >&2
+                echo "  permissions.worker.deny     Tools denied for worker agents" >&2
+                exit 1
+            fi
+
+            if [[ -z "$VALUE" ]]; then
+                echo "Error: Value required" >&2
+                echo "Usage: ib config remove <key> <value>" >&2
+                exit 1
+            fi
+
+            # Validate key is an array key
+            case "$KEY" in
+                permissions.manager.allow|permissions.manager.deny|permissions.worker.allow|permissions.worker.deny)
+                    ;;
+                *)
+                    echo "Error: 'remove' only works with array keys" >&2
+                    echo "" >&2
+                    echo "Array keys:" >&2
+                    echo "  permissions.manager.allow   Tools allowed for manager agents" >&2
+                    echo "  permissions.manager.deny    Tools denied for manager agents" >&2
+                    echo "  permissions.worker.allow    Tools allowed for worker agents" >&2
+                    echo "  permissions.worker.deny     Tools denied for worker agents" >&2
+                    exit 1
+                    ;;
+            esac
+
+            local config_file=".ittybitty.json"
+
+            if [[ ! -f "$config_file" ]]; then
+                echo "Error: .ittybitty.json not found" >&2
+                exit 1
+            fi
+
+            if ! command -v jq &>/dev/null; then
+                echo "Error: jq is required for config commands" >&2
+                exit 1
+            fi
+
+            # Check if value exists in array
+            local current_array
+            current_array=$(jq -r ".$KEY // []" "$config_file" 2>/dev/null)
+
+            if ! echo "$current_array" | jq -e "index(\"$VALUE\")" &>/dev/null; then
+                echo "Value '$VALUE' not found in $KEY"
+                exit 0
+            fi
+
+            # Remove value from array
+            local tmpfile=$(mktemp)
+            if jq ".$KEY = ((.$KEY // []) | map(select(. != \"$VALUE\")))" "$config_file" > "$tmpfile" 2>/dev/null; then
+                mv "$tmpfile" "$config_file"
+                echo "Removed '$VALUE' from $KEY"
+            else
+                rm -f "$tmpfile"
+                echo "Error: Failed to remove '$VALUE' from '$KEY'" >&2
+                exit 1
+            fi
+            ;;
+
         -h|--help|help|"")
             cat <<EOF
 Usage: ib config <subcommand> [options]
 
 Subcommands:
-  get <key>         Get a configuration value from .ittybitty.json
-  set <key> <value> Set a configuration value in .ittybitty.json
+  get <key>            Get a configuration value from .ittybitty.json
+  set <key> <value>    Set a configuration value in .ittybitty.json
+  add <key> <value>    Add a value to an array config key (prevents duplicates)
+  remove <key> <value> Remove a value from an array config key
 
 EOF
             print_config_keys
@@ -14968,6 +15116,8 @@ Examples:
   ib config set maxAgents 20
   ib config set fps 15
   ib config set permissions.worker.allow '["Read", "Write"]'
+  ib config add permissions.manager.allow 'Bash(npm:*)'
+  ib config remove permissions.worker.deny 'WebSearch'
 
 Key Paths:
   Use dot notation to access nested keys (e.g., permissions.manager.allow)
@@ -14977,13 +15127,18 @@ Value Types:
   - Booleans: true/false are stored as booleans
   - Strings: Other values are stored as quoted strings
   - Arrays/Objects: JSON arrays/objects (must be valid JSON)
+
+Array Operations (add/remove):
+  Only work with array keys: permissions.{manager,worker}.{allow,deny}
+  - add: Appends value if not already present
+  - remove: Removes value if present (no error if missing)
 EOF
             exit 0
             ;;
 
         *)
             echo "Error: Unknown subcommand '$SUBCOMMAND'" >&2
-            echo "Usage: ib config {get|set} [options]" >&2
+            echo "Usage: ib config {get|set|add|remove} [options]" >&2
             echo "Run 'ib config --help' for more information" >&2
             exit 1
             ;;
