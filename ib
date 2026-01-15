@@ -1296,25 +1296,39 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    local full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100)
+    # Get first 100 lines from full tmux history
+    local full_history
+    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100)
+
+    # Use pure bash pattern matching instead of grep
     local claude_started=false
-    if echo "$full_history" | grep -q "Claude Code v" || \
-       echo "$full_history" | grep -q "╭─ Claude Code" || \
-       echo "$full_history" | grep -q "\[USER TASK\]" || \
-       echo "$full_history" | grep -q "\[AGENT CONTEXT\]"; then
+    if [[ "$full_history" == *"Claude Code v"* ]] || \
+       [[ "$full_history" == *"╭─ Claude Code"* ]] || \
+       [[ "$full_history" == *"[USER TASK]"* ]] || \
+       [[ "$full_history" == *"[AGENT CONTEXT]"* ]]; then
         claude_started=true
     fi
     if [[ "$claude_started" == false ]]; then
         # Check if permissions screen is showing (workspace trust OR external imports)
-        if echo "$full_history" | grep -qi "Enter to confirm"; then
-            if echo "$full_history" | grep -qi "trust" || \
-               echo "$full_history" | grep -qi "Allow external CLAUDE.md file imports"; then
+        # Use case-insensitive matching via shopt
+        local old_nocasematch
+        old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+        shopt -s nocasematch
+        if [[ "$full_history" == *"Enter to confirm"* ]]; then
+            if [[ "$full_history" == *"trust"* ]] || \
+               [[ "$full_history" == *"Allow external CLAUDE.md file imports"* ]]; then
+                # Restore case matching before returning
+                eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
                 echo "creating"
                 return
             fi
         fi
+        eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+
         # Check if session is very new (minimal output, just bash starting up)
-        local line_count=$(echo "$full_history" | wc -l | tr -d ' ')
+        # Count lines using grep -c (efficient for this size of input)
+        local line_count
+        line_count=$(printf '%s' "$full_history" | grep -c '' || echo 0)
         if [[ "$line_count" -lt 10 ]]; then
             echo "creating"
             return
