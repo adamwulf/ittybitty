@@ -13464,7 +13464,7 @@ EOF
             esac
 
             # Full-width header for diff mode
-            local header="── DIFF$merge_indicator "
+            local header="── DIFF $selected_id$merge_indicator "
             while [[ ${#header} -lt $TERM_COLS ]]; do
                 header="${header}─"
             done
