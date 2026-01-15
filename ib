@@ -15517,11 +15517,105 @@ cmd_config() {
             fi
             ;;
 
+        list|ls)
+            # ib config list
+            # List all configuration values with their sources (customized vs default)
+            local config_file=".ittybitty.json"
+            local has_config=false
+
+            if [[ -f "$config_file" ]]; then
+                has_config=true
+                if ! command -v jq &>/dev/null; then
+                    echo "Error: jq is required for config commands" >&2
+                    exit 1
+                fi
+            fi
+
+            # Define all known keys with their defaults and descriptions
+            # Format: "key|default|description"
+            local keys=(
+                "maxAgents|10|Maximum concurrent agents"
+                "model||Default model (sonnet, opus, haiku)"
+                "fps|10|Watch screen refresh rate"
+                "createPullRequests|false|Auto-create PRs on merge"
+                "allowAgentQuestions|true|Allow agents to ask user questions"
+                "noFastForward|false|Always create merge commits"
+                "autoCompactThreshold||Context % to trigger /compact (1-100)"
+                "externalDiffTool||External diff tool command"
+                "permissions.manager.allow|[]|Tools allowed for manager agents"
+                "permissions.manager.deny|[]|Tools denied for manager agents"
+                "permissions.worker.allow|[]|Tools allowed for worker agents"
+                "permissions.worker.deny|[]|Tools denied for worker agents"
+            )
+
+            echo "Configuration values (.ittybitty.json):"
+            echo ""
+
+            local key default_value description
+            local current_value is_customized source_label
+
+            for entry in "${keys[@]}"; do
+                # Parse entry
+                key="${entry%%|*}"
+                local rest="${entry#*|}"
+                default_value="${rest%%|*}"
+                description="${rest#*|}"
+
+                # Get current value from file (if exists)
+                current_value=""
+                is_customized=false
+
+                if [[ "$has_config" == "true" ]]; then
+                    # Check if this is an array key
+                    case "$key" in
+                        permissions.*)
+                            # Use compact output (-c) for arrays to keep them on one line
+                            current_value=$(jq -c ".$key // empty" "$config_file" 2>/dev/null)
+                            ;;
+                        *)
+                            # Use raw output (-r) for scalar values
+                            current_value=$(jq -r ".$key // empty" "$config_file" 2>/dev/null)
+                            ;;
+                    esac
+                    # Check if it's non-empty
+                    if [[ -n "$current_value" && "$current_value" != "null" ]]; then
+                        is_customized=true
+                    fi
+                fi
+
+                # Use default if no custom value
+                if [[ -z "$current_value" || "$current_value" == "null" ]]; then
+                    current_value="$default_value"
+                    is_customized=false
+                fi
+
+                # Format the source label
+                if [[ "$is_customized" == "true" ]]; then
+                    source_label="(customized)"
+                else
+                    source_label="(default)"
+                fi
+
+                # Display the value
+                # Show empty string values as (unset)
+                local display_value="$current_value"
+                if [[ -z "$display_value" ]]; then
+                    display_value="(unset)"
+                fi
+
+                printf "  %-28s %s %s\n" "$key:" "$display_value" "$source_label"
+            done
+
+            echo ""
+            echo "Legend: (customized) = set in .ittybitty.json, (default) = using built-in default"
+            ;;
+
         -h|--help|help|"")
             cat <<EOF
 Usage: ib config <subcommand> [options]
 
 Subcommands:
+  list                 List all configuration values with sources
   get <key>            Get a configuration value from .ittybitty.json
   set <key> <value>    Set a configuration value in .ittybitty.json
   add <key> <value>    Add a value to an array config key (prevents duplicates)
@@ -15560,7 +15654,7 @@ EOF
 
         *)
             echo "Error: Unknown subcommand '$SUBCOMMAND'" >&2
-            echo "Usage: ib config {get|set|add|remove} [options]" >&2
+            echo "Usage: ib config {list|get|set|add|remove} [options]" >&2
             echo "Run 'ib config --help' for more information" >&2
             exit 1
             ;;
