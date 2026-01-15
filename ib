@@ -1441,6 +1441,61 @@ capture_tmux() {
     LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
 }
 
+# Compute full state from tmux content (used by background monitor)
+# This combines the creating-state check (from get_state) with parse_state logic
+# Args: $1 = full tmux content (should be at least 100 lines for creating detection)
+# Output: State string to stdout (creating, running, waiting, complete, rate_limited, unknown)
+compute_state_from_content() {
+    local input="$1"
+
+    # Empty input = unknown (caller handles stopped for non-existent sessions)
+    if [[ -z "$input" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    # Get first 100 lines for Claude startup detection
+    # Note: subprocess head is faster than pure bash for large content
+    local first_lines
+    first_lines=$(printf '%s' "$input" | head -100)
+
+    # Check if Claude has started
+    local claude_started=false
+    if [[ "$first_lines" == *"Claude Code v"* ]] || \
+       [[ "$first_lines" == *"╭─ Claude Code"* ]] || \
+       [[ "$first_lines" == *"[USER TASK]"* ]] || \
+       [[ "$first_lines" == *"[AGENT CONTEXT]"* ]]; then
+        claude_started=true
+    fi
+
+    if [[ "$claude_started" == false ]]; then
+        # Check if permissions screen is showing (workspace trust OR external imports)
+        local old_nocasematch
+        old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+        shopt -s nocasematch
+        if [[ "$first_lines" == *"Enter to confirm"* ]]; then
+            if [[ "$first_lines" == *"trust"* ]] || \
+               [[ "$first_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
+                eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+                echo "creating"
+                return
+            fi
+        fi
+        eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+
+        # Check if session is very new (minimal output)
+        local no_newlines="${first_lines//$'\n'/}"
+        local line_count=$(( ${#first_lines} - ${#no_newlines} + 1 ))
+        if [[ "$line_count" -lt 10 ]]; then
+            echo "creating"
+            return
+        fi
+    fi
+
+    # Use parse_state for the actual state detection logic
+    parse_state "$input"
+}
+
 # Parse state from tmux output text
 # States: running, waiting, complete, unknown
 # Input: Text content (passed as first argument or stdin if no argument)
@@ -1611,6 +1666,22 @@ parse_state() {
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
+
+    # Try to read from background-computed state cache first (much faster in watch mode)
+    # The background monitor computes state and writes to TMUX_CACHE_DIR/agent_id.state
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        local state_cache="$TMUX_CACHE_DIR/$id.state"
+        if [[ -f "$state_cache" ]]; then
+            local cached_state
+            cached_state=$(<"$state_cache")
+            if [[ -n "$cached_state" ]]; then
+                echo "$cached_state"
+                return
+            fi
+        fi
+    fi
+
+    # Fallback: compute state directly (used outside watch mode or before cache exists)
     local tmux_session=$(session_name "$id")
 
     # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
@@ -14191,8 +14262,13 @@ EOF
                 else
                     continue
                 fi
-                # Only capture if session exists in current sessions list
-                [[ "$sessions" == *"$tmux_session"* ]] || continue
+                # Check if session exists in current sessions list
+                if [[ "$sessions" != *"$tmux_session"* ]]; then
+                    # Session doesn't exist - write stopped state and continue
+                    printf 'stopped' > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    continue
+                fi
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
                 local raw_capture
                 raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 2>/dev/null) || true
@@ -14200,6 +14276,11 @@ EOF
                     _strip_ansi "$raw_capture"
                     printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                    # Compute and cache state from the stripped content
+                    local computed_state
+                    computed_state=$(compute_state_from_content "$_STRIP_ANSI_RESULT")
+                    printf '%s' "$computed_state" > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
                 fi
             done
 
