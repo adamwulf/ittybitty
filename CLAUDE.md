@@ -788,7 +788,7 @@ Permissions flow through several layers:
 | **Git operations** | `Bash(git status:*)`, `Bash(git add:*)`, `Bash(git commit:*)`, `Bash(git diff:*)`, `Bash(git show:*)`, `Bash(git log:*)`, `Bash(git ls-files:*)`, `Bash(git grep:*)`, `Bash(git rm:*)` |
 | **Basic shell** | `Bash(pwd:*)`, `Bash(ls:*)`, `Bash(head:*)`, `Bash(tail:*)`, `Bash(cat:*)`, `Bash(grep:*)` |
 | **File tools** | `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `LS` |
-| **Other tools** | `TodoWrite`, `Task`, `NotebookEdit`, `WebFetch`, `WebSearch`, `AskUserQuestion` |
+| **Other tools** | `TodoWrite`, `Task`, `TaskOutput`, `NotebookEdit`, `WebFetch`, `WebSearch`, `AskUserQuestion` |
 
 | Category | Always Denied |
 |----------|--------------|
