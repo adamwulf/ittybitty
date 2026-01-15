@@ -537,7 +537,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL
 load_config() {
     CONFIG_MANAGER_ALLOW=""
     CONFIG_MANAGER_DENY=""
@@ -548,6 +548,7 @@ load_config() {
     CONFIG_MODEL=""
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
+    CONFIG_EXTERNAL_DIFF_TOOL=""
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -584,6 +585,12 @@ load_config() {
 
     # Read allowAgentQuestions setting (defaults to true)
     CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$config_file" 2>/dev/null)
+
+    # Read externalDiffTool setting
+    CONFIG_EXTERNAL_DIFF_TOOL=$(jq -r '.externalDiffTool // ""' "$config_file" 2>/dev/null)
+    if [[ "$CONFIG_EXTERNAL_DIFF_TOOL" == "null" ]]; then
+        CONFIG_EXTERNAL_DIFF_TOOL=""
+    fi
 }
 
 # Format seconds into human-readable duration for reset times
@@ -6281,7 +6288,7 @@ EOF
 
     # Parse config values using jq (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
-    local create_prs max_agents model fps
+    local create_prs max_agents model fps external_diff_tool
 
     manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
     manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
@@ -6291,10 +6298,14 @@ EOF
     max_agents=$(echo "$input" | jq -r '.maxAgents // 10' 2>/dev/null || echo "10")
     model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
     fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
+    external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
 
-    # Handle null model
+    # Handle null values
     if [[ "$model" == "null" ]]; then
         model=""
+    fi
+    if [[ "$external_diff_tool" == "null" ]]; then
+        external_diff_tool=""
     fi
 
     # Output in expected format
@@ -6304,8 +6315,9 @@ EOF
     echo "worker_deny: $worker_deny"
     echo "create_prs: $create_prs"
     echo "max_agents: $max_agents"
-    echo "model: $model"
+    echo "model:${model:+ $model}"
     echo "fps: $fps"
+    echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
 }
 
 # =============================================================================
@@ -8594,7 +8606,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -10271,11 +10283,11 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 17) / 2 ))  # 17 lines tall
+        local start_row=$(( (TERM_LINES - 21) / 2 ))  # 21 lines tall
         [[ $start_row -lt 1 ]] && start_row=1
 
         # Clear dialog area
-        dialog_clear "$start_row" 18
+        dialog_clear "$start_row" 22
 
         # Draw dialog box
         local row=$start_row
@@ -10386,8 +10398,39 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
+        # Option 5: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
+        local ext_diff_display
+        if [[ -n "$ext_diff_value" ]]; then
+            ext_diff_display="Ext diff tool: $ext_diff_value"
+        else
+            ext_diff_display="Ext diff tool: (not set)"
+        fi
+        # Truncate if too long
+        local inner_width=$((DIALOG_WIDTH - 4))
+        [[ ${#ext_diff_display} -gt $inner_width ]] && ext_diff_display="${ext_diff_display:0:$((inner_width - 3))}..."
+        local ext_diff_padding=$((inner_width - ${#ext_diff_display}))
+        [[ $ext_diff_padding -lt 0 ]] && ext_diff_padding=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $ext_diff_focused == "1" ]]; then
+            printf '\e[7m%s\e[0m' "$ext_diff_display"
+        else
+            printf '%s' "$ext_diff_display"
+        fi
+        printf '%*s │' "$ext_diff_padding" ""
+        ((row++))
+
+        # Description for external diff tool
+        dialog_draw_line "$row" "  Command for 'o' key in diff view"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -10451,7 +10494,11 @@ EOF
                         watch_check_gitignore
                         _DIALOG_DIRTY=1
                         ;;
-                    4)  # Close button
+                    4)  # External diff tool - open input dialog
+                        watch_dialog_init_ext_diff_tool
+                        DIALOG_MODE=8
+                        ;;
+                    5)  # Close button
                         DIALOG_MODE=0
                         ;;
                 esac
@@ -10465,23 +10512,23 @@ EOF
                 fi
                 ;;
             $'\t'|'j')  # Tab or j - move down
-                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 5 ))
+                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 6 ))
                 _DIALOG_DIRTY=1
                 ;;
             'B')  # Down arrow
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 5 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 6 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
                 ;;
             'k')  # k - move up
-                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 5) % 5 ))
+                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 6) % 6 ))
                 _DIALOG_DIRTY=1
                 ;;
             'A'|'Z')  # Up arrow or Shift+Tab - move up
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 5) % 5 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 6) % 6 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
@@ -11013,6 +11060,281 @@ EOF
     # End Merge Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # External Diff Tool Dialog (DIALOG_MODE=8)
+    # ==========================================================================
+
+    watch_dialog_init_ext_diff_tool() {
+        EXT_DIFF_TOOL_INPUT="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
+        EXT_DIFF_TOOL_FOCUS=0  # 0=input, 1=Clear, 2=Cancel, 3=Save
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    watch_dialog_render_ext_diff_tool() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=6  # Return to setup dialog
+            _DIALOG_DIRTY=1
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local dialog_height=11
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "External Diff Tool"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Description
+        dialog_draw_line "$row" "Command to run for 'o' key in diff view."
+        ((row++))
+        dialog_draw_line "$row" "Args: <merge-base> <branch-head>"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Input field
+        local input_focused=$([[ $EXT_DIFF_TOOL_FOCUS -eq 0 ]] && echo 1 || echo 0)
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local input_width=$((inner_width - 2))
+        local display_text="$EXT_DIFF_TOOL_INPUT"
+        [[ $input_focused == "1" ]] && display_text="${display_text}_"
+        # Truncate if too long
+        [[ ${#display_text} -gt $input_width ]] && display_text="${display_text:0:$input_width}"
+        local input_pad=$((input_width - ${#display_text}))
+        [[ $input_pad -lt 0 ]] && input_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $input_focused == "1" ]]; then
+            printf '\e[7m%s%*s\e[0m' "$display_text" "$input_pad" ""
+        else
+            printf '%s%*s' "$display_text" "$input_pad" ""
+        fi
+        printf ' │'
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons: [Clear] [Cancel] [Save]
+        local clear_btn=$(dialog_format_button "Clear" "$([[ $EXT_DIFF_TOOL_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $EXT_DIFF_TOOL_FOCUS -eq 2 ]] && echo 1 || echo 0)")
+        local save_btn=$(dialog_format_button "Save" "$([[ $EXT_DIFF_TOOL_FOCUS -eq 3 ]] && echo 1 || echo 0)")
+
+        # Button visual widths: [Clear]=7, [Cancel]=8, [Save]=6, gaps=6, total=27
+        local btn_visual_width=27
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s   %s   %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$clear_btn" "$cancel_btn" "$save_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_ext_diff_tool() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter - select button or submit input
+                case $EXT_DIFF_TOOL_FOCUS in
+                    0)  # Input field - move to Save
+                        EXT_DIFF_TOOL_FOCUS=3
+                        _DIALOG_DIRTY=1
+                        ;;
+                    1)  # Clear button
+                        EXT_DIFF_TOOL_INPUT=""
+                        # Save empty value to config
+                        watch_save_ext_diff_tool ""
+                        DIALOG_MODE=6  # Return to setup dialog
+                        _DIALOG_DIRTY=1
+                        ;;
+                    2)  # Cancel button
+                        DIALOG_MODE=6  # Return to setup dialog
+                        _DIALOG_DIRTY=1
+                        ;;
+                    3)  # Save button
+                        watch_save_ext_diff_tool "$EXT_DIFF_TOOL_INPUT"
+                        DIALOG_MODE=6  # Return to setup dialog
+                        _DIALOG_DIRTY=1
+                        ;;
+                esac
+                ;;
+            $'\x7f'|$'\b')  # Backspace (DEL or BS)
+                if [[ $EXT_DIFF_TOOL_FOCUS -eq 0 && -n "$EXT_DIFF_TOOL_INPUT" ]]; then
+                    EXT_DIFF_TOOL_INPUT="${EXT_DIFF_TOOL_INPUT%?}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t')  # Tab - move forward
+                EXT_DIFF_TOOL_FOCUS=$(( (EXT_DIFF_TOOL_FOCUS + 1) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'B'|'C')  # Down or Right arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    EXT_DIFF_TOOL_FOCUS=$(( (EXT_DIFF_TOOL_FOCUS + 1) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Not an escape sequence, add to input
+                    if [[ $EXT_DIFF_TOOL_FOCUS -eq 0 ]]; then
+                        EXT_DIFF_TOOL_INPUT="${EXT_DIFF_TOOL_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'A'|'D')  # Up or Left arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    EXT_DIFF_TOOL_FOCUS=$(( (EXT_DIFF_TOOL_FOCUS - 1 + 4) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Not an escape sequence, add to input
+                    if [[ $EXT_DIFF_TOOL_FOCUS -eq 0 ]]; then
+                        EXT_DIFF_TOOL_INPUT="${EXT_DIFF_TOOL_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            *)  # Other characters
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Real escape - go back to setup dialog
+                    DIALOG_MODE=6
+                    _DIALOG_DIRTY=1
+                elif [[ $EXT_DIFF_TOOL_FOCUS -eq 0 ]]; then
+                    # Add character to input (if printable)
+                    if [[ "$key" =~ [[:print:]] ]]; then
+                        EXT_DIFF_TOOL_INPUT="${EXT_DIFF_TOOL_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # Save external diff tool to config file
+    watch_save_ext_diff_tool() {
+        local value="$1"
+        local config_file=".ittybitty.json"
+
+        # Create config file if it doesn't exist
+        if [[ ! -f "$config_file" ]]; then
+            echo "{}" > "$config_file"
+        fi
+
+        if ! command -v jq &>/dev/null; then
+            return 1
+        fi
+
+        local tmpfile
+        tmpfile=$(mktemp)
+        if [[ -z "$value" ]]; then
+            # Remove the key if value is empty
+            if jq 'del(.externalDiffTool)' "$config_file" > "$tmpfile" 2>/dev/null; then
+                mv "$tmpfile" "$config_file"
+            else
+                rm -f "$tmpfile"
+            fi
+        else
+            # Set the value
+            if jq --arg val "$value" '.externalDiffTool = $val' "$config_file" > "$tmpfile" 2>/dev/null; then
+                mv "$tmpfile" "$config_file"
+            else
+                rm -f "$tmpfile"
+            fi
+        fi
+
+        # Update the global config variable
+        CONFIG_EXTERNAL_DIFF_TOOL="$value"
+    }
+
+    # ==========================================================================
+    # End External Diff Tool Dialog
+    # ==========================================================================
+
+    # Open external diff tool for an agent
+    # Args: $1=agent_id
+    watch_open_external_diff() {
+        local agent_id="$1"
+        local branch_name="agent/$agent_id"
+
+        # Determine target branch (main or master)
+        local target_branch=""
+        if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
+            target_branch="main"
+        elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
+            target_branch="master"
+        else
+            target_branch="HEAD"
+        fi
+
+        # Check if branch exists
+        if ! git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
+            return 1
+        fi
+
+        # Get merge base
+        local merge_base
+        merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || return 1
+
+        # Get branch HEAD
+        local branch_head
+        branch_head=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
+
+        # Temporarily restore terminal to normal state
+        tput rmcup 2>/dev/null || true  # Exit alternate screen
+        tput cnorm 2>/dev/null || true  # Show cursor
+        stty sane 2>/dev/null || true   # Reset terminal
+
+        # Execute the external diff tool
+        # The tool is expected to be something like 'opendiff' or a custom script
+        # We pass merge_base and branch_head as arguments
+        eval "$CONFIG_EXTERNAL_DIFF_TOOL" '"$merge_base"' '"$branch_head"' 2>/dev/null || true
+
+        # Re-enter alternate screen and hide cursor
+        tput smcup 2>/dev/null || true  # Enter alternate screen
+        tput civis 2>/dev/null || true  # Hide cursor
+        stty -echo -icanon 2>/dev/null || true
+
+        # Force redraw
+        tput clear 2>/dev/null || true
+    }
+
     # Render footer with help text, timing, and clock (2 lines)
     # Args: $1=footer_row, $2=frame_start_ms
     watch_render_footer() {
@@ -11076,8 +11398,12 @@ EOF
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
             help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    Ctrl-C: quit"
         elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
-            # Diff mode: show scroll and pane navigation
-            help_text=";/l: scroll    n/p: pane    Ctrl-C: quit"
+            # Diff mode: show scroll and pane navigation, plus external diff if configured
+            if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" ]]; then
+                help_text=";/l: scroll    o: ext diff    n/p: pane    Ctrl-C: quit"
+            else
+                help_text=";/l: scroll    n/p: pane    Ctrl-C: quit"
+            fi
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    Ctrl-C: quit"
@@ -12304,6 +12630,7 @@ EOF
                 5) watch_dialog_key_jump "$key" ;;
                 6) watch_dialog_key_hooks "$key" ;;
                 7) watch_dialog_key_merge "$key" ;;
+                8) watch_dialog_key_ext_diff_tool "$key" ;;
             esac
             return
         fi
@@ -12479,6 +12806,13 @@ EOF
                 watch_dialog_init_setup
                 DIALOG_MODE=6
                 ;;
+            o)
+                _WATCH_ESC_PENDING=0
+                # Open external diff tool (only when in diff pane and tool is configured)
+                if [[ $RIGHT_PANE_MODE -eq 5 && -n "$CONFIG_EXTERNAL_DIFF_TOOL" && -n "$_WATCH_SELECTED_ID" ]]; then
+                    watch_open_external_diff "$_WATCH_SELECTED_ID"
+                fi
+                ;;
             *)
                 _WATCH_ESC_PENDING=0
                 ;;
@@ -12620,6 +12954,7 @@ EOF
                 5) watch_dialog_render_jump ;;
                 6) watch_dialog_render_hooks ;;
                 7) watch_dialog_render_merge ;;
+                8) watch_dialog_render_ext_diff_tool ;;
             esac
             set -e
         else

@@ -4,5 +4,6 @@ worker_allow: []
 worker_deny: []
 create_prs: false
 max_agents: 10
-model: 
+model:
 fps: 10
+external_diff_tool:
