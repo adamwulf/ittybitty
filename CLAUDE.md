@@ -58,10 +58,12 @@ The `ib` script must work with Bash 3.2, which ships with macOS. This means avoi
 | Uppercase | `${var^^}` | `tr '[:lower:]' '[:upper:]'` |
 | Associative arrays | `declare -A` | Use indexed arrays with naming conventions |
 | `readarray`/`mapfile` | `mapfile -t arr` | `while read` loop |
-| `&>` redirection | `cmd &> file` | `cmd > file 2>&1` |
+| `&>>` append redirect | `cmd &>> file` | `cmd >> file 2>&1` |
 | `|&` pipe stderr | `cmd |& cmd2` | `cmd 2>&1 | cmd2` |
 | Negative array indices | `${arr[-1]}` | `${arr[${#arr[@]}-1]}` |
 | `coproc` | `coproc NAME { cmd; }` | Named pipes or temp files |
+
+**Note**: `&>` (overwrite) works in Bash 3.2, only `&>>` (append) requires Bash 4.0+.
 
 When adding new code, always test on the system bash (`/bin/bash --version`) to ensure compatibility.
 
