@@ -25,10 +25,12 @@ session_name() {
 
     # Try to read tmux_session from meta.json if agent directory exists
     if [[ -n "$AGENTS_DIR" && -f "$AGENTS_DIR/$id/meta.json" ]]; then
-        local stored_session
-        stored_session=$(grep -o '"tmux_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$AGENTS_DIR/$id/meta.json" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/')
-        if [[ -n "$stored_session" ]]; then
-            echo "$stored_session"
+        local content
+        content=$(<"$AGENTS_DIR/$id/meta.json")
+        # Use bash regex to extract tmux_session value
+        # Pattern: "tmux_session" : "value"
+        if [[ "$content" =~ \"tmux_session\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+            echo "${BASH_REMATCH[1]}"
             return
         fi
     fi
@@ -12404,9 +12406,14 @@ EOF
                 local agent_id="${agent_dir%/}"
                 agent_id="${agent_id##*/}"
                 # Read tmux_session from meta.json (same source as session_name())
-                local tmux_session
-                tmux_session=$(grep -o '"tmux_session"[[:space:]]*:[[:space:]]*"[^"]*"' "$agent_dir/meta.json" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/')
-                [[ -z "$tmux_session" ]] && continue
+                # Use pure bash to avoid subprocess overhead
+                local meta_content tmux_session
+                meta_content=$(<"$agent_dir/meta.json")
+                if [[ "$meta_content" =~ \"tmux_session\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+                    tmux_session="${BASH_REMATCH[1]}"
+                else
+                    continue
+                fi
                 # Only capture if session exists in current sessions list
                 [[ "$sessions" == *"$tmux_session"* ]] || continue
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
