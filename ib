@@ -9115,9 +9115,9 @@ EOF
     init_feedback_state
     increment_feedback_session
 
-    # Check if we should show the feedback dialog
+    # Check if we should show the feedback dialog (skip in debug mode for consistent timing)
     local SHOW_FEEDBACK_DIALOG=0
-    if should_show_feedback_dialog; then
+    if [[ $DEBUG_MODE -eq 0 ]] && should_show_feedback_dialog; then
         SHOW_FEEDBACK_DIALOG=1
     fi
 
