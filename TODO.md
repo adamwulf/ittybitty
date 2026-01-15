@@ -4,10 +4,10 @@
 
 - [x] Agent status showing 'waiting' in tree view when actually running (fixed: `42d754d`)
   - State detection may be incorrectly identifying running agents as waiting
-- [ ] Tree view has incorrect alignment when managers have workers
+- [x] Tree view has incorrect alignment when managers have workers (fixed: `6e54813`)
   - Root cause: printf counts bytes not display chars for UTF-8 box-drawing characters
   - Fix approach: Manual padding using character count instead of printf field width
-- [ ] Column alignment broken in `ib watch` - state/age/model columns offset incorrectly
+- [x] Column alignment broken in `ib watch` - state/age/model columns offset incorrectly (fixed: `6e54813`, `377b3ea`)
   - Columns after agent name (state, age, model, description) don't line up
   - May be related to variable agent name lengths
   - Visible when viewing tree with multiple agents of different name lengths
@@ -21,10 +21,10 @@
   - Tree view would be visible at all times during cycling
 - [x] Press / to quick jump to an agent by name (implemented: `c957ae0`)
 - [x] Add worker type to new agent dialog (implemented: `3572745`)
-- [ ] Add session limit tracking to UI
-- [ ] Add GitHub sponsor link into UI
-- [ ] Add "are you enjoying ittybitty?" dialog prompt
-- [ ] Add "all agents" toggle to send message dialog
+- [x] Add session limit tracking to UI (implemented: `37b7e28`, `0f3e8fe`)
+- [x] Add GitHub sponsor link into UI (implemented: `28d62c9`)
+- [x] Add "are you enjoying ittybitty?" dialog prompt (implemented: `5448e1a`)
+- [x] Add "all agents" toggle to send message dialog (implemented: `6c2210b`)
   - When checked, send the same message to all alive agents (running, waiting, complete)
   - When unchecked, send only to the currently selected agent
   - Add keybinding (Tab or 'a') to toggle between modes
@@ -35,7 +35,7 @@
   - Allow reading and modifying config values via command line
 
 ### Configuration
-- [ ] Add failsafe for session limit in json config
+- [x] Add failsafe for session limit in json config (already implemented: `maxAgents` in .ittybitty.json)
   - Prevent accidental API overuse
 - [ ] Add messages to user-controlled Claude installed through CLAUDE.md
   - Better integration with Claude configuration
