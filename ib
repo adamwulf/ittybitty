@@ -14642,6 +14642,23 @@ EOF
 # COMMAND: config
 # =============================================================================
 
+print_config_keys() {
+    cat <<EOF
+Available Keys:
+  maxAgents                   Maximum concurrent agents (default: 10)
+  model                       Default model: sonnet, opus, or haiku
+  fps                         Watch screen refresh rate (default: 10)
+  createPullRequests          Auto-create PRs on merge (default: false)
+  allowAgentQuestions         Allow agents to ask user questions (default: true)
+  noFastForward               Always create merge commits (default: false)
+  externalDiffTool            External diff tool command
+  permissions.manager.allow   Tools allowed for manager agents (JSON array)
+  permissions.manager.deny    Tools denied for manager agents (JSON array)
+  permissions.worker.allow    Tools allowed for worker agents (JSON array)
+  permissions.worker.deny     Tools denied for worker agents (JSON array)
+EOF
+}
+
 cmd_config() {
     local SUBCOMMAND="${1:-}"
     shift || true
@@ -14653,6 +14670,8 @@ cmd_config() {
             if [[ -z "$KEY" ]]; then
                 echo "Error: Key required" >&2
                 echo "Usage: ib config get <key>" >&2
+                echo "" >&2
+                print_config_keys >&2
                 exit 1
             fi
 
@@ -14673,6 +14692,8 @@ cmd_config() {
 
             if [[ -z "$value" ]]; then
                 echo "Error: Key '$KEY' not found in $config_file" >&2
+                echo "" >&2
+                print_config_keys >&2
                 exit 1
             fi
 
@@ -14774,6 +14795,10 @@ Usage: ib config <subcommand> [options]
 Subcommands:
   get <key>         Get a configuration value from .ittybitty.json
   set <key> <value> Set a configuration value in .ittybitty.json
+
+EOF
+            print_config_keys
+            cat <<EOF
 
 Examples:
   ib config get model
