@@ -1,0 +1,6 @@
+╭─ Claude Code
+
+Claude usage limit reached. Your limit will reset at Oct 7, 1am.
+
+  > Wait for limit reset
+    Exit
