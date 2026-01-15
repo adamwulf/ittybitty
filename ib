@@ -2107,10 +2107,12 @@ validate_agent_metadata() {
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
 # META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
 # Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
+# META_CACHE_INDEX = lookup string "|id1:0|id2:1|" for O(1) index lookup (Bash 3.2 compatible)
 META_CACHE_IDS=()
 META_CACHE_DATA=()
 META_CACHE_MTIME=()
 META_CACHE_STABLE=()
+META_CACHE_INDEX=""
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2120,8 +2122,10 @@ TREE_ORDER_KEY=""
 
 # Global cache for agent state (refreshed round-robin, one per frame)
 # STATE_CACHE_IDS[i] = agent_id, STATE_CACHE_DATA[i] = state
+# STATE_CACHE_INDEX = lookup string "|id1:0|id2:1|" for O(1) index lookup (Bash 3.2 compatible)
 STATE_CACHE_IDS=()
 STATE_CACHE_DATA=()
+STATE_CACHE_INDEX=""
 STATE_FRAME_COUNT=0
 
 # Cached epoch time (refreshed every 5 frames)
@@ -2285,6 +2289,7 @@ build_agent_data_file() {
     # === PASS 1: Get agent data from cache or disk ===
     local all_ids=()
     local all_data=()  # Each element: "manager|age|model|prompt"
+    local all_ids_index=""  # O(1) lookup string: "|id1:0|id2:1|"
 
     local t_pass1_start t_pass1_end
     [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_pass1_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
@@ -2296,15 +2301,12 @@ build_agent_data_file() {
         local id="${agent_dir%/}"; id="${id##*/}"
         local manager="" created_epoch="" model="" prompt="" worker="false"
 
-        # Check cache first (inline lookup to avoid subprocess)
+        # Check cache first using O(1) index lookup string (Bash 3.2 compatible)
         local cache_idx=-1
-        local _ci
-        for ((_ci=0; _ci<${#META_CACHE_IDS[@]}; _ci++)); do
-            if [[ "${META_CACHE_IDS[$_ci]}" == "$id" ]]; then
-                cache_idx=$_ci
-                break
-            fi
-        done
+        if [[ "$META_CACHE_INDEX" == *"|$id:"* ]]; then
+            local idx_str="${META_CACHE_INDEX#*"|$id:"}"
+            cache_idx="${idx_str%%"|"*}"
+        fi
 
         # OPTIMIZATION: meta.json is essentially immutable after agent creation
         # (only updated once shortly after creation to store claude_pid).
@@ -2384,11 +2386,13 @@ build_agent_data_file() {
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
                 META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
-                # Add new cache entry
+                # Add new cache entry and update index lookup string
+                local new_idx=${#META_CACHE_IDS[@]}
                 META_CACHE_IDS+=("$id")
                 META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
                 META_CACHE_MTIME+=("$current_mtime")
                 META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
+                META_CACHE_INDEX="${META_CACHE_INDEX}|$id:$new_idx|"
             fi
         fi
 
@@ -2408,9 +2412,11 @@ build_agent_data_file() {
         # Handle empty manager
         [[ -z "$manager" ]] && manager=""
 
-        # Build data for this frame
+        # Build data for this frame with index lookup string
+        local all_idx=${#all_ids[@]}
         all_ids+=("$id")
         all_data+=("$manager|$age|$model|$prompt|$worker")
+        all_ids_index="${all_ids_index}|$id:$all_idx|"
     done
 
     [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_pass1_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "pass1_meta_cache" $((t_pass1_end - t_pass1_start)); }
@@ -2466,15 +2472,13 @@ build_agent_data_file() {
     for ((idx=0; idx<${#tree_ids[@]}; idx++)); do
         local id="${tree_ids[$idx]}"
 
-        # Find cached data for this ID (linear search - fine for ~10 agents)
+        # Find cached data for this ID using O(1) index lookup
         local data=""
-        local j
-        for ((j=0; j<${#all_ids[@]}; j++)); do
-            if [[ "${all_ids[$j]}" == "$id" ]]; then
-                data="${all_data[$j]}"
-                break
-            fi
-        done
+        if [[ "$all_ids_index" == *"|$id:"* ]]; then
+            local data_idx_str="${all_ids_index#*"|$id:"}"
+            local data_idx="${data_idx_str%%"|"*}"
+            data="${all_data[$data_idx]}"
+        fi
 
         # Parse cached data: manager|age|model|prompt|worker
         local manager="${data%%|*}"
@@ -2491,15 +2495,12 @@ build_agent_data_file() {
         if [[ $idx -ge $visible_start && $idx -le $visible_end ]]; then
             local visible_offset=$((idx - visible_start))
 
-            # Check state cache first (inline lookup)
+            # Check state cache first using O(1) index lookup
             local state_cache_idx=-1
-            local _sci
-            for ((_sci=0; _sci<${#STATE_CACHE_IDS[@]}; _sci++)); do
-                if [[ "${STATE_CACHE_IDS[$_sci]}" == "$id" ]]; then
-                    state_cache_idx=$_sci
-                    break
-                fi
-            done
+            if [[ "$STATE_CACHE_INDEX" == *"|$id:"* ]]; then
+                local sci_str="${STATE_CACHE_INDEX#*"|$id:"}"
+                state_cache_idx="${sci_str%%"|"*}"
+            fi
 
             local tmux_session=$(session_name "$id")
             # For new agents (not in cache), check tmux directly instead of relying on cached sessions
@@ -2523,8 +2524,10 @@ build_agent_data_file() {
                     if [[ $state_cache_idx -ge 0 ]]; then
                         STATE_CACHE_DATA[$state_cache_idx]="$state"
                     else
+                        local new_state_idx=${#STATE_CACHE_IDS[@]}
                         STATE_CACHE_IDS+=("$id")
                         STATE_CACHE_DATA+=("$state")
+                        STATE_CACHE_INDEX="${STATE_CACHE_INDEX}|$id:$new_state_idx|"
                     fi
                 else
                     # Use cached state
@@ -2536,8 +2539,10 @@ build_agent_data_file() {
                 if [[ $state_cache_idx -ge 0 ]]; then
                     STATE_CACHE_DATA[$state_cache_idx]="$state"
                 else
+                    local new_state_idx=${#STATE_CACHE_IDS[@]}
                     STATE_CACHE_IDS+=("$id")
                     STATE_CACHE_DATA+=("$state")
+                    STATE_CACHE_INDEX="${STATE_CACHE_INDEX}|$id:$new_state_idx|"
                 fi
             fi
         fi
