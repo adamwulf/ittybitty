@@ -1291,6 +1291,71 @@ _tail_file() {
     done
 }
 
+# Pure bash tail for strings - get last N lines from a string (no subprocess)
+# Args: $1 = string, $2 = number of lines (default 15)
+# Result: stored in _TAIL_STRING_RESULT global variable
+_TAIL_STRING_RESULT=""
+_tail_string() {
+    local input="$1"
+    local lines="${2:-15}"
+
+    _TAIL_STRING_RESULT=""
+    [[ -z "$input" ]] && return
+
+    # Count total newlines to determine line count
+    local no_newlines="${input//$'\n'/}"
+    local total_newlines=$(( ${#input} - ${#no_newlines} ))
+    local line_count=$((total_newlines + 1))
+
+    # If we have fewer or equal lines than requested, return all
+    if [[ $line_count -le $lines ]]; then
+        _TAIL_STRING_RESULT="$input"
+        return
+    fi
+
+    # Skip (line_count - lines) newlines from start
+    local skip=$((line_count - lines))
+    local remaining="$input"
+    local i
+    for ((i=0; i<skip; i++)); do
+        remaining="${remaining#*$'\n'}"
+    done
+    _TAIL_STRING_RESULT="$remaining"
+}
+
+# Pure bash head for strings - get first N lines from a string (no subprocess)
+# Args: $1 = string, $2 = number of lines (default 100)
+# Result: stored in _HEAD_STRING_RESULT global variable
+_HEAD_STRING_RESULT=""
+_head_string() {
+    local input="$1"
+    local lines="${2:-100}"
+
+    _HEAD_STRING_RESULT=""
+    [[ -z "$input" ]] && return
+
+    # Build result by taking first N lines
+    local result=""
+    local remaining="$input"
+    local count=0
+
+    while [[ $count -lt $lines && -n "$remaining" ]]; do
+        if [[ "$remaining" == *$'\n'* ]]; then
+            local line="${remaining%%$'\n'*}"
+            [[ -n "$result" ]] && result+=$'\n'
+            result+="$line"
+            remaining="${remaining#*$'\n'}"
+        else
+            # Last line (no newline)
+            [[ -n "$result" ]] && result+=$'\n'
+            result+="$remaining"
+            remaining=""
+        fi
+        ((count++)) || true
+    done
+    _HEAD_STRING_RESULT="$result"
+}
+
 # Pure bash fold - wrap text to specified width (no subprocess)
 # Args: $1 = text to wrap, $2 = width
 # Result: stored in _FOLD_LINES array
@@ -1411,7 +1476,7 @@ parse_state() {
     fi
 
     # Get last 15 lines once (covers both 5-line and 15-line windows)
-    # This single tail call is more efficient than two separate tail calls
+    # Note: subprocess tail is faster than pure bash for large content (500+ lines)
     local last_lines
     last_lines=$(printf '%s' "$input" | tail -15)
 
@@ -1559,8 +1624,9 @@ get_state() {
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
     # Get first 100 lines from full tmux history
+    # Note: subprocess head is faster than pure bash for large content
     local full_history
-    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100)
+    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
@@ -1588,9 +1654,9 @@ get_state() {
         eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
 
         # Check if session is very new (minimal output, just bash starting up)
-        # Count lines using grep -c (efficient for this size of input)
-        local line_count
-        line_count=$(printf '%s' "$full_history" | grep -c '' || echo 0)
+        # Count lines using pure bash: count newlines + 1
+        local no_newlines="${full_history//$'\n'/}"
+        local line_count=$(( ${#full_history} - ${#no_newlines} + 1 ))
         if [[ "$line_count" -lt 10 ]]; then
             echo "creating"
             return
@@ -2106,9 +2172,14 @@ validate_agent_metadata() {
 # Global cache for meta.json data (invalidated when meta.json file changes)
 # Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
+# META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
+# Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
+# META_CACHE_INDEX = lookup string "|id1:0|id2:1|" for O(1) index lookup (Bash 3.2 compatible)
 META_CACHE_IDS=()
 META_CACHE_DATA=()
 META_CACHE_MTIME=()
+META_CACHE_STABLE=()
+META_CACHE_INDEX=""
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2118,12 +2189,15 @@ TREE_ORDER_KEY=""
 
 # Global cache for agent state (refreshed round-robin, one per frame)
 # STATE_CACHE_IDS[i] = agent_id, STATE_CACHE_DATA[i] = state
+# STATE_CACHE_INDEX = lookup string "|id1:0|id2:1|" for O(1) index lookup (Bash 3.2 compatible)
 STATE_CACHE_IDS=()
 STATE_CACHE_DATA=()
+STATE_CACHE_INDEX=""
 STATE_FRAME_COUNT=0
 
 # Cached epoch time (refreshed every 5 frames)
 CACHED_NOW=0
+CACHED_TIME_STR=""  # Formatted HH:MM:SS (refreshed with CACHED_NOW)
 
 # Cached tmux sessions (refreshed every 3 frames, or read from SESSIONS_FILE if available)
 CACHED_SESSIONS=""
@@ -2257,10 +2331,14 @@ build_agent_data_file() {
         return
     fi
 
-    # Cache epoch time, refresh every 5 frames
+    # Cache epoch time and formatted time string, refresh every 5 frames
     local now
     if [[ $((STATE_FRAME_COUNT % 5)) -eq 0 || $CACHED_NOW -eq 0 ]]; then
-        CACHED_NOW=$(date +%s)
+        # Get both epoch and formatted time in one date call
+        local date_output
+        date_output=$(date '+%s %H:%M:%S')
+        CACHED_NOW="${date_output%% *}"
+        CACHED_TIME_STR="${date_output#* }"
     fi
     now=$CACHED_NOW
 
@@ -2283,6 +2361,7 @@ build_agent_data_file() {
     # === PASS 1: Get agent data from cache or disk ===
     local all_ids=()
     local all_data=()  # Each element: "manager|age|model|prompt"
+    local all_ids_index=""  # O(1) lookup string: "|id1:0|id2:1|"
 
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
@@ -2291,27 +2370,45 @@ build_agent_data_file() {
         local id="${agent_dir%/}"; id="${id##*/}"
         local manager="" created_epoch="" model="" prompt="" worker="false"
 
-        # Check cache first (inline lookup to avoid subprocess)
+        # Check cache first using O(1) index lookup string (Bash 3.2 compatible)
         local cache_idx=-1
-        local _ci
-        for ((_ci=0; _ci<${#META_CACHE_IDS[@]}; _ci++)); do
-            if [[ "${META_CACHE_IDS[$_ci]}" == "$id" ]]; then
-                cache_idx=$_ci
-                break
-            fi
-        done
+        if [[ "$META_CACHE_INDEX" == *"|$id:"* ]]; then
+            local idx_str="${META_CACHE_INDEX#*"|$id:"}"
+            cache_idx="${idx_str%%"|"*}"
+        fi
 
-        # Get current meta.json mtime for cache validation
+        # OPTIMIZATION: meta.json is essentially immutable after agent creation
+        # (only updated once shortly after creation to store claude_pid).
+        # Once a cache entry has been stable for 30 frames (~1s at 30fps),
+        # we skip the stat call entirely to avoid subprocess overhead.
         local meta="$agent_dir/meta.json"
-        local current_mtime
-        current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0
-
-        # Check if cache is valid (exists and mtime matches)
         local cache_valid=0
+        local is_stable=0
+
         if [[ "$cache_idx" -ge 0 ]]; then
-            local cached_mtime="${META_CACHE_MTIME[$cache_idx]}"
-            if [[ "$cached_mtime" == "$current_mtime" ]]; then
+            local cached_frame="${META_CACHE_STABLE[$cache_idx]}"
+            local frames_since=$((STATE_FRAME_COUNT - cached_frame))
+            # Entry is stable if it's been in cache for 30+ frames without invalidation
+            if [[ $frames_since -ge 30 ]]; then
+                is_stable=1
                 cache_valid=1
+            fi
+        fi
+
+        # Only call stat if entry is not yet stable
+        local current_mtime=""
+        if [[ "$is_stable" -eq 0 ]]; then
+            current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0
+
+            # Check if cache is valid (exists and mtime matches)
+            if [[ "$cache_idx" -ge 0 ]]; then
+                local cached_mtime="${META_CACHE_MTIME[$cache_idx]}"
+                if [[ "$cached_mtime" == "$current_mtime" ]]; then
+                    cache_valid=1
+                else
+                    # mtime changed - reset stable frame counter
+                    META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
+                fi
             fi
         fi
 
@@ -2327,7 +2424,10 @@ build_agent_data_file() {
             prompt="${rest%%|*}"
             worker="${rest#*|}"
         else
-            # Read from disk and cache (meta variable already set above)
+            # Read from disk and cache
+            # Get mtime if we don't have it yet
+            [[ -z "$current_mtime" ]] && { current_mtime=$(stat -f %m "$meta" 2>/dev/null) || current_mtime=0; }
+
             local line key value
             while IFS= read -r line; do
                 if [[ "$line" =~ \"([^\"]+)\":\ *\"?([^\",]*)\"? ]]; then
@@ -2353,11 +2453,15 @@ build_agent_data_file() {
                 # Update existing cache entry (agent was restarted with same name)
                 META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
+                META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
-                # Add new cache entry
+                # Add new cache entry and update index lookup string
+                local new_idx=${#META_CACHE_IDS[@]}
                 META_CACHE_IDS+=("$id")
                 META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
                 META_CACHE_MTIME+=("$current_mtime")
+                META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
+                META_CACHE_INDEX="${META_CACHE_INDEX}|$id:$new_idx|"
             fi
         fi
 
@@ -2377,40 +2481,26 @@ build_agent_data_file() {
         # Handle empty manager
         [[ -z "$manager" ]] && manager=""
 
-        # Build data for this frame
+        # Build data for this frame with index lookup string
+        local all_idx=${#all_ids[@]}
         all_ids+=("$id")
         all_data+=("$manager|$age|$model|$prompt|$worker")
+        all_ids_index="${all_ids_index}|$id:$all_idx|"
     done
-
 
     # === Compute tree order (with caching) ===
     # Build cache key from agent IDs and manager relationships
-    # This avoids false cache misses from filesystem glob order changes
-    # and ensures tree order is recomputed when manager relationships change
-    local id_hash=0
-    local manager_hash=0
+    # Uses a simple string key: count + length + concatenated id:mgr pairs
+    # This is much faster than the previous printf-based ASCII hash approach
+    local _key_parts=""
     local _idx
     for ((_idx=0; _idx<${#all_ids[@]}; _idx++)); do
         local _id="${all_ids[$_idx]}"
         local _data="${all_data[$_idx]}"
         local _mgr="${_data%%|*}"
-        # Simple hash: sum of first 4 char ASCII values for ID
-        local _c1 _c2 _c3 _c4
-        printf -v _c1 '%d' "'${_id:0:1}" 2>/dev/null || _c1=0
-        printf -v _c2 '%d' "'${_id:1:1}" 2>/dev/null || _c2=0
-        printf -v _c3 '%d' "'${_id:2:1}" 2>/dev/null || _c3=0
-        printf -v _c4 '%d' "'${_id:3:1}" 2>/dev/null || _c4=0
-        ((id_hash += _c1 + _c2 + _c3 + _c4))
-        # Also hash manager relationship (first 4 chars of manager)
-        if [[ -n "$_mgr" ]]; then
-            printf -v _c1 '%d' "'${_mgr:0:1}" 2>/dev/null || _c1=0
-            printf -v _c2 '%d' "'${_mgr:1:1}" 2>/dev/null || _c2=0
-            printf -v _c3 '%d' "'${_mgr:2:1}" 2>/dev/null || _c3=0
-            printf -v _c4 '%d' "'${_mgr:3:1}" 2>/dev/null || _c4=0
-            ((manager_hash += _c1 + _c2 + _c3 + _c4))
-        fi
+        _key_parts+="${_id}:${_mgr},"
     done
-    local id_key="${#all_ids[@]}:$id_hash:$manager_hash"
+    local id_key="${#all_ids[@]}:${#_key_parts}:${_key_parts}"
 
     local tree_ids=()
     if [[ "$id_key" == "$TREE_ORDER_KEY" && ${#TREE_ORDER_CACHE[@]} -gt 0 ]]; then
@@ -2438,21 +2528,18 @@ build_agent_data_file() {
         TREE_ORDER_KEY="$id_key"
     fi
 
-
     # === PASS 2: Write tmpfile in TREE ORDER ===
     local idx
     for ((idx=0; idx<${#tree_ids[@]}; idx++)); do
         local id="${tree_ids[$idx]}"
 
-        # Find cached data for this ID (linear search - fine for ~10 agents)
+        # Find cached data for this ID using O(1) index lookup
         local data=""
-        local j
-        for ((j=0; j<${#all_ids[@]}; j++)); do
-            if [[ "${all_ids[$j]}" == "$id" ]]; then
-                data="${all_data[$j]}"
-                break
-            fi
-        done
+        if [[ "$all_ids_index" == *"|$id:"* ]]; then
+            local data_idx_str="${all_ids_index#*"|$id:"}"
+            local data_idx="${data_idx_str%%"|"*}"
+            data="${all_data[$data_idx]}"
+        fi
 
         # Parse cached data: manager|age|model|prompt|worker
         local manager="${data%%|*}"
@@ -2469,15 +2556,12 @@ build_agent_data_file() {
         if [[ $idx -ge $visible_start && $idx -le $visible_end ]]; then
             local visible_offset=$((idx - visible_start))
 
-            # Check state cache first (inline lookup)
+            # Check state cache first using O(1) index lookup
             local state_cache_idx=-1
-            local _sci
-            for ((_sci=0; _sci<${#STATE_CACHE_IDS[@]}; _sci++)); do
-                if [[ "${STATE_CACHE_IDS[$_sci]}" == "$id" ]]; then
-                    state_cache_idx=$_sci
-                    break
-                fi
-            done
+            if [[ "$STATE_CACHE_INDEX" == *"|$id:"* ]]; then
+                local sci_str="${STATE_CACHE_INDEX#*"|$id:"}"
+                state_cache_idx="${sci_str%%"|"*}"
+            fi
 
             local tmux_session=$(session_name "$id")
             # For new agents (not in cache), check tmux directly instead of relying on cached sessions
@@ -2501,8 +2585,10 @@ build_agent_data_file() {
                     if [[ $state_cache_idx -ge 0 ]]; then
                         STATE_CACHE_DATA[$state_cache_idx]="$state"
                     else
+                        local new_state_idx=${#STATE_CACHE_IDS[@]}
                         STATE_CACHE_IDS+=("$id")
                         STATE_CACHE_DATA+=("$state")
+                        STATE_CACHE_INDEX="${STATE_CACHE_INDEX}|$id:$new_state_idx|"
                     fi
                 else
                     # Use cached state
@@ -2514,8 +2600,10 @@ build_agent_data_file() {
                 if [[ $state_cache_idx -ge 0 ]]; then
                     STATE_CACHE_DATA[$state_cache_idx]="$state"
                 else
+                    local new_state_idx=${#STATE_CACHE_IDS[@]}
                     STATE_CACHE_IDS+=("$id")
                     STATE_CACHE_DATA+=("$state")
+                    STATE_CACHE_INDEX="${STATE_CACHE_INDEX}|$id:$new_state_idx|"
                 fi
             fi
         fi
@@ -9014,9 +9102,9 @@ EOF
     init_feedback_state
     increment_feedback_session
 
-    # Check if we should show the feedback dialog
+    # Check if we should show the feedback dialog (skip in debug mode for consistent timing)
     local SHOW_FEEDBACK_DIALOG=0
-    if should_show_feedback_dialog; then
+    if [[ $DEBUG_MODE -eq 0 ]] && should_show_feedback_dialog; then
         SHOW_FEEDBACK_DIALOG=1
     fi
 
@@ -9344,6 +9432,42 @@ EOF
     local COLOR_GREEN=$'\e[32m'    # Green for diff additions
     local COLOR_RESET=$'\e[0m'     # Reset all attributes
 
+    # Cached separator strings (rebuilt when terminal dimensions change)
+    local _SEP_CACHE_COLS=0        # Last terminal width for cache
+    local _SEP_FULL=""             # Full-width separator (TERM_COLS)
+    local _SEP_LEFT=""             # Left pane separator (TMUX_WIDTH)
+    local _SEP_RIGHT=""            # Right pane separator (TERM_COLS - TMUX_WIDTH - 3)
+
+    # Build a separator string of the specified length (no subprocess)
+    # Uses printf trick: prints spaces then replaces with character
+    # Sets: _BUILT_SEP with the result
+    _BUILT_SEP=""
+    _build_sep() {
+        local len="$1"
+        local char="${2:-─}"
+        if [[ $len -le 0 ]]; then
+            _BUILT_SEP=""
+            return
+        fi
+        # Build separator by printf padding then parameter substitution
+        printf -v _BUILT_SEP "%${len}s" ""
+        _BUILT_SEP="${_BUILT_SEP// /$char}"
+    }
+
+    # Rebuild separator cache if terminal size changed
+    _update_sep_cache() {
+        if [[ $TERM_COLS -ne $_SEP_CACHE_COLS ]]; then
+            _build_sep "$TERM_COLS"
+            _SEP_FULL="$_BUILT_SEP"
+            _build_sep "$TMUX_WIDTH"
+            _SEP_LEFT="$_BUILT_SEP"
+            local right_width=$((TERM_COLS - TMUX_WIDTH - 3))
+            _build_sep "$right_width"
+            _SEP_RIGHT="$_BUILT_SEP"
+            _SEP_CACHE_COLS=$TERM_COLS
+        fi
+    }
+
     # Colorize a log line for agent log display
     # - Makes ISO timestamps at line start dim
     # - Colors other [...] blocks in cyan
@@ -9416,14 +9540,16 @@ EOF
     # - Yellow if >80%
     # - Red if >90%
     # Args: $1=percentage (number without %), $2=label ("session" or "weekly"), $3=reset_time (optional)
-    # Returns: colored string with % and reset time (restores dim after color)
+    # Format usage percentage with color coding (no subprocess)
+    # Sets: _FORMAT_USAGE_RESULT with the formatted string
     # Example output: "session:57% (44m)" or "weekly:35% (3d 8h)"
+    _FORMAT_USAGE_RESULT=""
     format_usage_pct() {
         local pct="$1"
         local label="$2"  # "session" or "weekly"
         local reset_time="$3"  # Optional: time until reset (e.g., "44m", "3d 8h")
         if [[ -z "$pct" ]]; then
-            echo ""
+            _FORMAT_USAGE_RESULT=""
             return
         fi
         local pct_num="${pct%.*}"  # Remove decimal part if any
@@ -9432,11 +9558,11 @@ EOF
             reset_suffix=" (${reset_time})"
         fi
         if [[ $pct_num -gt 90 ]]; then
-            echo "${COLOR_RED}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
+            _FORMAT_USAGE_RESULT="${COLOR_RED}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
         elif [[ $pct_num -gt 80 ]]; then
-            echo "${COLOR_YELLOW}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
+            _FORMAT_USAGE_RESULT="${COLOR_YELLOW}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
         else
-            echo "${label}:${pct}%${reset_suffix}"
+            _FORMAT_USAGE_RESULT="${label}:${pct}%${reset_suffix}"
         fi
     }
 
@@ -12489,13 +12615,12 @@ EOF
         # Move cursor to footer row and start dim mode for footer
         printf '\e[%d;1H%s' "$footer_row" "$COLOR_DIM"
 
-        # Check background process health and show age
+        # Check background process health and show age (uses CACHED_NOW from build_agent_data_file)
         local bg_status=""
         if [[ -n "$HEARTBEAT_FILE" && -f "$HEARTBEAT_FILE" ]]; then
-            local hb_time now_time hb_age
+            local hb_time hb_age
             read -r hb_time < "$HEARTBEAT_FILE" 2>/dev/null || hb_time=0
-            now_time=$(date +%s)
-            hb_age=$((now_time - hb_time))
+            hb_age=$((CACHED_NOW - hb_time))
             bg_status="bg:${hb_age}s  "
         fi
 
@@ -12507,7 +12632,8 @@ EOF
             local session_str=""
             local weekly_str=""
             if [[ -n "$USAGE_SESSION_PCT" ]]; then
-                session_str=$(format_usage_pct "$USAGE_SESSION_PCT" "session" "$USAGE_SESSION_RESET")
+                format_usage_pct "$USAGE_SESSION_PCT" "session" "$USAGE_SESSION_RESET"
+                session_str="$_FORMAT_USAGE_RESULT"
                 # "session:" + pct + "%" = 8 + len(pct) + 1
                 usage_info_visible_len=$((usage_info_visible_len + 8 + ${#USAGE_SESSION_PCT} + 1))
                 # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
@@ -12516,7 +12642,8 @@ EOF
                 fi
             fi
             if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
-                weekly_str=$(format_usage_pct "$USAGE_WEEKLY_PCT" "weekly" "$USAGE_WEEKLY_RESET")
+                format_usage_pct "$USAGE_WEEKLY_PCT" "weekly" "$USAGE_WEEKLY_RESET"
+                weekly_str="$_FORMAT_USAGE_RESULT"
                 if [[ -n "$session_str" ]]; then
                     usage_info_visible_len=$((usage_info_visible_len + 2))  # "  " separator
                 fi
@@ -12621,8 +12748,8 @@ EOF
         if [[ $frame_ms -gt 0 ]]; then
             fps=$((1000 / frame_ms))
         fi
-        local current_time
-        current_time=$(date +%H:%M:%S)
+        # Use cached time string from build_agent_data_file
+        local current_time="$CACHED_TIME_STR"
         # Build sponsor link with OSC 8 hyperlink (clickable in modern terminals)
         # Format: \e]8;;URL\e\\TEXT\e]8;;\e\\ (using \a as terminator for compatibility)
         local sponsor_link=$'\e]8;;https://github.com/sponsors/adamwulf\a'"♡ sponsor"$'\e]8;;\a'
@@ -12796,9 +12923,9 @@ EOF
             local title="DENIED TOOLS ($filter_name)"
             local pad_count=$((TERM_COLS - 3 - ${#title} - 1))  # 3 for "── ", 1 for trailing space
             [[ $pad_count -lt 0 ]] && pad_count=0
-            local pad=""
-            local i
-            for ((i=0; i<pad_count; i++)); do pad="${pad}─"; done
+            # Build pad using efficient printf method (no char-by-char loop)
+            _build_sep "$pad_count"
+            local pad="$_BUILT_SEP"
             printf "%s── %s%s%s %s%s\n" "$COLOR_DIM" "$COLOR_RESET" "$title" "$COLOR_DIM" "$pad" "$COLOR_RESET"
 
             # Load denials from background cache (non-blocking)
@@ -12860,11 +12987,8 @@ EOF
                 done
             fi
 
-            # Bottom separator (dim)
-            local separator=""
-            local i
-            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
+            # Bottom separator (dim) - uses cached full-width separator
+            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -12879,9 +13003,9 @@ EOF
             local title="AGENT TREE"
             local pad_count=$((TERM_COLS - 3 - ${#title} - 1))  # 3 for "── ", 1 for trailing space
             [[ $pad_count -lt 0 ]] && pad_count=0
-            local pad=""
-            local i
-            for ((i=0; i<pad_count; i++)); do pad="${pad}─"; done
+            # Build pad using efficient printf method (no char-by-char loop)
+            _build_sep "$pad_count"
+            local pad="$_BUILT_SEP"
             printf "%s── %s%s%s %s%s\n" "$COLOR_DIM" "$COLOR_RESET" "$title" "$COLOR_DIM" "$pad" "$COLOR_RESET"
 
             # Render full-width tree pane (hide left tmux pane)
@@ -12936,11 +13060,8 @@ EOF
                 done
             fi
 
-            # Bottom separator (dim)
-            local separator=""
-            local i
-            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
+            # Bottom separator (dim) - uses cached full-width separator
+            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -13030,11 +13151,8 @@ EOF
                 done
             fi
 
-            # Bottom separator (dim)
-            local separator=""
-            local i
-            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s%s%s' "$COLOR_DIM" "$separator" "$COLOR_RESET"
+            # Bottom separator (dim) - uses cached full-width separator
+            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -13123,11 +13241,8 @@ EOF
                 done
             fi
 
-            # Bottom separator
-            local separator=""
-            local i
-            for ((i=0; i<content_width; i++)); do separator="${separator}─"; done
-            printf '%s' "$separator"
+            # Bottom separator - uses cached full-width separator
+            printf '%s' "$_SEP_FULL"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -13146,10 +13261,11 @@ EOF
         local right_pad_count=$((right_pane_width - 3 - ${#right_title} - 1))
         [[ $left_pad_count -lt 0 ]] && left_pad_count=0
         [[ $right_pad_count -lt 0 ]] && right_pad_count=0
-        local left_pad="" right_pad=""
-        local i
-        for ((i=0; i<left_pad_count; i++)); do left_pad="${left_pad}─"; done
-        for ((i=0; i<right_pad_count; i++)); do right_pad="${right_pad}─"; done
+        # Build pads using efficient printf method (no char-by-char loop)
+        _build_sep "$left_pad_count"
+        local left_pad="$_BUILT_SEP"
+        _build_sep "$right_pad_count"
+        local right_pad="$_BUILT_SEP"
         # Format: dim "── " + reset + title + dim " ─────" for each pane
         printf "%s── %s%s%s %s─┬─── %s%s%s %s%s\n" \
             "$COLOR_DIM" "$COLOR_RESET" "$left_title" "$COLOR_DIM" "$left_pad" \
@@ -13160,12 +13276,9 @@ EOF
             # Use agent_manager extracted earlier from tmpfile
             local manager_id="${agent_manager:-unknown}"
             local warning_msg="⚠️  WARNING: This worker agent is orphaned. Manager '$manager_id' no longer exists."
-            # Print warning pane (2 lines: message + separator)
+            # Print warning pane (2 lines: message + separator) - uses cached full-width separator
             printf '\e[33m%-*s\e[0m\n' "$TERM_COLS" "$warning_msg"
-            local warning_sep=""
-            local i
-            for ((i=0; i<TERM_COLS; i++)); do warning_sep="${warning_sep}─"; done
-            printf '%s\n' "$warning_sep"
+            printf '%s\n' "$_SEP_FULL"
         fi
 
         # Reset scroll offset when agent changes
@@ -13257,12 +13370,9 @@ EOF
                         # Remove leading newlines after the marker
                         prompt_content="${prompt_content#$'\n'}"
                     fi
-                    # Wrap prompt to right pane width using fold
-                    local wrapped
-                    wrapped=$(echo "$prompt_content" | fold -s -w "$right_pane_width")
-                    while IFS= read -r line; do
-                        right_pane_lines+=("$line")
-                    done <<< "$wrapped"
+                    # Wrap prompt to right pane width using pure bash (no subprocess)
+                    _fold_text "$prompt_content" "$right_pane_width"
+                    right_pane_lines=("${_FOLD_LINES[@]}")
                 fi
             fi
         fi
@@ -13327,12 +13437,9 @@ EOF
         done
 
         # Bottom separator line with connected box-drawing character (dim)
+        # Uses cached separators from _update_sep_cache (no per-frame loop)
         local separator_row=$((_WATCH_PANE_START_ROW + pane_height))
-        local left_sep="" right_sep=""
-        local i
-        for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
-        for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
-        printf '\e[%d;1H%s%s─┴─%s%s' "$separator_row" "$COLOR_DIM" "$left_sep" "$right_sep" "$COLOR_RESET"
+        printf '\e[%d;1H%s%s─┴─%s%s' "$separator_row" "$COLOR_DIM" "$_SEP_LEFT" "$_SEP_RIGHT" "$COLOR_RESET"
     }
 
     # Background process to collect permission denials and write to cache file
@@ -13655,6 +13762,9 @@ EOF
         # Refresh usage data periodically
         watch_refresh_usage
 
+        # Update cached separator strings if terminal size changed
+        _update_sep_cache
+
         # Move cursor to top-left (no flicker vs clear)
         tput cup 0 0
 
@@ -13712,10 +13822,11 @@ EOF
             local right_pad_count=$((right_pane_width - 3 - ${#right_title} - 1))
             [[ $left_pad_count -lt 0 ]] && left_pad_count=0
             [[ $right_pad_count -lt 0 ]] && right_pad_count=0
-            local left_pad="" right_pad=""
-            local i
-            for ((i=0; i<left_pad_count; i++)); do left_pad="${left_pad}─"; done
-            for ((i=0; i<right_pad_count; i++)); do right_pad="${right_pad}─"; done
+            # Build pads using efficient printf method (no char-by-char loop)
+            _build_sep "$left_pad_count"
+            local left_pad="$_BUILT_SEP"
+            _build_sep "$right_pad_count"
+            local right_pad="$_BUILT_SEP"
             printf '%s── %s%s%s %s─┬─── %s%s%s %s%s\n' \
                 "$COLOR_DIM" "$COLOR_RESET" "$left_title" "$COLOR_DIM" "$left_pad" \
                 "$COLOR_RESET" "$right_title" "$COLOR_DIM" "$right_pad" "$COLOR_RESET"
@@ -13727,11 +13838,8 @@ EOF
             done
 
             # Bottom separator with ─ characters (dim)
-            local left_sep="" right_sep=""
-            local i
-            for ((i=0; i<left_pane_width; i++)); do left_sep="${left_sep}─"; done
-            for ((i=0; i<right_pane_width; i++)); do right_sep="${right_sep}─"; done
-            printf '%s%s─┴─%s%s' "$COLOR_DIM" "$left_sep" "$right_sep" "$COLOR_RESET"
+            # Uses cached separators from _update_sep_cache (no per-frame loop)
+            printf '%s%s─┴─%s%s' "$COLOR_DIM" "$_SEP_LEFT" "$_SEP_RIGHT" "$COLOR_RESET"
 
             # Footer
             local footer_row=$((5 + 2 + pane_height + 1))  # tree(5) + header(1) + panes + separator(1) = start after separator
