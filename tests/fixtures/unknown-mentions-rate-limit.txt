@@ -1,0 +1,4 @@
+I've analyzed the codebase and found that we need to handle rate limiting
+scenarios. The detection logic should look for specific API error patterns.
+When we hit a limit, we should wait and retry. Let me implement the
+bypass function now.

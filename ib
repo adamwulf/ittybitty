@@ -1280,6 +1280,27 @@ parse_state() {
 
     # last_lines already contains the last 15 lines (computed above)
 
+    # Check for rate limit screen (high priority - blocks agent progress)
+    # These patterns appear when Claude hits usage limits:
+    # - "Claude usage limit reached. Your limit will reset at 3pm"
+    # - "Error: 429 {"type":"error","error":{"type":"rate_limit_error"..."
+    # Use case-insensitive matching for "usage limit" phrases
+    if [[ "$last_lines" == *"rate_limit_error"* ]]; then
+        echo "rate_limited"
+        return
+    fi
+    # Case-insensitive check for usage limit patterns
+    local old_nocasematch
+    old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+    shopt -s nocasematch
+    if [[ "$last_lines" == *"usage limit reached"* ]] || \
+       [[ "$last_lines" == *"limit will reset at"* ]]; then
+        eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+        echo "rate_limited"
+        return
+    fi
+    eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+
     # Check for completion signal
     # The agent saying "I HAVE COMPLETED THE GOAL" is the definitive completion signal
     if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
@@ -1346,7 +1367,7 @@ parse_state() {
 }
 
 # Detect agent state from tmux
-# States: creating, running, waiting, stopped, complete, unknown
+# States: creating, running, waiting, stopped, complete, rate_limited, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
@@ -1540,6 +1561,45 @@ auto_accept_workspace_trust() {
     echo "  [ib] Warning: Permissions screen may still be active after $max_attempts attempts" >&2
     echo "  [ib] Use 'ib look <agent-id>' to check status" >&2
     return 1
+}
+
+# Bypass rate limit dialog by sending Enter (selects "wait for reset" option)
+# Returns 0 if rate limit screen was dismissed, 1 if still showing
+bypass_rate_limit() {
+    local TMUX_SESSION="$1"
+    local max_attempts=3
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        # Check if rate limit screen is still showing
+        local recent_output
+        recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null) || return 1
+
+        # Use parse_state to check for rate_limited
+        local state
+        state=$(parse_state "$recent_output")
+        if [[ "$state" != "rate_limited" ]]; then
+            return 0  # Rate limit screen dismissed
+        fi
+
+        # Send Enter to dismiss (selects first option: "Wait for limit reset")
+        tmux send-keys -t "$TMUX_SESSION" Enter
+        attempt=$((attempt + 1))
+
+        # Wait for screen to update
+        sleep 2
+    done
+
+    # Check one more time after all attempts
+    local final_output
+    final_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null) || return 1
+    local final_state
+    final_state=$(parse_state "$final_output")
+    if [[ "$final_state" != "rate_limited" ]]; then
+        return 0
+    fi
+
+    return 1  # Failed to dismiss after max attempts
 }
 
 # =============================================================================
@@ -8387,6 +8447,58 @@ cmd_watchdog() {
                     echo "[watchdog] Next notification in ${next_seconds} seconds"
                     log_agent "$AGENT_ID" "[watchdog] Backoff increased: next notify in ${next_seconds}s" --quiet
                 fi
+                ;;
+
+            rate_limited)
+                # Agent hit a rate limit - need to bypass dialog and wait for usage to refresh
+                local TMUX_SESSION
+                TMUX_SESSION=$(session_name "$AGENT_ID")
+
+                if [[ "$prev_state" != "rate_limited" ]]; then
+                    echo "[watchdog] Agent state: rate_limited (usage limit hit)"
+                    log_agent "$AGENT_ID" "[watchdog] Rate limit detected" --quiet
+
+                    # Attempt to bypass the rate limit dialog
+                    echo "[watchdog] Attempting to bypass rate limit dialog..."
+                    if bypass_rate_limit "$TMUX_SESSION"; then
+                        echo "[watchdog] Rate limit dialog dismissed, agent waiting for usage refresh"
+                        log_agent "$AGENT_ID" "[watchdog] Rate limit dialog dismissed" --quiet
+                    else
+                        echo "[watchdog] Warning: Could not dismiss rate limit dialog"
+                        log_agent "$AGENT_ID" "[watchdog] Warning: Rate limit dialog still showing" --quiet
+                    fi
+                fi
+
+                # Check usage API to see if we can resume
+                # Recovery threshold: 80% (wait until usage drops below this)
+                local recovery_threshold=80
+                if fetch_claude_usage; then
+                    local session_pct="${_USAGE_SESSION_PCT:-100}"
+                    echo "[watchdog] Current usage: session=${session_pct}% (recovery at <${recovery_threshold}%)"
+
+                    if [[ -n "$session_pct" ]] && [[ "$session_pct" -lt "$recovery_threshold" ]]; then
+                        echo "[watchdog] Usage refreshed! Nudging agent to continue..."
+                        log_agent "$AGENT_ID" "[watchdog] Usage refreshed (${session_pct}%), sending nudge" --quiet
+
+                        # Send nudge message to agent
+                        if [[ "$QUIET" == "true" ]]; then
+                            echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would send nudge to agent"
+                        else
+                            ib send "$AGENT_ID" "[watchdog]: Usage has refreshed. Please continue your task."
+                        fi
+                    else
+                        # Log reset time if available
+                        if [[ -n "$_USAGE_SESSION_RESET" ]]; then
+                            echo "[watchdog] Usage still high, reset in: $_USAGE_SESSION_RESET"
+                        fi
+                    fi
+                else
+                    echo "[watchdog] Warning: Could not fetch usage data"
+                fi
+
+                # Reset counters since we're handling this state specially
+                waiting_counter=0
+                notify_interval=6
                 ;;
 
             stopped)

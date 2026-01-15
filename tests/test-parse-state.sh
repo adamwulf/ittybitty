@@ -34,6 +34,11 @@ echo ""
 for fixture_path in "$FIXTURES_DIR"/*.txt; do
     filename=$(basename "$fixture_path")
 
+    # Skip files marked as deleted (contain _DELETED_ marker)
+    if grep -q "_DELETED_" "$fixture_path" 2>/dev/null; then
+        continue
+    fi
+
     # Extract expected state from filename (everything before first hyphen)
     expected="${filename%%-*}"
 
