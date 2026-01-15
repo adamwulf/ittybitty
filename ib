@@ -9534,9 +9534,10 @@ EOF
     # Trap Ctrl-C and other exits
     trap watch_cleanup EXIT
 
-    # Hide cursor and disable terminal echo (skip in debug mode - no TTY)
+    # Hide cursor, clear screen, and disable terminal echo (skip in debug mode - no TTY)
     if [[ $DEBUG_MODE -eq 0 ]]; then
         tput civis
+        tput clear
         stty -echo
     fi
 
