@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ittybitty (`ib`) is a minimal multi-agent orchestration tool for Claude Code. It uses tmux sessions and git worktrees to spawn and manage multiple Claude agents in parallel. The entire tool is a single bash script (`ib`, ~2500 lines).
 
+## Documentation Guidelines
+
+**Keep README.md up to date with user-facing features.**
+
+- **README.md** is the user-facing reference — users only read this file
+- **CLAUDE.md** contains internal/developer documentation for Claude agents working on this codebase
+
+When adding new user-facing features:
+1. Document them in README.md first (concise, practical examples)
+2. Add detailed implementation notes to CLAUDE.md if needed for development
+
 ## Architecture
 
 ```

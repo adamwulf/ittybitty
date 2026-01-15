@@ -294,6 +294,43 @@ Use `ib nuke --force` to skip the confirmation prompt.
 
 **Environment:** Set `ITTYBITTY_DIR` to change the base directory (default: `.ittybitty`).
 
+## Extensibility
+
+### Custom Prompts
+
+Add custom instructions to all agents by creating markdown files in `.ittybitty/prompts/`:
+
+| File | Applied To |
+|------|------------|
+| `all.md` | All agents (managers and workers) |
+| `manager.md` | Manager agents only |
+| `worker.md` | Worker agents only |
+
+**Example `.ittybitty/prompts/all.md`:**
+```markdown
+## Project Standards
+- Use TypeScript strict mode
+- Run `npm test` before committing
+```
+
+### User Hooks
+
+Run custom scripts when agents are created by placing executable scripts in `.ittybitty/hooks/`:
+
+| Hook | Trigger |
+|------|---------|
+| `post-create-agent` | After agent is created |
+
+The hook receives agent info via environment variables: `IB_AGENT_ID`, `IB_AGENT_TYPE`, `IB_AGENT_DIR`, `IB_AGENT_BRANCH`, `IB_AGENT_MANAGER`, `IB_AGENT_PROMPT`, `IB_AGENT_MODEL`.
+
+**Example `.ittybitty/hooks/post-create-agent`:**
+```bash
+#!/bin/bash
+echo "[$(date -Iseconds)] Agent $IB_AGENT_ID ($IB_AGENT_TYPE)" >> .ittybitty/creation.log
+```
+
+Make sure to make the hook executable: `chmod +x .ittybitty/hooks/post-create-agent`
+
 ## Limitations
 
 - **Merge conflicts**: If `ib merge` fails due to conflicts, the merging agent resolves them manually (edit files, `git add`, `git commit`)
