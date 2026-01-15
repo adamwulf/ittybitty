@@ -213,7 +213,12 @@ enforce_command_access() {
     if [[ "$is_claude" == "true" ]] && { [[ "$in_worktree" == "true" ]] || [[ "$in_tmux_session" == "true" ]]; }; then
         case "$cmd" in
             watch)
+                # Allow watch --debug for performance testing from agents
+                if [[ "$subcmd" == "--debug" ]]; then
+                    return 0
+                fi
                 echo "Error: '$cmd' is an interactive command not available to agents" >&2
+                echo "Use 'ib watch --debug' for performance testing" >&2
                 exit 1
                 ;;
             hooks)
@@ -233,8 +238,13 @@ enforce_command_access() {
     if [[ "$in_worktree" == "true" ]]; then
         case "$cmd" in
             watch)
+                # Allow watch --debug from agent worktrees for performance testing
+                if [[ "$subcmd" == "--debug" ]]; then
+                    return 0
+                fi
                 echo "Error: You are inside an agent worktree" >&2
                 echo "Run 'ib watch' from the main repository instead" >&2
+                echo "Use 'ib watch --debug' for performance testing from worktrees" >&2
                 exit 1
                 ;;
         esac
@@ -1818,6 +1828,60 @@ DIFF_BG_PID=""                   # PID of background collector process
 DIFF_CACHE_LOADED=0              # 0=not loaded yet (show loading), 1=loaded
 DIFF_MERGE_STATUS=""             # "ok", "conflicts", or "error"
 
+# =============================================================================
+# Debug Timing Infrastructure (global for use by any function)
+# Set DEBUG_WATCH_MODE=1 in cmd_watch when --debug flag is passed
+# =============================================================================
+DEBUG_WATCH_MODE=0               # 0=off, 1=on (set by cmd_watch --debug)
+
+DEBUG_TIMING_NAMES=()            # Names of timing points
+DEBUG_TIMING_SUMS=()             # Sum of all measurements (for average)
+DEBUG_TIMING_COUNTS=()           # Number of measurements
+DEBUG_TIMING_MINS=()             # Minimum measurement
+DEBUG_TIMING_MAXES=()            # Maximum measurement
+DEBUG_TIMING_IDX=0               # Last looked-up index (avoid subshell)
+
+# Get or create index for a timing point (result in DEBUG_TIMING_IDX)
+_debug_timing_get_idx() {
+    [[ $DEBUG_WATCH_MODE -eq 0 ]] && return
+    local name="$1"
+    local i
+    for ((i=0; i<${#DEBUG_TIMING_NAMES[@]}; i++)); do
+        if [[ "${DEBUG_TIMING_NAMES[$i]}" == "$name" ]]; then
+            DEBUG_TIMING_IDX=$i
+            return
+        fi
+    done
+    # Not found, create new entry
+    DEBUG_TIMING_IDX=${#DEBUG_TIMING_NAMES[@]}
+    DEBUG_TIMING_NAMES+=("$name")
+    DEBUG_TIMING_SUMS+=(0)
+    DEBUG_TIMING_COUNTS+=(0)
+    DEBUG_TIMING_MINS+=(999999999)
+    DEBUG_TIMING_MAXES+=(0)
+}
+
+# Record a timing measurement
+# Args: $1 = name, $2 = duration_ms
+_debug_timing_record() {
+    [[ $DEBUG_WATCH_MODE -eq 0 ]] && return
+    local name="$1"
+    local duration="$2"
+
+    _debug_timing_get_idx "$name"
+    local idx=$DEBUG_TIMING_IDX
+
+    # Update statistics
+    DEBUG_TIMING_SUMS[$idx]=$((DEBUG_TIMING_SUMS[$idx] + duration))
+    DEBUG_TIMING_COUNTS[$idx]=$((DEBUG_TIMING_COUNTS[$idx] + 1))
+    if [[ $duration -lt ${DEBUG_TIMING_MINS[$idx]} ]]; then
+        DEBUG_TIMING_MINS[$idx]=$duration
+    fi
+    if [[ $duration -gt ${DEBUG_TIMING_MAXES[$idx]} ]]; then
+        DEBUG_TIMING_MAXES[$idx]=$duration
+    fi
+}
+
 # Helper to lookup cached meta data (returns index or -1)
 _meta_cache_lookup() {
     local lookup_id="$1"
@@ -2097,7 +2161,10 @@ build_agent_data_file() {
             if [[ "$session_exists" == "true" ]]; then
                 # Refresh one agent per frame (round-robin) or if not cached
                 if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
+                    local t_state_start t_state_end
+                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_state_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
                     state=$(get_state "$id")
+                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_state_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "state_detection" $((t_state_end - t_state_start)); }
                     [[ "$state" == "unknown" ]] && state="waiting"
                     # Update cache
                     if [[ $state_cache_idx -ge 0 ]]; then
@@ -7153,8 +7220,13 @@ EOF
             echo "deny"
             return 0
             ;;
-        # Interactive commands - don't make sense for agents
+        # Interactive commands - don't make sense for agents (except watch --debug)
         watch)
+            # Allow watch --debug for performance testing from agents
+            if [[ "$subcmd" == "--debug" ]]; then
+                echo "allow"
+                return 0
+            fi
             echo "deny"
             return 0
             ;;
@@ -8308,14 +8380,24 @@ EOF
 # =============================================================================
 
 cmd_watch() {
+    # Debug mode variables (must be declared before parsing)
+    local DEBUG_MODE=0
+    local DEBUG_MAX_FRAMES=1000
+    local DEBUG_FRAME_COUNT=0
+
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
                 cat <<EOF
-Usage: ib watch
+Usage: ib watch [--debug]
 
 Full-screen dashboard for monitoring all agents.
+
+Options:
+  --debug   Performance testing mode. Enables timing instrumentation,
+            allows running from agent worktrees, and auto-exits after
+            1000 frames (~100 seconds). Shows timing summary on exit.
 
 Controls:
   j/k     Select next/previous agent
@@ -8334,12 +8416,56 @@ The display shows:
 EOF
                 exit 0
                 ;;
+            --debug)
+                DEBUG_MODE=1
+                DEBUG_WATCH_MODE=1  # Set global for use by all functions
+                shift
+                ;;
             *)
                 echo "Unknown option: $1" >&2
                 exit 1
                 ;;
         esac
     done
+
+    # Print timing summary (called on exit)
+    # Uses global DEBUG_TIMING_* arrays populated by _debug_timing_record
+    debug_print_summary() {
+        [[ $DEBUG_MODE -eq 0 ]] && return
+
+        # Restore terminal state
+        tput rmcup 2>/dev/null || true
+        tput cnorm 2>/dev/null || true
+
+        echo ""
+        echo "ib watch --debug completed ($DEBUG_FRAME_COUNT frames)"
+        echo ""
+        echo "Timing Summary (averages in ms):"
+
+        local i name count sum min max avg
+        for ((i=0; i<${#DEBUG_TIMING_NAMES[@]}; i++)); do
+            name="${DEBUG_TIMING_NAMES[$i]}"
+            count="${DEBUG_TIMING_COUNTS[$i]}"
+            sum="${DEBUG_TIMING_SUMS[$i]}"
+            min="${DEBUG_TIMING_MINS[$i]}"
+            max="${DEBUG_TIMING_MAXES[$i]}"
+
+            if [[ $count -gt 0 ]]; then
+                # Calculate average (integer division, then add decimal)
+                local avg_int=$((sum / count))
+                local avg_frac=$(( (sum * 10 / count) % 10 ))
+                avg="${avg_int}.${avg_frac}"
+
+                # Format min/max with one decimal place
+                local min_int=$((min))
+                local max_int=$((max))
+
+                printf "  %-20s %6s  (min: %4d, max: %4d, count: %d)\n" \
+                    "$name:" "$avg" "$min_int" "$max_int" "$count"
+            fi
+        done
+        echo ""
+    }
 
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
@@ -8617,18 +8743,23 @@ EOF
         # Stop background collectors
         stop_denials_collector
         stop_diff_collector
-        stty echo    # Restore terminal echo
-        tput cnorm   # Show cursor
-        tput clear   # Clear screen
-        echo "Exited ib watch"
+        # Only restore terminal state if not in debug mode
+        if [[ $DEBUG_MODE -eq 0 ]]; then
+            stty echo    # Restore terminal echo
+            tput cnorm   # Show cursor
+            tput clear   # Clear screen
+            echo "Exited ib watch"
+        fi
     }
 
     # Trap Ctrl-C and other exits
     trap watch_cleanup EXIT
 
-    # Hide cursor and disable terminal echo
-    tput civis
-    stty -echo
+    # Hide cursor and disable terminal echo (skip in debug mode - no TTY)
+    if [[ $DEBUG_MODE -eq 0 ]]; then
+        tput civis
+        stty -echo
+    fi
 
     # Helper to get current time in milliseconds
     get_ms() {
@@ -11905,7 +12036,10 @@ EOF
 
         # Build agent data (only get state for visible tree indices)
         # Called directly (not in subshell) to preserve meta.json cache
+        local t_build_start t_build_end
+        [[ $DEBUG_MODE -eq 1 ]] && t_build_start=$(get_ms)
         build_agent_data_file "$TREE_SCROLL" "$((TREE_SCROLL + 4))"
+        [[ $DEBUG_MODE -eq 1 ]] && { t_build_end=$(get_ms); _debug_timing_record "build_agent_data" $((t_build_end - t_build_start)); }
         local tmpfile="$BUILD_AGENT_DATA_RESULT"
         # Ensure tmpfile cleanup on any exit path
         trap "rm -f '$tmpfile'" RETURN
@@ -11979,6 +12113,8 @@ EOF
         _NO_AGENTS_DIRTY=1
 
         # Render tree and get selected agent (skip for full-width modes)
+        local t_tree_start t_tree_end
+        [[ $DEBUG_MODE -eq 1 ]] && t_tree_start=$(get_ms)
         if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 ]]; then
             # Denials/Diff mode: skip tree rendering, set tree_display_lines to 0
             # Still need to process agent list for state tracking
@@ -11993,15 +12129,22 @@ EOF
         else
             watch_render_tree "$tmpfile"
         fi
+        [[ $DEBUG_MODE -eq 1 ]] && { t_tree_end=$(get_ms); _debug_timing_record "render_tree" $((t_tree_end - t_tree_start)); }
         local selected_id="$_WATCH_SELECTED_ID"
         local tree_display_lines="$_WATCH_TREE_DISPLAY_LINES"
 
         # Render split panes (tmux output + agent log)
+        local t_panes_start t_panes_end
+        [[ $DEBUG_MODE -eq 1 ]] && t_panes_start=$(get_ms)
         watch_render_split_panes "$selected_id" "$tree_display_lines" "$tmpfile"
+        [[ $DEBUG_MODE -eq 1 ]] && { t_panes_end=$(get_ms); _debug_timing_record "render_split_panes" $((t_panes_end - t_panes_start)); }
 
         # Render footer (after panes + separator line)
+        local t_footer_start t_footer_end
+        [[ $DEBUG_MODE -eq 1 ]] && t_footer_start=$(get_ms)
         local footer_row=$((_WATCH_PANE_START_ROW + _WATCH_PANE_HEIGHT + 1))
         watch_render_footer "$footer_row" "$t_frame_start"
+        [[ $DEBUG_MODE -eq 1 ]] && { t_footer_end=$(get_ms); _debug_timing_record "render_footer" $((t_footer_end - t_footer_start)); }
         # tmpfile cleanup handled by RETURN trap
     }
 
@@ -12200,27 +12343,30 @@ EOF
         esac
     }
 
-    # Start persistent background key reader
+    # Start persistent background key reader (skip in debug mode - no TTY input needed)
     local keyfile=$(mktemp)
-    (
-        set +e  # Disable exit-on-error in subshell
-        exec < /dev/tty 2>/dev/null
-        while true; do
-            # Read one character; Enter produces empty $k but successful read
-            # Redirect stderr to suppress I/O error messages
-            if ! IFS= read -rsn1 k 2>/dev/null; then
-                # Read failed (I/O error or EOF) - exit cleanly
-                break
-            fi
-            if [[ -z "$k" ]]; then
-                # Empty means Enter was pressed - use record separator (0x1E) as marker
-                printf '\x1e' >> "$keyfile"
-            else
-                printf "%s" "$k" >> "$keyfile"
-            fi
-        done
-    ) &
-    local reader_pid=$!
+    local reader_pid=""
+    if [[ $DEBUG_MODE -eq 0 ]]; then
+        (
+            set +e  # Disable exit-on-error in subshell
+            exec < /dev/tty 2>/dev/null
+            while true; do
+                # Read one character; Enter produces empty $k but successful read
+                # Redirect stderr to suppress I/O error messages
+                if ! IFS= read -rsn1 k 2>/dev/null; then
+                    # Read failed (I/O error or EOF) - exit cleanly
+                    break
+                fi
+                if [[ -z "$k" ]]; then
+                    # Empty means Enter was pressed - use record separator (0x1E) as marker
+                    printf '\x1e' >> "$keyfile"
+                else
+                    printf "%s" "$k" >> "$keyfile"
+                fi
+            done
+        ) &
+        reader_pid=$!
+    fi
 
     # Start background session monitor (refreshes tmux session list AND captures pane output)
     local sessionfile=$(mktemp)
@@ -12292,7 +12438,7 @@ EOF
 
     # Cleanup reader and session monitor on exit
     watch_cleanup_reader() {
-        kill $reader_pid 2>/dev/null
+        [[ -n "$reader_pid" ]] && kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
         rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file" "$errors_file"
         rm -rf "$tmux_cache_dir" "$log_cache_dir"
@@ -12330,7 +12476,31 @@ EOF
             esac
             set -e
         else
-            watch_render
+            # In debug mode, suppress TUI output (redirect to /dev/null)
+            # but still run all timing code inside watch_render
+            if [[ $DEBUG_MODE -eq 1 ]]; then
+                watch_render > /dev/null 2>&1
+            else
+                watch_render
+            fi
+        fi
+
+        # Record render time (before sleep) for debug mode
+        if [[ $DEBUG_MODE -eq 1 ]]; then
+            local render_end_ms=$(get_ms)
+            _debug_timing_record "total_frame" $((render_end_ms - frame_start_ms))
+            DEBUG_FRAME_COUNT=$((DEBUG_FRAME_COUNT + 1))
+
+            # Show progress every 100 frames
+            if [[ $((DEBUG_FRAME_COUNT % 100)) -eq 0 ]]; then
+                echo "Progress: $DEBUG_FRAME_COUNT / $DEBUG_MAX_FRAMES frames" >&2
+            fi
+
+            # Exit after max frames in debug mode
+            if [[ $DEBUG_FRAME_COUNT -ge $DEBUG_MAX_FRAMES ]]; then
+                debug_print_summary
+                exit 0
+            fi
         fi
 
         # Sleep using adaptive sleep time (skip if negative)
