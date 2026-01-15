@@ -12506,8 +12506,8 @@ EOF
             fi
         fi
 
-        # Sleep using adaptive sleep time (skip if negative)
-        if [[ $SLEEP_ADJUST_MS -gt 0 ]]; then
+        # Sleep using adaptive sleep time (skip in debug mode and if negative)
+        if [[ $DEBUG_MODE -eq 0 && $SLEEP_ADJUST_MS -gt 0 ]]; then
             sleep $(awk "BEGIN {printf \"%.3f\", $SLEEP_ADJUST_MS / 1000}")
         fi
 
