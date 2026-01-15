@@ -1169,12 +1169,8 @@ set_feedback_field() {
 
     case "$field" in
         session_count)
-            # Replace numeric value
-            if [[ "$content" =~ \"session_count\"[[:space:]]*:[[:space:]]*[0-9]+ ]]; then
-                content="${content/\"session_count\"*([0-9]+)/\"session_count\":$value}"
-                # Use sed for reliable replacement
-                content=$(echo "$content" | sed "s/\"session_count\"[[:space:]]*:[[:space:]]*[0-9]*/\"session_count\":$value/")
-            fi
+            # Replace numeric value using sed
+            content=$(echo "$content" | sed "s/\"session_count\"[[:space:]]*:[[:space:]]*[0-9]*/\"session_count\":$value/")
             ;;
         last_shown|response)
             # Replace string value
@@ -12367,8 +12363,8 @@ EOF
                     0)  # Yes, loving it!
                         record_feedback_response "positive"
                         DIALOG_MODE=0
-                        # Open GitHub sponsors page
-                        open "https://github.com/sponsors/adamwulf" 2>/dev/null || true
+                        # Open GitHub sponsors page (macOS: open, Linux: xdg-open)
+                        { open "https://github.com/sponsors/adamwulf" 2>/dev/null || xdg-open "https://github.com/sponsors/adamwulf" 2>/dev/null; } || true
                         ;;
                     1)  # It's okay
                         record_feedback_response "neutral"
@@ -12377,8 +12373,8 @@ EOF
                     2)  # Not really
                         record_feedback_response "negative"
                         DIALOG_MODE=0
-                        # Open GitHub issues for feedback
-                        open "https://github.com/adamwulf/ittybitty/issues" 2>/dev/null || true
+                        # Open GitHub issues for feedback (macOS: open, Linux: xdg-open)
+                        { open "https://github.com/adamwulf/ittybitty/issues" 2>/dev/null || xdg-open "https://github.com/adamwulf/ittybitty/issues" 2>/dev/null; } || true
                         ;;
                     3)  # Ask me later
                         mark_feedback_shown  # Reset the 7-day timer
