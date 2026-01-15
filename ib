@@ -3292,9 +3292,15 @@ EOF
 }
 EOF
 
-    # Log agent creation
+    # Log agent creation to new agent's log
     if [[ -n "$MANAGER" ]]; then
         log_agent "$ID" "Agent created (manager: $MANAGER, prompt: $PROMPT)" --quiet
+        # Also log to the manager's log that a subagent was spawned
+        local agent_type_label="worker"
+        if [[ "$WORKER_MODE" != true ]]; then
+            agent_type_label="manager"
+        fi
+        log_agent "$MANAGER" "Spawned $agent_type_label subagent: $ID (prompt: $PROMPT)" --quiet
     else
         log_agent "$ID" "Agent created (prompt: $PROMPT)" --quiet
     fi
