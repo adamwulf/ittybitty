@@ -185,7 +185,30 @@ If the script exits unexpectedly:
 - `permissions.manager.allow/deny` - tools for manager agents
 - `permissions.worker.allow/deny` - tools for worker agents
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
+- `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
+
+### Auto-Compact Threshold
+
+The `autoCompactThreshold` setting controls when the watchdog automatically triggers `/compact` on an agent:
+
+| Value | Behavior |
+|-------|----------|
+| Unset or >100 | Claude handles compaction automatically (default) |
+| 1-100 | Watchdog sends `/compact` when context usage reaches this percentage |
+
+Example `.ittybitty.json`:
+```json
+{
+  "autoCompactThreshold": 80
+}
+```
+
+When enabled, the watchdog:
+1. Monitors the "Context left until auto-compact: X%" message in agent output
+2. Calculates usage as `100 - remaining%`
+3. Sends `/compact` when usage >= threshold
+4. Waits for compaction to complete before checking again
 
 ## Custom Prompts
 
@@ -422,20 +445,24 @@ The `get_state` function (ib:867) reads recent tmux output to determine state:
 |-------|------------------|
 | `stopped` | tmux session doesn't exist |
 | `creating` | Session exists but Claude hasn't started yet (no logo, may show permissions screen) |
+| `compacting` | Last 5 lines contain "Compacting conversation" |
 | `running` | Last 5 lines contain active indicators ("esc to interrupt", "⎿  Running") OR last 15 lines contain "ctrl+b ctrl+b", "thinking)" |
+| `rate_limited` | Last 15 lines contain "rate_limit_error" or "usage limit reached" |
 | `complete` | Last 15 lines contain "I HAVE COMPLETED THE GOAL" |
 | `waiting` | Last 15 lines contain standalone "WAITING" |
 | `unknown` | Session exists but no clear indicators |
 
 **Priority order**:
 1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
-2. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
-3. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
-4. Check last 15 lines for waiting ("WAITING")
-5. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
-6. Unknown if no indicators found
+2. Check last 5 lines for compacting state ("Compacting conversation") - agent is busy summarizing context
+3. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
+4. Check last 15 lines for rate limiting ("rate_limit_error", "usage limit reached")
+5. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
+6. Check last 15 lines for waiting ("WAITING")
+7. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
+8. Unknown if no indicators found
 
-This order ensures that creating agents are properly identified, active execution indicators in the very recent output override completion phrases, while completion phrases take priority over running indicators that may appear in descriptive text or historical output.
+This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), and active execution indicators in the very recent output override completion phrases.
 
 ### Graceful Process Shutdown
 

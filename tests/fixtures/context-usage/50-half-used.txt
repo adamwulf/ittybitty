@@ -1,0 +1,4 @@
+⏺ Read(file.txt)
+  ⎿  Read 100 lines
+
+Context left until auto-compact: 50%

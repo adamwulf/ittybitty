@@ -541,7 +541,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD
 load_config() {
     CONFIG_MANAGER_ALLOW=""
     CONFIG_MANAGER_DENY=""
@@ -553,6 +553,7 @@ load_config() {
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
     CONFIG_EXTERNAL_DIFF_TOOL=""
+    CONFIG_AUTO_COMPACT_THRESHOLD=""
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -594,6 +595,14 @@ load_config() {
     CONFIG_EXTERNAL_DIFF_TOOL=$(jq -r '.externalDiffTool // ""' "$config_file" 2>/dev/null)
     if [[ "$CONFIG_EXTERNAL_DIFF_TOOL" == "null" ]]; then
         CONFIG_EXTERNAL_DIFF_TOOL=""
+    fi
+
+    # Read autoCompactThreshold setting (1-100 to enable, unset or >100 for auto)
+    # When set to a value 1-100, the watchdog will send /compact when context usage
+    # exceeds this percentage. When unset or >100, Claude handles compaction automatically.
+    CONFIG_AUTO_COMPACT_THRESHOLD=$(jq -r '.autoCompactThreshold // ""' "$config_file" 2>/dev/null)
+    if [[ "$CONFIG_AUTO_COMPACT_THRESHOLD" == "null" ]]; then
+        CONFIG_AUTO_COMPACT_THRESHOLD=""
     fi
 }
 
@@ -1432,7 +1441,7 @@ capture_tmux() {
 }
 
 # Parse state from tmux output text
-# States: running, waiting, complete, unknown
+# States: running, waiting, complete, compacting, rate_limited, creating, unknown
 # Input: Text content (passed as first argument or stdin if no argument)
 # Output: State string to stdout
 #
@@ -1494,7 +1503,15 @@ parse_state() {
         very_recent="${very_recent#*$'\n'}"
     done
 
-    # Check for ACTIVE running indicators FIRST in very recent output
+    # Check for compacting state FIRST (highest priority among running states)
+    # This appears as: "✽ Compacting conversation… (esc to interrupt)"
+    # Must check before running indicators since compacting also has "(esc to interrupt)"
+    if [[ "$very_recent" == *"Compacting conversation"* ]]; then
+        echo "compacting"
+        return
+    fi
+
+    # Check for ACTIVE running indicators in very recent output
     # These indicate something is definitely executing RIGHT NOW:
     # - "(esc to interrupt)" / "(ctrl+c to interrupt)" - shown during tool execution (in parens)
     # - "⎿  Running" - explicit running status indicator
@@ -1596,8 +1613,44 @@ parse_state() {
     echo "unknown"
 }
 
+# Parse context usage percentage from tmux output
+# Returns: Usage percentage (0-100) or empty if not found
+# Sets: _CONTEXT_USAGE_PCT (global for caller convenience)
+#
+# Claude shows context remaining like: "Context left until auto-compact: 11%"
+# Usage = 100 - remaining
+#
+# Input: Text content (passed as first argument or stdin if no argument)
+parse_context_usage() {
+    _CONTEXT_USAGE_PCT=""
+
+    local input
+    if [[ $# -gt 0 ]]; then
+        input="$1"
+    else
+        input=$(cat)
+    fi
+
+    # Empty input = no context info
+    if [[ -z "$input" ]]; then
+        return 1
+    fi
+
+    # Look for "Context left until auto-compact: X%"
+    # Extract the percentage remaining and calculate usage
+    if [[ "$input" =~ Context\ left\ until\ auto-compact:\ ([0-9]+)% ]]; then
+        local remaining="${BASH_REMATCH[1]}"
+        _CONTEXT_USAGE_PCT=$((100 - remaining))
+        echo "$_CONTEXT_USAGE_PCT"
+        return 0
+    fi
+
+    # No context info found
+    return 1
+}
+
 # Detect agent state from tmux
-# States: creating, running, waiting, stopped, complete, rate_limited, unknown
+# States: creating, running, waiting, stopped, complete, compacting, rate_limited, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
@@ -5808,6 +5861,73 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-context-usage
+# =============================================================================
+
+# Test parse_context_usage() with a text fixture file or stdin
+# This command allows testing context percentage parsing in isolation
+# Input: Text containing "Context left until auto-compact: X%"
+# Output: Usage percentage (0-100) or 'none' if not found
+cmd_test_context_usage() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-context-usage [options] [file]
+
+Test the parse_context_usage() function.
+
+Reads from stdin if no file is provided, or from the specified file.
+Looks for "Context left until auto-compact: X%" and outputs usage percentage.
+
+Output: Usage percentage (0-100) or 'none' if not found
+
+Examples:
+  echo "Context left until auto-compact: 11%" | ib test-context-usage
+  # Output: 89
+
+  ib test-context-usage tests/fixtures/context-usage/89-basic.txt
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    local input
+    if [[ -n "$input_file" ]]; then
+        if [[ ! -f "$input_file" ]]; then
+            echo "Error: file not found: $input_file" >&2
+            exit 1
+        fi
+        input=$(cat "$input_file")
+    else
+        # Check if stdin is a terminal (no data piped)
+        if [[ -t 0 ]]; then
+            echo "Error: no input provided. Use a file argument or pipe input." >&2
+            exit 1
+        fi
+        input=$(cat)
+    fi
+
+    if parse_context_usage "$input" >/dev/null 2>&1; then
+        echo "$_CONTEXT_USAGE_PCT"
+    else
+        echo "none"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-tool-match
 # =============================================================================
 
@@ -6659,7 +6779,7 @@ EOF
 
     # Parse config values using jq (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
-    local create_prs max_agents model fps external_diff_tool
+    local create_prs max_agents model fps external_diff_tool auto_compact_threshold
 
     manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
     manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
@@ -6670,6 +6790,7 @@ EOF
     model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
     fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
     external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
+    auto_compact_threshold=$(echo "$input" | jq -r '.autoCompactThreshold // ""' 2>/dev/null || echo "")
 
     # Handle null values
     if [[ "$model" == "null" ]]; then
@@ -6677,6 +6798,9 @@ EOF
     fi
     if [[ "$external_diff_tool" == "null" ]]; then
         external_diff_tool=""
+    fi
+    if [[ "$auto_compact_threshold" == "null" ]]; then
+        auto_compact_threshold=""
     fi
 
     # Output in expected format
@@ -6689,6 +6813,7 @@ EOF
     echo "model:${model:+ $model}"
     echo "fps: $fps"
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
+    echo "auto_compact_threshold:${auto_compact_threshold:+ $auto_compact_threshold}"
 }
 
 # =============================================================================
@@ -8715,6 +8840,17 @@ cmd_watchdog() {
     # Set up Ctrl+C trap for clean exit
     trap 'echo ""; echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Stopped monitoring $AGENT_ID"; log_agent "$AGENT_ID" "[watchdog] Stopped monitoring" --quiet; exit 0' INT
 
+    # Load configuration for auto-compact threshold
+    load_config
+    local auto_compact_threshold="${CONFIG_AUTO_COMPACT_THRESHOLD:-}"
+    local compact_sent=false
+
+    # Log auto-compact configuration if enabled
+    if [[ -n "$auto_compact_threshold" && "$auto_compact_threshold" =~ ^[0-9]+$ && "$auto_compact_threshold" -le 100 ]]; then
+        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Auto-compact threshold: ${auto_compact_threshold}%"
+        log_agent "$AGENT_ID" "[watchdog] Auto-compact threshold: ${auto_compact_threshold}%" --quiet
+    fi
+
     echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (manager: $manager)"
     log_agent "$AGENT_ID" "[watchdog] Started monitoring (manager: $manager)" --quiet
 
@@ -8728,6 +8864,36 @@ cmd_watchdog() {
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
         state=$(get_state "$AGENT_ID")
+
+        # Check context usage and trigger /compact if threshold exceeded
+        # Only check if: threshold is set (1-100), not currently compacting, and not already sent /compact
+        if [[ -n "$auto_compact_threshold" && "$auto_compact_threshold" =~ ^[0-9]+$ && \
+              "$auto_compact_threshold" -le 100 && "$state" != "compacting" && "$compact_sent" == "false" ]]; then
+            # LAST_TMUX_CAPTURE was set by get_state, use it to check context usage
+            if parse_context_usage "$LAST_TMUX_CAPTURE" >/dev/null 2>&1; then
+                local context_pct="$_CONTEXT_USAGE_PCT"
+                if [[ -n "$context_pct" && "$context_pct" -ge "$auto_compact_threshold" ]]; then
+                    echo "[watchdog] Context usage at ${context_pct}% (threshold: ${auto_compact_threshold}%), sending /compact"
+                    log_agent "$AGENT_ID" "[watchdog] Context at ${context_pct}%, triggering /compact" --quiet
+
+                    # Send /compact command to the agent
+                    local TMUX_SESSION
+                    TMUX_SESSION=$(session_name "$AGENT_ID")
+                    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+                        tmux send-keys -t "$TMUX_SESSION" "/compact" Enter
+                        compact_sent=true
+                        log_agent "$AGENT_ID" "[watchdog] Sent /compact command" --quiet
+                    fi
+                fi
+            fi
+        fi
+
+        # Reset compact_sent flag when compacting completes
+        if [[ "$state" != "compacting" && "$prev_state" == "compacting" ]]; then
+            compact_sent=false
+            echo "[watchdog] Compacting complete, resetting compact flag"
+            log_agent "$AGENT_ID" "[watchdog] Compacting complete" --quiet
+        fi
 
         case "$state" in
             waiting)
@@ -8900,6 +9066,17 @@ cmd_watchdog() {
                 fi
 
                 # Reset counters since we're handling this state specially
+                waiting_counter=0
+                notify_interval=6
+                ;;
+
+            compacting)
+                # Agent is compacting context - this is expected behavior, just wait
+                if [[ "$prev_state" != "compacting" ]]; then
+                    echo "[watchdog] Agent state: compacting (context being summarized)"
+                    log_agent "$AGENT_ID" "[watchdog] State changed to: compacting" --quiet
+                fi
+                # Reset counters - compacting is normal operation
                 waiting_counter=0
                 notify_interval=6
                 ;;
@@ -14572,6 +14749,10 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
+        ;;
+    test-context-usage)
+        shift
+        cmd_test_context_usage "$@"
         ;;
     test-tool-match)
         shift
