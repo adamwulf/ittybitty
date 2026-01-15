@@ -9356,7 +9356,7 @@ The display shows:
   - Agent tree (top 5 lines, scrolls with selection)
   - Selected agent info (model, prompt)
   - Split view: tmux output (left) and right pane (cycling modes)
-  - Right pane modes: agent log, initial prompt, denials, full tree view, diff with merge status, git status
+  - Right pane modes: agent log, initial prompt, git status (split view); denials, full tree, diff (full-width)
 
 EOF
                 exit 0
@@ -11761,7 +11761,7 @@ EOF
         ((row++))
         printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
         printf '%*s' "$DIALOG_WIDTH" ''
-        local hint="Enter: select   ↑↓: navigate   Esc: cancel"
+        local hint="Tab: complete   Enter: select   ↑↓: navigate   Esc: cancel"
         printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
@@ -11878,6 +11878,26 @@ EOF
                     JUMP_SELECTED=0
                     _DIALOG_DIRTY=1
                     watch_jump_check_single_match
+                fi
+                ;;
+            $'\t')  # Tab - autocomplete first match
+                # Find first matching agent
+                local first_match=""
+                local agent_dir id
+                shopt -s nocasematch
+                for agent_dir in "$AGENTS_DIR"/*/; do
+                    [[ -d "$agent_dir" ]] || continue
+                    id="${agent_dir%/}"; id="${id##*/}"
+                    if [[ -z "$JUMP_PATTERN" ]] || [[ "$id" == *"$JUMP_PATTERN"* ]]; then
+                        first_match="$id"
+                        break
+                    fi
+                done
+                shopt -u nocasematch
+                if [[ -n "$first_match" ]]; then
+                    JUMP_PATTERN="$first_match"
+                    JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
                 fi
                 ;;
             $'\x15')  # Ctrl+U - clear all
@@ -12136,7 +12156,7 @@ EOF
         ((row++))
         printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
         printf '%*s' "$DIALOG_WIDTH" ''
-        local hint="Enter: jump   ↑↓: navigate   Esc: cancel"
+        local hint="Tab: complete   Enter: jump   ↑↓: navigate   Esc: cancel"
         printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
@@ -12248,6 +12268,18 @@ EOF
                 else
                     # Regular character in search
                     CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}${key}"
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\t')  # Tab - autocomplete first match
+                # Get first matching item
+                local first_match
+                first_match=$(_watch_cmd_jump_get_matches | head -n 1)
+                if [[ -n "$first_match" ]]; then
+                    # Extract name from "name:type:mode:description"
+                    local first_name="${first_match%%:*}"
+                    CMD_JUMP_PATTERN="$first_name"
                     CMD_JUMP_SELECTED=0
                     _DIALOG_DIRTY=1
                 fi
@@ -13165,10 +13197,6 @@ EOF
                 help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
                 help_text_len=$((40 + errors_suffix_len))
             fi
-        elif [[ $RIGHT_PANE_MODE -eq 6 ]]; then
-            # Status mode: show scroll and pane navigation
-            help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-            help_text_len=$((40 + errors_suffix_len))
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
@@ -13209,10 +13237,6 @@ EOF
                     action_text_visible_len=${#action_text}
                     ;;
             esac
-        elif [[ $RIGHT_PANE_MODE -eq 6 ]]; then
-            # Status mode: show summary info
-            action_text="Git status: commits, uncommitted changes, files changed"
-            action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
@@ -13332,8 +13356,8 @@ EOF
         fi
 
         # Display min(agent count, 5) lines of tree with selection highlighting
-        # Skip rendering the header tree when TREE, DIFF, or STATUS pane is active (modes 3, 5, 6) to use full height
-        if [[ $RIGHT_PANE_MODE -eq 3 || $RIGHT_PANE_MODE -eq 5 || $RIGHT_PANE_MODE -eq 6 ]]; then
+        # Skip rendering the header tree when TREE or DIFF pane is active (modes 3, 5) to use full height
+        if [[ $RIGHT_PANE_MODE -eq 3 || $RIGHT_PANE_MODE -eq 5 ]]; then
             _WATCH_TREE_DISPLAY_LINES=0
         else
             _WATCH_TREE_DISPLAY_LINES=$total_tree_lines
@@ -13742,81 +13766,6 @@ EOF
             return  # Skip normal split pane rendering
         fi
 
-        # ===== STATUS MODE (MODE 6) =====
-        if [[ $RIGHT_PANE_MODE -eq 6 ]]; then
-            # Load status from background cache (non-blocking)
-            load_status_from_cache "$selected_id"
-
-            # Full-width header for status mode
-            local header="── STATUS $selected_id "
-            while [[ ${#header} -lt $TERM_COLS ]]; do
-                header="${header}─"
-            done
-            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
-
-            # Render full-width status pane (hide left tmux pane)
-            local content_height=$pane_height
-            local content_width=$TERM_COLS
-
-            local total_lines=${#STATUS_CACHE_LINES[@]}
-
-            # Show loading state if cache not loaded yet
-            if [[ $STATUS_CACHE_LOADED -eq 0 ]]; then
-                local loading_msg="Loading status..."
-                for ((line_num=0; line_num<content_height; line_num++)); do
-                    if [[ $line_num -eq $((content_height / 2)) ]]; then
-                        # Center the message
-                        local padding=$(( (content_width - ${#loading_msg}) / 2 ))
-                        printf '%*s%s\n' "$padding" "" "$loading_msg"
-                    else
-                        printf '%-*s\n' "$content_width" ""
-                    fi
-                done
-            # Show "No changes" if loaded but empty
-            elif [[ $total_lines -eq 0 ]]; then
-                local empty_msg="No status information available"
-                for ((line_num=0; line_num<content_height; line_num++)); do
-                    if [[ $line_num -eq $((content_height / 2)) ]]; then
-                        # Center the message
-                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
-                        printf '%*s%s\n' "$padding" "" "$empty_msg"
-                    else
-                        printf '%-*s\n' "$content_width" ""
-                    fi
-                done
-            else
-                # Calculate scroll parameters (scroll from top like a normal status view)
-                local max_scroll=$((total_lines - content_height))
-                [[ $max_scroll -lt 0 ]] && max_scroll=0
-                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
-                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
-
-                local start_idx=$SCROLL_OFFSET
-
-                local line_num
-                for ((line_num=0; line_num<content_height; line_num++)); do
-                    local array_idx=$((start_idx + line_num))
-                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
-                        # Truncate to terminal width
-                        local display_line="${STATUS_CACHE_LINES[$array_idx]:0:$content_width}"
-                        printf '%-*s\n' "$content_width" "$display_line"
-                    else
-                        # Empty line (no content)
-                        printf '%-*s\n' "$content_width" ""
-                    fi
-                done
-            fi
-
-            # Bottom separator - uses cached full-width separator
-            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
-
-            # Store pane info for footer
-            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
-            _WATCH_PANE_HEIGHT=$content_height
-
-            return  # Skip normal split pane rendering
-        fi
-
         # ===== NORMAL SPLIT PANE MODE =====
 
         # Pane headers with box-drawing characters dim but titles white
@@ -13923,7 +13872,7 @@ EOF
                 fi
             fi
             right_pane_lines=("${LOG_PARSED_LINES[@]}")
-        else
+        elif [[ $RIGHT_PANE_MODE -eq 1 ]]; then
             # Mode 1: Initial prompt from prompt.txt
             local prompt_file="$AGENTS_DIR/$selected_id/prompt.txt"
             if [[ -f "$prompt_file" ]]; then
@@ -13941,6 +13890,20 @@ EOF
                     _fold_text "$prompt_content" "$right_pane_width"
                     right_pane_lines=("${_FOLD_LINES[@]}")
                 fi
+            fi
+        elif [[ $RIGHT_PANE_MODE -eq 6 ]]; then
+            # Mode 6: Git status (from background cache)
+            load_status_from_cache "$selected_id"
+            if [[ $STATUS_CACHE_LOADED -eq 1 ]]; then
+                # Wrap status lines to right pane width
+                local status_line
+                for status_line in "${STATUS_CACHE_LINES[@]}"; do
+                    # Truncate to pane width (lines are already formatted)
+                    right_pane_lines+=("${status_line:0:$right_pane_width}")
+                done
+            else
+                # Show loading message
+                right_pane_lines+=("Loading status...")
             fi
         fi
 
@@ -14591,8 +14554,8 @@ EOF
         # Render tree and get selected agent (skip for full-width modes)
         local t_tree_start t_tree_end
         [[ $DEBUG_MODE -eq 1 ]] && t_tree_start=$(get_ms)
-        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 || $RIGHT_PANE_MODE -eq 6 ]]; then
-            # Denials/Diff/Status mode: skip tree rendering, set tree_display_lines to 0
+        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 ]]; then
+            # Denials/Diff mode: skip tree rendering, set tree_display_lines to 0
             # Still need to process agent list for state tracking
             local agent_ids=()
             local line
