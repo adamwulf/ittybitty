@@ -1603,10 +1603,36 @@ get_state() {
     local id="$1"
     local tmux_session=$(session_name "$id")
 
-    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
-    # This returns empty if session doesn't exist - no separate has-session needed
-    capture_tmux "$tmux_session" 20
-    local recent="$LAST_TMUX_CAPTURE"
+    # Try to read from background cache first (faster - avoids tmux calls entirely)
+    # Cache contains 500 lines of ANSI-stripped tmux output
+    local cache_file=""
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        cache_file="$TMUX_CACHE_DIR/$id"
+        [[ ! -f "$cache_file" ]] && cache_file=""
+    fi
+
+    local recent full_history
+
+    if [[ -n "$cache_file" ]]; then
+        # Use cached content - extract tail-20 and head-100 from cache file
+        # Note: subprocess head is faster than pure bash for 100 lines
+        _tail_file "$cache_file" 20
+        recent="$_TAIL_RESULT"
+        full_history=$(head -100 "$cache_file")
+        LAST_TMUX_CAPTURE="$recent"  # For debugging consistency
+    else
+        # Fallback: capture directly from tmux (when cache not available)
+        capture_tmux "$tmux_session" 20
+        recent="$LAST_TMUX_CAPTURE"
+
+        if [[ -z "$recent" ]]; then
+            echo "stopped"
+            return
+        fi
+
+        # Second tmux capture for head-100 (only when cache unavailable)
+        full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
+    fi
 
     if [[ -z "$recent" ]]; then
         echo "stopped"
@@ -1623,10 +1649,6 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    # Get first 100 lines from full tmux history
-    # Note: subprocess head is faster than pure bash for large content
-    local full_history
-    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
