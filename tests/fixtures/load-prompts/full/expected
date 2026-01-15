@@ -1,0 +1,3 @@
+all: Project-wide instructions.
+manager: Manager-specific instructions.
+worker: Worker-specific instructions.

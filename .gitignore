@@ -4,3 +4,7 @@
 # Temporary debug files (should be deleted)
 tests/fixtures/test-*.txt
 tests/fixtures/test-*.sh
+
+# Orphaned fixture files (wrong naming convention, superseded by rate_limited-*.txt)
+tests/fixtures/ratelimited-*.txt
+tests/fixtures/unknown-empty-*.txt

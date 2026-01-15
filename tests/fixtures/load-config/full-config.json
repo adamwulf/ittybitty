@@ -13,5 +13,6 @@
   "maxAgents": 20,
   "model": "sonnet",
   "fps": 15,
-  "allowAgentQuestions": false
+  "allowAgentQuestions": false,
+  "externalDiffTool": "opendiff"
 }

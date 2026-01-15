@@ -1,0 +1,4 @@
+all: Use TypeScript strict mode.
+Run tests before committing.
+manager: (empty)
+worker: (empty)

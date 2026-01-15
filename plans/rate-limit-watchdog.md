@@ -4,11 +4,13 @@
 
 This document analyzes how to implement automatic rate limit detection and recovery for ittybitty agents. When Claude hits a rate limit, the system should detect the rate limit screen in tmux, bypass it, and automatically resume the agent with a new session once usage refreshes.
 
+**Status: IMPLEMENTED** - See commit `6bbc773` on branch `agent/rate-limit-impl`.
+
 ## Existing Capabilities
 
 ### 1. Tmux Output Detection (`parse_state` / `get_state`)
 
-**Location:** `ib:1131-1245` (parse_state), `ib:1250-1301` (get_state)
+**Location:** `ib:1219-1367` (parse_state), `ib:1369-1435` (get_state)
 
 The system already has sophisticated tmux output parsing:
 
@@ -18,6 +20,7 @@ The system already has sophisticated tmux output parsing:
 | Complete | `I HAVE COMPLETED THE GOAL` |
 | Waiting | Standalone `WAITING` |
 | Creating | Permission prompts + no Claude logo |
+| **Rate Limited** | `usage limit reached`, `limit will reset at`, `rate_limit_error` |
 
 **How it works:**
 ```bash
@@ -27,19 +30,19 @@ parse_state "$recent"            # Pattern match for state
 
 ### 2. Usage Data Fetching (`fetch_claude_usage`)
 
-**Location:** `ib:577-625`
+**Location:** `ib:626-713`
 
 Already implemented:
 - OAuth token retrieval from macOS Keychain
 - API call to `https://api.anthropic.com/api/oauth/usage`
 - Returns session (5-hour) and weekly (7-day) utilization percentages
-- Global variables: `_USAGE_SESSION_PCT`, `_USAGE_WEEKLY_PCT`
+- Global variables: `_USAGE_SESSION_PCT`, `_USAGE_WEEKLY_PCT`, `_USAGE_SESSION_RESET`, `_USAGE_WEEKLY_RESET`
 
 ```bash
 fetch_claude_usage() {
     # Gets token from Keychain
     # Calls API with Bearer token
-    # Sets _USAGE_SESSION_PCT and _USAGE_WEEKLY_PCT
+    # Sets _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT, _USAGE_SESSION_RESET, _USAGE_WEEKLY_RESET
 }
 ```
 
@@ -60,12 +63,12 @@ tmux send-keys -t "$TMUX_SESSION" Enter
 
 ### 4. Watchdog System (`cmd_watchdog`)
 
-**Location:** `ib:7933-8161`
+**Location:** `ib:8191-8530`
 
 Already implemented:
 - Monitors agent state every 5 seconds
 - Exponential backoff notifications
-- Notifies manager on state changes (waiting, complete, unknown)
+- Notifies manager on state changes (waiting, complete, unknown, **rate_limited**)
 - Continues until agent worktree is removed
 
 ### 5. Agent Resume (`cmd_resume`)
@@ -79,376 +82,295 @@ Already implemented:
 
 ---
 
-## What Needs to Be Built
+## Research Findings (CONFIRMED)
 
-### 1. Rate Limit Screen Detection
+### Rate Limit Screen Patterns
 
-**Critical Gap:** We don't know exactly what the rate limit screen looks like in Claude Code.
+**Source:** GitHub Issues #2087, #3169, #9046, #8620, #9236
 
-**Research Needed:**
-1. Capture actual rate limit screen text from Claude Code
-2. Identify unique patterns that won't appear in normal output
-3. Likely patterns to look for:
-   - "rate limit" (case insensitive)
-   - "usage limit"
-   - "Try again in X minutes/hours"
-   - "session limit reached"
-   - Reset time information
-   - Any special UI elements (boxes, indicators)
+**Confirmed Patterns:**
+1. **Usage limit message:** `Claude usage limit reached. Your limit will reset at [TIME] ([TIMEZONE]).`
+   - Examples:
+     - `Claude usage limit reached. Your limit will reset at 3pm (America/Santiago).`
+     - `Claude usage limit reached. Your limit will reset at Oct 7, 1am.`
+     - `Claude usage limit reached. Your limit will reset at 1pm (Etc/GMT+5).`
 
-**Detection Strategy:**
+2. **API error response:** `Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded the usage limit."}}`
 
-Add a new state `rate_limited` to the state machine:
-
+**Detection Implementation:**
 ```bash
-# In parse_state(), before other checks:
-# Check for rate limit screen (priority over other states)
-if [[ "$last_lines" =~ rate.?limit|usage.?limit|Try\ again\ in ]]; then
-    # Verify this is the actual rate limit screen, not discussion text
-    if [[ "$last_lines" =~ reset|wait|limit.*reached ]]; then
-        echo "rate_limited"
-        return
-    fi
+# In parse_state() - ib:1283-1302
+# Check for rate_limit_error (exact match, case-sensitive)
+if [[ "$last_lines" == *"rate_limit_error"* ]]; then
+    echo "rate_limited"
+    return
+fi
+
+# Case-insensitive check for usage limit patterns
+shopt -s nocasematch
+if [[ "$last_lines" == *"usage limit reached"* ]] || \
+   [[ "$last_lines" == *"limit will reset at"* ]]; then
+    echo "rate_limited"
+    return
 fi
 ```
 
-### 2. Rate Limit Bypass
+### Bypass Mechanism
 
-**Approach:** Similar to `auto_accept_workspace_trust`
+**Source:** User confirmation
 
-When rate limit screen detected:
-1. Send key to dismiss the rate limit dialog (likely Escape, Enter, or 'q')
-2. Wait for screen to change
-3. Verify Claude is back to normal prompt
+**Confirmed:** Press **Enter** to dismiss the rate limit dialog.
+- The first option shown is "Wait for limit reset" (or similar)
+- After pressing Enter, Claude waits for usage to refresh
+- Session remains valid - no need to restart
 
+**Implementation:**
 ```bash
-auto_bypass_rate_limit() {
+# bypass_rate_limit() - ib:1566-1603
+bypass_rate_limit() {
     local TMUX_SESSION="$1"
-    local max_attempts=5
-    local attempt=0
-
-    while [[ $attempt -lt $max_attempts ]]; do
-        # Check if rate limit screen is showing
-        capture_tmux "$TMUX_SESSION" 20
-        if ! [[ "$LAST_TMUX_CAPTURE" =~ rate.?limit ]]; then
-            return 0  # Already bypassed
-        fi
-
-        # Send key to dismiss (TBD: need to determine correct key)
-        tmux send-keys -t "$TMUX_SESSION" Enter  # or Escape or 'q'
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-
-    return 1  # Failed to bypass
+    # Send Enter to dismiss (selects "Wait for limit reset")
+    tmux send-keys -t "$TMUX_SESSION" Enter
+    # Verify dismissal by checking state
+    ...
 }
 ```
 
-### 3. Rate Limit Watchdog Enhancement
+### Recovery Flow
 
-**Option A: Enhance Existing Watchdog**
-
-Add `rate_limited` handling to `cmd_watchdog`:
-
-```bash
-case "$state" in
-    rate_limited)
-        if [[ "$prev_state" != "rate_limited" ]]; then
-            log_agent "$AGENT_ID" "[watchdog] Rate limit detected"
-        fi
-
-        # Check if usage has refreshed
-        fetch_claude_usage
-        if [[ "$_USAGE_SESSION_PCT" -lt 90 ]]; then
-            # Usage refreshed, try to bypass
-            auto_bypass_rate_limit "$TMUX_SESSION"
-
-            # Send message to wake agent
-            ib send "$AGENT_ID" "[watchdog]: Rate limit cleared. Please continue your task."
-        fi
-        ;;
-esac
-```
-
-**Option B: Dedicated Rate Limit Monitor**
-
-Create a separate process that:
-1. Periodically checks all agents for rate limit state
-2. Monitors usage API for refresh
-3. Bypasses and notifies when safe
-
-### 4. Usage Reset Time Tracking
-
-**Enhancement:** Track when usage will reset
-
-```bash
-# In fetch_claude_usage, also capture reset time:
-_USAGE_SESSION_RESET=$(echo "$response" | jq -r '.five_hour.resets_at // empty')
-
-# Convert to epoch for comparison
-_USAGE_SESSION_RESET_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${_USAGE_SESSION_RESET%.*}" "+%s" 2>/dev/null)
-```
-
-This enables smart waiting - instead of polling, wait until the known reset time.
+**Confirmed workflow:**
+1. `parse_state()` detects `rate_limited` state
+2. `bypass_rate_limit()` sends Enter key to dismiss dialog
+3. Watchdog polls `fetch_claude_usage()` every 5 seconds
+4. When `_USAGE_SESSION_PCT` drops below 80%, send nudge message
+5. Agent receives: `[watchdog]: Usage has refreshed. Please continue your task.`
 
 ---
 
-## Implementation Architecture
+## Implementation (COMPLETE)
 
-### Component 1: Detection Function
+### Component 1: Detection in `parse_state()`
+
+**Location:** `ib:1283-1302`
 
 ```bash
-# Detect if agent is on rate limit screen
-# Returns: 0 if rate limited, 1 if not
-is_rate_limited() {
-    local session="$1"
-    capture_tmux "$session" 30
-
-    # Pattern match for rate limit indicators
-    # TBD: Exact patterns once screen is captured
-    if [[ "$LAST_TMUX_CAPTURE" =~ RATE_LIMIT_PATTERN ]]; then
-        return 0
-    fi
-    return 1
-}
+# Check for rate limit screen (high priority - blocks agent progress)
+# These patterns appear when Claude hits usage limits:
+# - "Claude usage limit reached. Your limit will reset at 3pm"
+# - "Error: 429 {"type":"error","error":{"type":"rate_limit_error"..."
+if [[ "$last_lines" == *"rate_limit_error"* ]]; then
+    echo "rate_limited"
+    return
+fi
+# Case-insensitive check for usage limit patterns
+local old_nocasematch
+old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+shopt -s nocasematch
+if [[ "$last_lines" == *"usage limit reached"* ]] || \
+   [[ "$last_lines" == *"limit will reset at"* ]]; then
+    eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+    echo "rate_limited"
+    return
+fi
+eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
 ```
 
 ### Component 2: Bypass Function
 
+**Location:** `ib:1566-1603`
+
 ```bash
-# Attempt to bypass rate limit screen
-# Returns: 0 on success, 1 on failure
+# Bypass rate limit dialog by sending Enter (selects "wait for reset" option)
+# Returns 0 if rate limit screen was dismissed, 1 if still showing
 bypass_rate_limit() {
-    local session="$1"
+    local TMUX_SESSION="$1"
+    local max_attempts=3
+    local attempt=0
 
-    # Send dismissal key
-    tmux send-keys -t "$session" KEY_TBD
-    sleep 2
+    while [[ $attempt -lt $max_attempts ]]; do
+        # Check if rate limit screen is still showing
+        local recent_output
+        recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null) || return 1
 
-    # Verify bypass worked
-    if ! is_rate_limited "$session"; then
+        # Use parse_state to check for rate_limited
+        local state
+        state=$(parse_state "$recent_output")
+        if [[ "$state" != "rate_limited" ]]; then
+            return 0  # Rate limit screen dismissed
+        fi
+
+        # Send Enter to dismiss (selects first option: "Wait for limit reset")
+        tmux send-keys -t "$TMUX_SESSION" Enter
+        attempt=$((attempt + 1))
+
+        # Wait for screen to update
+        sleep 2
+    done
+
+    # Check one more time after all attempts
+    local final_output
+    final_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null) || return 1
+    local final_state
+    final_state=$(parse_state "$final_output")
+    if [[ "$final_state" != "rate_limited" ]]; then
         return 0
     fi
-    return 1
+
+    return 1  # Failed to dismiss after max attempts
 }
 ```
 
-### Component 3: Recovery Function
+### Component 3: Watchdog Integration
+
+**Location:** `ib:8452-8502`
 
 ```bash
-# Full rate limit recovery flow
-recover_from_rate_limit() {
-    local agent_id="$1"
-    local session=$(session_name "$agent_id")
+rate_limited)
+    # Agent hit a rate limit - need to bypass dialog and wait for usage to refresh
+    local TMUX_SESSION
+    TMUX_SESSION=$(session_name "$AGENT_ID")
 
-    # 1. Bypass the rate limit screen
-    if ! bypass_rate_limit "$session"; then
-        log_agent "$agent_id" "[rate-limit] Failed to bypass screen"
-        return 1
+    if [[ "$prev_state" != "rate_limited" ]]; then
+        echo "[watchdog] Agent state: rate_limited (usage limit hit)"
+        log_agent "$AGENT_ID" "[watchdog] Rate limit detected" --quiet
+
+        # Attempt to bypass the rate limit dialog
+        echo "[watchdog] Attempting to bypass rate limit dialog..."
+        if bypass_rate_limit "$TMUX_SESSION"; then
+            echo "[watchdog] Rate limit dialog dismissed, agent waiting for usage refresh"
+            log_agent "$AGENT_ID" "[watchdog] Rate limit dialog dismissed" --quiet
+        else
+            echo "[watchdog] Warning: Could not dismiss rate limit dialog"
+            log_agent "$AGENT_ID" "[watchdog] Warning: Rate limit dialog still showing" --quiet
+        fi
     fi
 
-    # 2. Send continuation message
-    ib send "$agent_id" "[rate-limit]: Usage has refreshed. Please continue your task."
+    # Check usage API to see if we can resume
+    # Recovery threshold: 80% (wait until usage drops below this)
+    local recovery_threshold=80
+    if fetch_claude_usage; then
+        local session_pct="${_USAGE_SESSION_PCT:-100}"
+        echo "[watchdog] Current usage: session=${session_pct}% (recovery at <${recovery_threshold}%)"
 
-    log_agent "$agent_id" "[rate-limit] Recovery complete"
-    return 0
-}
+        if [[ -n "$session_pct" ]] && [[ "$session_pct" -lt "$recovery_threshold" ]]; then
+            echo "[watchdog] Usage refreshed! Nudging agent to continue..."
+            log_agent "$AGENT_ID" "[watchdog] Usage refreshed (${session_pct}%), sending nudge" --quiet
+
+            # Send nudge message to agent
+            ib send "$AGENT_ID" "[watchdog]: Usage has refreshed. Please continue your task."
+        else
+            # Log reset time if available
+            if [[ -n "$_USAGE_SESSION_RESET" ]]; then
+                echo "[watchdog] Usage still high, reset in: $_USAGE_SESSION_RESET"
+            fi
+        fi
+    else
+        echo "[watchdog] Warning: Could not fetch usage data"
+    fi
+
+    # Reset counters since we're handling this state specially
+    waiting_counter=0
+    notify_interval=6
+    ;;
 ```
-
-### Component 4: Watchdog Integration
-
-Two approaches:
-
-**Approach A: Per-Agent Monitoring**
-- Each agent's watchdog checks for rate limit state
-- On detection, enters waiting loop until usage refreshes
-- Triggers recovery
-
-**Approach B: Central Rate Limit Monitor**
-- Single background process monitors all agents
-- More efficient (one usage API call serves all agents)
-- Coordinates recovery for multiple agents
-
-Recommendation: **Approach B** - Central monitor is more efficient when multiple agents hit limits simultaneously.
 
 ---
 
-## Risks and Edge Cases
+## Test Fixtures (COMPLETE)
+
+**Location:** `tests/fixtures/`
+
+| Fixture | Purpose |
+|---------|---------|
+| `rate_limited-api-error-429.txt` | API 429 error with rate_limit_error |
+| `rate_limited-simple-usage-limit.txt` | Basic "usage limit reached" message |
+| `rate_limited-usage-limit-with-date.txt` | Reset time with date format (Oct 7, 1am) |
+| `rate_limited-usage-limit-with-timezone.txt` | Reset time with timezone (America/Santiago) |
+| `unknown-mentions-rate-limit.txt` | False positive test (discussion text) |
+
+Run tests:
+```bash
+./tests/test-parse-state.sh
+# Expected: All rate_limited-*.txt fixtures return "rate_limited"
+# Expected: unknown-mentions-rate-limit.txt returns "unknown"
+```
+
+---
+
+## Risks and Mitigations
 
 ### 1. Pattern Detection Accuracy
 
 **Risk:** False positives from discussion text containing "rate limit"
 
-**Mitigation:**
-- Use multiple pattern indicators (not just one phrase)
-- Check for rate limit UI elements (boxes, specific formatting)
-- Require pattern to appear in last N lines only
-- Verify absence of running/thinking indicators
+**Mitigation (IMPLEMENTED):**
+- Use specific phrases: "usage limit reached", "limit will reset at"
+- Check `rate_limit_error` for API errors (exact match)
+- Test fixture `unknown-mentions-rate-limit.txt` ensures false positive prevention
+- Detection in last 15 lines only, not full history
 
-### 2. Bypass Key Unknown
+### 2. Bypass Key (RESOLVED)
 
-**Risk:** We don't know the correct key to dismiss rate limit screen
-
-**Research Needed:**
-- Manually trigger rate limit in Claude Code
-- Document the dismissal key (Escape? Enter? 'q'? 'c'?)
-- Test on macOS
+**Confirmed:** Enter key dismisses the dialog. First option is "Wait for limit reset".
 
 ### 3. Race Conditions
 
 **Risk:** Agent continues working, then rate limit screen appears mid-output
 
-**Mitigation:**
-- Only detect rate limit when no running indicators present
-- Use recent output window (last 5-10 lines) not full history
-- Add debounce (require rate limit for 2+ consecutive checks)
+**Mitigation (IMPLEMENTED):**
+- Rate limit detection happens after active running indicators check
+- Only last 15 lines checked for rate limit patterns
+- Watchdog polls every 5 seconds
 
 ### 4. Session Invalidation
 
-**Risk:** After rate limit, session might be invalidated
-
-**Mitigation:**
-- Check if `claude --resume` still works after rate limit
-- If not, need to handle starting fresh session
-- Preserve conversation history if possible
+**Status:** Not a concern - sessions remain valid after rate limit. The dialog just blocks interaction until dismissed.
 
 ### 5. Timing Complexity
 
-**Risk:** Usage refresh timing varies, hard to predict when safe to continue
-
-**Mitigation:**
-- Use usage API to check actual current usage
-- Wait until below threshold (e.g., 80%) before resuming
-- Implement exponential backoff if recovery fails
+**Mitigation (IMPLEMENTED):**
+- Poll usage API to check actual current usage
+- Wait until below 80% threshold before sending nudge
+- Display reset time from API when available
 
 ### 6. Multiple Agents Rate Limited
 
-**Risk:** All agents hit rate limit simultaneously, all try to resume
+**Current approach:** Each agent's watchdog handles its own rate limit independently.
 
-**Mitigation:**
-- Stagger recovery attempts
-- Central monitor coordinates recovery order
-- Prioritize root managers, then cascade to workers
+**Future enhancement:** Central monitor could coordinate recovery order.
 
 ### 7. Infinite Loop Prevention
 
-**Risk:** Agent immediately hits rate limit again after recovery
+**Current approach:** After nudge is sent, agent continues. If it immediately hits rate limit again, the watchdog will detect and wait again.
 
-**Mitigation:**
-- Track recovery attempts per agent
-- Implement cooldown period
-- Notify manager/user after N failed recoveries
+**Future enhancement:** Track recovery attempts per agent, implement cooldown.
 
 ---
 
-## Testing Strategy
+## Implementation Status
 
-### 1. Unit Tests for Detection
-
-Create test fixtures in `tests/fixtures/rate-limit/`:
-
-```
-tests/fixtures/
-├── ratelimit-simple.txt          # Basic rate limit screen
-├── ratelimit-with-timer.txt      # Screen showing reset countdown
-├── running-mentions-ratelimit.txt # Discussion text (should NOT detect)
-├── unknown-ratelimit-in-history.txt # Rate limit in scroll history
-```
-
-Run with:
-```bash
-ib parse-state tests/fixtures/ratelimit-simple.txt
-# Expected: rate_limited
-```
-
-### 2. Integration Tests
-
-Manual testing scenarios:
-
-| Test | Steps | Expected |
-|------|-------|----------|
-| Detection | Hit rate limit, run `ib list` | Shows "rate_limited" state |
-| Bypass | Hit rate limit, check `ib watch` | Shows rate limit, then recovery |
-| Recovery | Let usage refresh naturally | Agent continues automatically |
-| False positive | Agent discusses rate limits | Should NOT show rate_limited |
-
-### 3. Mocking for Automated Tests
-
-Create `test-rate-limit-detect`:
-```bash
-cmd_test_rate_limit_detect() {
-    local input
-    if [[ -n "$1" && -f "$1" ]]; then
-        input=$(cat "$1")
-    else
-        input=$(cat)
-    fi
-
-    if is_rate_limit_screen "$input"; then
-        echo "rate_limited"
-    else
-        echo "not_rate_limited"
-    fi
-}
-```
-
-### 4. End-to-End Testing
-
-1. **Simulated rate limit**: Create test fixture that mimics rate limit screen
-2. **Real rate limit**: Intentionally exhaust rate limit (expensive but thorough)
-3. **Recovery verification**: Monitor that agent continues task after recovery
-
----
-
-## Implementation Steps
-
-### Phase 1: Research (HIGH PRIORITY)
-1. **Capture actual rate limit screen** - Need real text to base detection on
-2. **Document bypass key** - Which key dismisses the rate limit dialog
-3. **Test session persistence** - Does `--resume` work after rate limit?
-
-### Phase 2: Detection
-1. Add `rate_limited` state to `parse_state()`
-2. Create test fixtures for rate limit patterns
-3. Add test command `test-rate-limit-detect`
-4. Run `tests/test-parse-state.sh` to verify no regressions
-
-### Phase 3: Bypass
-1. Implement `is_rate_limited()` helper
-2. Implement `bypass_rate_limit()` function
-3. Test bypass manually
-4. Add bypass retry logic
-
-### Phase 4: Watchdog Integration
-1. Add `rate_limited` case to `cmd_watchdog`
-2. Implement wait-for-refresh logic
-3. Trigger recovery when usage drops
-4. Send notification message to agent
-
-### Phase 5: Central Monitor (Optional)
-1. Create `cmd_rate_limit_monitor` if needed
-2. Coordinate multi-agent recovery
-3. Add to `ib watch` display
-
-### Phase 6: Polish
-1. Add rate limit status to `ib watch` UI
-2. Add `--skip-rate-limit` flag to `new-agent` (for testing)
-3. Document in CLAUDE.md
-4. Add to error cache system
+| Phase | Status |
+|-------|--------|
+| Phase 1: Research | ✅ COMPLETE - Patterns and bypass key confirmed |
+| Phase 2: Detection | ✅ COMPLETE - `rate_limited` state in `parse_state()` |
+| Phase 3: Bypass | ✅ COMPLETE - `bypass_rate_limit()` function |
+| Phase 4: Watchdog Integration | ✅ COMPLETE - `rate_limited` case added |
+| Phase 5: Central Monitor | ⏸ DEFERRED - Not needed for initial implementation |
+| Phase 6: Polish | ⏸ DEFERRED - Can add UI enhancements later |
 
 ---
 
 ## Configuration Options
 
-Add to `.ittybitty.json`:
+Currently hardcoded, could be added to `.ittybitty.json` in future:
 
 ```json
 {
   "rateLimit": {
-    "autoRecover": true,           // Enable automatic recovery
-    "recoveryThreshold": 80,       // Resume when usage drops below this %
-    "maxRecoveryAttempts": 3,      // Max tries before giving up
-    "recoveryMessage": "[rate-limit]: Usage refreshed. Please continue."
+    "autoRecover": true,           // Enable automatic recovery (currently always on)
+    "recoveryThreshold": 80,       // Resume when usage drops below this % (hardcoded)
+    "maxRecoveryAttempts": 3,      // Max bypass attempts (hardcoded in bypass_rate_limit)
+    "recoveryMessage": "[watchdog]: Usage has refreshed. Please continue your task."
   }
 }
 ```
@@ -457,31 +379,14 @@ Add to `.ittybitty.json`:
 
 ## Summary
 
-**What we have:**
-- Tmux output parsing infrastructure
-- Usage API access
-- Message sending
-- Watchdog monitoring
-- Agent resume capability
+**What's implemented:**
+- ✅ Rate limit screen detection via `parse_state()` returning `rate_limited`
+- ✅ Bypass function sending Enter key to dismiss dialog
+- ✅ Watchdog integration polling usage API
+- ✅ Automatic nudge message when usage refreshes below 80%
+- ✅ Test fixtures for all known rate limit patterns
+- ✅ False positive prevention test
 
-**What we need:**
-1. Rate limit screen text patterns (research required)
-2. Bypass key for rate limit dialog (research required)
-3. New `rate_limited` state in state machine
-4. Recovery function with usage checking
-5. Watchdog integration or central monitor
-
-**Key risks:**
-- Unknown rate limit screen appearance
-- Unknown bypass mechanism
-- False positives from discussion text
-- Session invalidation after rate limit
-- Multi-agent coordination
-
-**Next steps:**
-1. Manually trigger rate limit in Claude Code
-2. Capture exact screen text
-3. Document bypass key
-4. Create test fixtures
-5. Implement detection
-6. Implement recovery
+**Sources:**
+- GitHub Issues: #2087, #3169, #9046, #8620, #9236
+- User confirmation of Enter key bypass mechanism
