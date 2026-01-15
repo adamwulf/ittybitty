@@ -8383,7 +8383,7 @@ EOF
 cmd_watch() {
     # Debug mode variables (must be declared before parsing)
     local DEBUG_MODE=0
-    local DEBUG_MAX_FRAMES=1000
+    local DEBUG_MAX_FRAMES=100
     local DEBUG_FRAME_COUNT=0
 
     # Parse arguments
