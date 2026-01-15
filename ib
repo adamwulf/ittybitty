@@ -2283,6 +2283,9 @@ build_agent_data_file() {
     local all_ids=()
     local all_data=()  # Each element: "manager|age|model|prompt"
 
+    local t_pass1_start t_pass1_end
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_pass1_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
+
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
@@ -2381,11 +2384,14 @@ build_agent_data_file() {
         all_data+=("$manager|$age|$model|$prompt|$worker")
     done
 
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_pass1_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "pass1_meta_cache" $((t_pass1_end - t_pass1_start)); }
 
     # === Compute tree order (with caching) ===
     # Build cache key from agent IDs and manager relationships
     # This avoids false cache misses from filesystem glob order changes
     # and ensures tree order is recomputed when manager relationships change
+    local t_tree_order_start t_tree_order_end
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_tree_order_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
     local id_hash=0
     local manager_hash=0
     local _idx
@@ -2437,8 +2443,11 @@ build_agent_data_file() {
         TREE_ORDER_KEY="$id_key"
     fi
 
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_tree_order_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "tree_order" $((t_tree_order_end - t_tree_order_start)); }
 
     # === PASS 2: Write tmpfile in TREE ORDER ===
+    local t_pass2_start t_pass2_end
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_pass2_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
     local idx
     for ((idx=0; idx<${#tree_ids[@]}; idx++)); do
         local id="${tree_ids[$idx]}"
@@ -2521,6 +2530,8 @@ build_agent_data_file() {
 
         echo "$id|$manager|$state|$age|$model|$prompt|$worker" >> "$tmpfile"
     done
+
+    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_pass2_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "pass2_state_write" $((t_pass2_end - t_pass2_start)); }
 
     # Increment frame counter for round-robin state refresh
     # Reset after ~24 hours at 30fps to prevent overflow (2592000 = 24*60*60*30)
