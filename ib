@@ -18,12 +18,22 @@ ROOT_REPO_PATH=""
 REPO_ID=""  # Unique ID for this repo instance, prevents tmux collision across repos
 
 # Convert agent ID to tmux session name
-# Checks meta.json first (for stored tmux_session), falls back to SESSION_PREFIX + id
+# First checks SESSION_NAME_CACHE_INDEX (O(1) lookup, populated by build_agent_data_file)
+# Then tries meta.json (for cases where cache isn't populated yet)
+# Falls back to SESSION_PREFIX + id if neither available
 # This ensures consistency when SESSION_PREFIX changes between agent creation and lookup
 session_name() {
     local id="$1"
 
-    # Try to read tmux_session from meta.json if agent directory exists
+    # Check cache first (O(1) lookup using index string)
+    # Format: "|id1:session1|id2:session2|"
+    if [[ -n "$SESSION_NAME_CACHE_INDEX" && "$SESSION_NAME_CACHE_INDEX" == *"|$id:"* ]]; then
+        local session_str="${SESSION_NAME_CACHE_INDEX#*"|$id:"}"
+        echo "${session_str%%"|"*}"
+        return
+    fi
+
+    # Cache miss - try to read tmux_session from meta.json if agent directory exists
     if [[ -n "$AGENTS_DIR" && -f "$AGENTS_DIR/$id/meta.json" ]]; then
         local content
         content=$(<"$AGENTS_DIR/$id/meta.json")
@@ -1431,6 +1441,61 @@ capture_tmux() {
     LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
 }
 
+# Compute full state from tmux content (used by background monitor)
+# This combines the creating-state check (from get_state) with parse_state logic
+# Args: $1 = full tmux content (should be at least 100 lines for creating detection)
+# Output: State string to stdout (creating, running, waiting, complete, rate_limited, unknown)
+compute_state_from_content() {
+    local input="$1"
+
+    # Empty input = unknown (caller handles stopped for non-existent sessions)
+    if [[ -z "$input" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    # Get first 100 lines for Claude startup detection
+    # Note: subprocess head is faster than pure bash for large content
+    local first_lines
+    first_lines=$(printf '%s' "$input" | head -100)
+
+    # Check if Claude has started
+    local claude_started=false
+    if [[ "$first_lines" == *"Claude Code v"* ]] || \
+       [[ "$first_lines" == *"╭─ Claude Code"* ]] || \
+       [[ "$first_lines" == *"[USER TASK]"* ]] || \
+       [[ "$first_lines" == *"[AGENT CONTEXT]"* ]]; then
+        claude_started=true
+    fi
+
+    if [[ "$claude_started" == false ]]; then
+        # Check if permissions screen is showing (workspace trust OR external imports)
+        local old_nocasematch
+        old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
+        shopt -s nocasematch
+        if [[ "$first_lines" == *"Enter to confirm"* ]]; then
+            if [[ "$first_lines" == *"trust"* ]] || \
+               [[ "$first_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
+                eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+                echo "creating"
+                return
+            fi
+        fi
+        eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+
+        # Check if session is very new (minimal output)
+        local no_newlines="${first_lines//$'\n'/}"
+        local line_count=$(( ${#first_lines} - ${#no_newlines} + 1 ))
+        if [[ "$line_count" -lt 10 ]]; then
+            echo "creating"
+            return
+        fi
+    fi
+
+    # Use parse_state for the actual state detection logic
+    parse_state "$input"
+}
+
 # Parse state from tmux output text
 # States: running, waiting, complete, unknown
 # Input: Text content (passed as first argument or stdin if no argument)
@@ -1601,12 +1666,54 @@ parse_state() {
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
+
+    # Try to read from background-computed state cache first (much faster in watch mode)
+    # The background monitor computes state and writes to TMUX_CACHE_DIR/agent_id.state
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        local state_cache="$TMUX_CACHE_DIR/$id.state"
+        if [[ -f "$state_cache" ]]; then
+            local cached_state
+            cached_state=$(<"$state_cache")
+            if [[ -n "$cached_state" ]]; then
+                echo "$cached_state"
+                return
+            fi
+        fi
+    fi
+
+    # Fallback: compute state directly (used outside watch mode or before cache exists)
     local tmux_session=$(session_name "$id")
 
-    # Capture visible pane for state detection (sets LAST_TMUX_CAPTURE)
-    # This returns empty if session doesn't exist - no separate has-session needed
-    capture_tmux "$tmux_session" 20
-    local recent="$LAST_TMUX_CAPTURE"
+    # Try to read from background cache first (faster - avoids tmux calls entirely)
+    # Cache contains 500 lines of ANSI-stripped tmux output
+    local cache_file=""
+    if [[ -n "$TMUX_CACHE_DIR" ]]; then
+        cache_file="$TMUX_CACHE_DIR/$id"
+        [[ ! -f "$cache_file" ]] && cache_file=""
+    fi
+
+    local recent full_history
+
+    if [[ -n "$cache_file" ]]; then
+        # Use cached content - extract tail-20 and head-100 from cache file
+        # Note: subprocess head is faster than pure bash for 100 lines
+        _tail_file "$cache_file" 20
+        recent="$_TAIL_RESULT"
+        full_history=$(head -100 "$cache_file")
+        LAST_TMUX_CAPTURE="$recent"  # For debugging consistency
+    else
+        # Fallback: capture directly from tmux (when cache not available)
+        capture_tmux "$tmux_session" 20
+        recent="$LAST_TMUX_CAPTURE"
+
+        if [[ -z "$recent" ]]; then
+            echo "stopped"
+            return
+        fi
+
+        # Second tmux capture for head-100 (only when cache unavailable)
+        full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
+    fi
 
     if [[ -z "$recent" ]]; then
         echo "stopped"
@@ -1623,10 +1730,6 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    # Get first 100 lines from full tmux history
-    # Note: subprocess head is faster than pure bash for large content
-    local full_history
-    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
@@ -2170,7 +2273,7 @@ validate_agent_metadata() {
 }
 
 # Global cache for meta.json data (invalidated when meta.json file changes)
-# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
+# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker|tmux_session"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
 # META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
 # Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
@@ -2180,6 +2283,11 @@ META_CACHE_DATA=()
 META_CACHE_MTIME=()
 META_CACHE_STABLE=()
 META_CACHE_INDEX=""
+
+# Session name cache - maps agent_id to tmux_session for O(1) lookup
+# SESSION_NAME_CACHE_INDEX = lookup string "|id1:session1|id2:session2|" for O(1) lookup
+# Populated by build_agent_data_file() when parsing meta.json
+SESSION_NAME_CACHE_INDEX=""
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2368,7 +2476,7 @@ build_agent_data_file() {
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id="${agent_dir%/}"; id="${id##*/}"
-        local manager="" created_epoch="" model="" prompt="" worker="false"
+        local manager="" created_epoch="" model="" prompt="" worker="false" tmux_session=""
 
         # Check cache first using O(1) index lookup string (Bash 3.2 compatible)
         local cache_idx=-1
@@ -2413,7 +2521,7 @@ build_agent_data_file() {
         fi
 
         if [[ "$cache_valid" -eq 1 ]]; then
-            # Use cached data: manager|created_epoch|model|prompt|worker
+            # Use cached data: manager|created_epoch|model|prompt|worker|tmux_session
             local cached="${META_CACHE_DATA[$cache_idx]}"
             manager="${cached%%|*}"
             local rest="${cached#*|}"
@@ -2422,7 +2530,9 @@ build_agent_data_file() {
             model="${rest%%|*}"
             rest="${rest#*|}"
             prompt="${rest%%|*}"
-            worker="${rest#*|}"
+            rest="${rest#*|}"
+            worker="${rest%%|*}"
+            tmux_session="${rest#*|}"
         else
             # Read from disk and cache
             # Get mtime if we don't have it yet
@@ -2439,6 +2549,7 @@ build_agent_data_file() {
                         created_epoch) created_epoch="$value" ;;
                         model) model="$value" ;;
                         worker) worker="$value" ;;
+                        tmux_session) tmux_session="$value" ;;
                     esac
                 fi
             done < "$meta"
@@ -2447,22 +2558,32 @@ build_agent_data_file() {
             [[ "$manager" == "null" ]] && manager=""
             [[ "$model" == "null" || -z "$model" ]] && model="-"
             [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
+            # Fallback for tmux_session if not in meta.json (old agents)
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
 
             # Update or add to cache
             if [[ "$cache_idx" -ge 0 ]]; then
                 # Update existing cache entry (agent was restarted with same name)
-                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
+                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker|$tmux_session"
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
                 META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
                 # Add new cache entry and update index lookup string
                 local new_idx=${#META_CACHE_IDS[@]}
                 META_CACHE_IDS+=("$id")
-                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
+                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker|$tmux_session")
                 META_CACHE_MTIME+=("$current_mtime")
                 META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
                 META_CACHE_INDEX="${META_CACHE_INDEX}|$id:$new_idx|"
             fi
+        fi
+
+        # Update session name cache (O(1) lookup for session_name function)
+        # Only add if not already present
+        if [[ "$SESSION_NAME_CACHE_INDEX" != *"|$id:"* ]]; then
+            # Use cached tmux_session or fallback
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
+            SESSION_NAME_CACHE_INDEX="${SESSION_NAME_CACHE_INDEX}|$id:$tmux_session|"
         fi
 
         # Calculate age (must be fresh each time)
@@ -14174,8 +14295,13 @@ EOF
                 else
                     continue
                 fi
-                # Only capture if session exists in current sessions list
-                [[ "$sessions" == *"$tmux_session"* ]] || continue
+                # Check if session exists in current sessions list
+                if [[ "$sessions" != *"$tmux_session"* ]]; then
+                    # Session doesn't exist - write stopped state and continue
+                    printf 'stopped' > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    continue
+                fi
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
                 local raw_capture
                 raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 2>/dev/null) || true
@@ -14183,6 +14309,11 @@ EOF
                     _strip_ansi "$raw_capture"
                     printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
+                    # Compute and cache state from the stripped content
+                    local computed_state
+                    computed_state=$(compute_state_from_content "$_STRIP_ANSI_RESULT")
+                    printf '%s' "$computed_state" > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
                 fi
             done
 
