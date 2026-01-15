@@ -2671,7 +2671,7 @@ format_tree_lines() {
     fi
 
     # Format each line with aligned columns
-    local state age model orphan_status prompt rest
+    local state age model orphan_status prompt rest padding pad_count
     for line in "${_BUILD_TREE_LINES[@]}"; do
         tree_part="${line%%|*}"
         rest="${line#*|}"
@@ -2694,9 +2694,19 @@ format_tree_lines() {
             prompt="${prompt:0:$((max_prompt_width - 1))}…"
         fi
 
-        # Format: tree (dynamic) | state (8) | age (5) | model (10) | prompt
-        printf -v formatted "%-${max_tree_width}s  %-8s  %-5s  %-10s  %s" \
-            "$tree_part" "$state" "$age" "$model" "$prompt"
+        # Calculate padding manually to handle UTF-8 box-drawing characters
+        # printf field width counts bytes, not display chars, so we use manual padding
+        # Bash ${#str} correctly counts characters for UTF-8 strings
+        pad_count=$((max_tree_width - ${#tree_part}))
+        if [[ $pad_count -gt 0 ]]; then
+            printf -v padding "%${pad_count}s" ""
+        else
+            padding=""
+        fi
+
+        # Format: tree (with manual padding) | state (8) | age (5) | model (10) | prompt
+        printf -v formatted "%s%s  %-8s  %-5s  %-10s  %s" \
+            "$tree_part" "$padding" "$state" "$age" "$model" "$prompt"
         _FORMATTED_TREE_LINES+=("$formatted")
     done
 }
