@@ -828,7 +828,7 @@ build_agent_settings() {
     # Basic file tools (Read, Write, Edit, etc.) are allowed by default because
     # the PreToolUse hook enforces path isolation - agents can only access their
     # own worktree, preventing access to main repo or other agents' files
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "TodoWrite", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Task", "TaskOutput", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(ib parse-state:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "TodoWrite", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Task", "TaskOutput", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
 
     # Always deny plan mode tools (agents should work directly, not enter planning mode)
     # Plan mode creates complexity and agents often get stuck trying to exit
