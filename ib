@@ -9052,6 +9052,7 @@ EOF
     # Send dialog state
     local SEND_TEXT=""
     local SEND_FOCUS=0   # 0=text, 1=Send button, 2=Cancel button
+    local SEND_ALL_AGENTS=0  # 0=send to selected, 1=send to all alive agents
 
     # Kill dialog state
     local KILL_FOCUS=0   # 0=Cancel, 1=Kill
@@ -9689,6 +9690,7 @@ EOF
     watch_dialog_init_send() {
         SEND_TEXT=""
         SEND_FOCUS=0  # 0=text, 1=Send button, 2=Cancel button
+        SEND_ALL_AGENTS=0  # 0=send to selected, 1=send to all alive agents
         _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
     }
@@ -9724,8 +9726,13 @@ EOF
         dialog_draw_hline "$row" "┌" "─" "┐"
         ((row++))
 
-        # Title with agent name
-        local title="Send message to: $_WATCH_SELECTED_ID"
+        # Title with agent name or all agents mode
+        local title
+        if [[ $SEND_ALL_AGENTS -eq 1 ]]; then
+            title="Send message to: ALL ALIVE AGENTS"
+        else
+            title="Send message to: $_WATCH_SELECTED_ID"
+        fi
         dialog_draw_line "$row" "$title"
         ((row++))
 
@@ -9828,7 +9835,8 @@ EOF
         ((row++))
         printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
         printf '%*s' "$DIALOG_WIDTH" ''
-        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - 28) / 2 ))" "Tab: switch   Enter: select"
+        local hint="Tab: switch   a: toggle all   Enter: select"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - 44) / 2 ))" "$hint"
     }
 
     watch_dialog_key_send() {
@@ -9844,6 +9852,17 @@ EOF
                 fi
                 _DIALOG_DIRTY=1
                 ;;
+            'a')  # Toggle all agents mode (only when not in text area)
+                if [[ $SEND_FOCUS -ne 0 ]]; then
+                    # Toggle between selected agent and all alive agents
+                    SEND_ALL_AGENTS=$(( 1 - SEND_ALL_AGENTS ))
+                    _DIALOG_DIRTY=1
+                else
+                    # In text area, type the character
+                    SEND_TEXT="${SEND_TEXT}a"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
             $'\x1e')  # Enter
                 if [[ $SEND_FOCUS -eq 0 ]]; then
                     # In text area, add newline
@@ -9855,7 +9874,21 @@ EOF
                 elif [[ $SEND_FOCUS -eq 2 && -n "$SEND_TEXT" ]]; then
                     # Send button
                     DIALOG_MODE=0
-                    cmd_send "$_WATCH_SELECTED_ID" "$SEND_TEXT" >/dev/null 2>&1 &
+                    if [[ $SEND_ALL_AGENTS -eq 1 ]]; then
+                        # Send to all alive agents (running, waiting, complete)
+                        for agent_dir in "$AGENTS_DIR"/*/; do
+                            [[ -d "$agent_dir" ]] || continue
+                            [[ -f "$agent_dir/meta.json" ]] || continue
+                            local agent_id="${agent_dir%/}"; agent_id="${agent_id##*/}"
+                            local state=$(get_state "$agent_id")
+                            if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
+                                cmd_send "$agent_id" "$SEND_TEXT" >/dev/null 2>&1 &
+                            fi
+                        done
+                    else
+                        # Send to selected agent only
+                        cmd_send "$_WATCH_SELECTED_ID" "$SEND_TEXT" >/dev/null 2>&1 &
+                    fi
                 fi
                 ;;
             $'\e')  # Escape - check for sequence
