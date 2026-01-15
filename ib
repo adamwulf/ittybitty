@@ -18,12 +18,22 @@ ROOT_REPO_PATH=""
 REPO_ID=""  # Unique ID for this repo instance, prevents tmux collision across repos
 
 # Convert agent ID to tmux session name
-# Checks meta.json first (for stored tmux_session), falls back to SESSION_PREFIX + id
+# First checks SESSION_NAME_CACHE_INDEX (O(1) lookup, populated by build_agent_data_file)
+# Then tries meta.json (for cases where cache isn't populated yet)
+# Falls back to SESSION_PREFIX + id if neither available
 # This ensures consistency when SESSION_PREFIX changes between agent creation and lookup
 session_name() {
     local id="$1"
 
-    # Try to read tmux_session from meta.json if agent directory exists
+    # Check cache first (O(1) lookup using index string)
+    # Format: "|id1:session1|id2:session2|"
+    if [[ -n "$SESSION_NAME_CACHE_INDEX" && "$SESSION_NAME_CACHE_INDEX" == *"|$id:"* ]]; then
+        local session_str="${SESSION_NAME_CACHE_INDEX#*"|$id:"}"
+        echo "${session_str%%"|"*}"
+        return
+    fi
+
+    # Cache miss - try to read tmux_session from meta.json if agent directory exists
     if [[ -n "$AGENTS_DIR" && -f "$AGENTS_DIR/$id/meta.json" ]]; then
         local content
         content=$(<"$AGENTS_DIR/$id/meta.json")
@@ -2170,7 +2180,7 @@ validate_agent_metadata() {
 }
 
 # Global cache for meta.json data (invalidated when meta.json file changes)
-# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker"
+# Format: META_CACHE_IDS[i] = agent_id, META_CACHE_DATA[i] = "manager|created_epoch|model|prompt|worker|tmux_session"
 # META_CACHE_MTIME[i] = file modification time when cached (for invalidation on agent restart)
 # META_CACHE_STABLE[i] = frame count when entry was cached (becomes stable after 30 frames = ~1s)
 # Once stable, we skip stat calls entirely since meta.json is essentially immutable after creation
@@ -2180,6 +2190,11 @@ META_CACHE_DATA=()
 META_CACHE_MTIME=()
 META_CACHE_STABLE=()
 META_CACHE_INDEX=""
+
+# Session name cache - maps agent_id to tmux_session for O(1) lookup
+# SESSION_NAME_CACHE_INDEX = lookup string "|id1:session1|id2:session2|" for O(1) lookup
+# Populated by build_agent_data_file() when parsing meta.json
+SESSION_NAME_CACHE_INDEX=""
 
 # Global cache for tree order (invalidated when agent set or manager relationships change)
 # TREE_ORDER_CACHE = array of agent IDs in tree order
@@ -2368,7 +2383,7 @@ build_agent_data_file() {
         [[ -f "$agent_dir/meta.json" ]] || continue
 
         local id="${agent_dir%/}"; id="${id##*/}"
-        local manager="" created_epoch="" model="" prompt="" worker="false"
+        local manager="" created_epoch="" model="" prompt="" worker="false" tmux_session=""
 
         # Check cache first using O(1) index lookup string (Bash 3.2 compatible)
         local cache_idx=-1
@@ -2413,7 +2428,7 @@ build_agent_data_file() {
         fi
 
         if [[ "$cache_valid" -eq 1 ]]; then
-            # Use cached data: manager|created_epoch|model|prompt|worker
+            # Use cached data: manager|created_epoch|model|prompt|worker|tmux_session
             local cached="${META_CACHE_DATA[$cache_idx]}"
             manager="${cached%%|*}"
             local rest="${cached#*|}"
@@ -2422,7 +2437,9 @@ build_agent_data_file() {
             model="${rest%%|*}"
             rest="${rest#*|}"
             prompt="${rest%%|*}"
-            worker="${rest#*|}"
+            rest="${rest#*|}"
+            worker="${rest%%|*}"
+            tmux_session="${rest#*|}"
         else
             # Read from disk and cache
             # Get mtime if we don't have it yet
@@ -2439,6 +2456,7 @@ build_agent_data_file() {
                         created_epoch) created_epoch="$value" ;;
                         model) model="$value" ;;
                         worker) worker="$value" ;;
+                        tmux_session) tmux_session="$value" ;;
                     esac
                 fi
             done < "$meta"
@@ -2447,22 +2465,32 @@ build_agent_data_file() {
             [[ "$manager" == "null" ]] && manager=""
             [[ "$model" == "null" || -z "$model" ]] && model="-"
             [[ "$worker" == "null" || -z "$worker" ]] && worker="false"
+            # Fallback for tmux_session if not in meta.json (old agents)
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
 
             # Update or add to cache
             if [[ "$cache_idx" -ge 0 ]]; then
                 # Update existing cache entry (agent was restarted with same name)
-                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker"
+                META_CACHE_DATA[$cache_idx]="$manager|$created_epoch|$model|$prompt|$worker|$tmux_session"
                 META_CACHE_MTIME[$cache_idx]="$current_mtime"
                 META_CACHE_STABLE[$cache_idx]=$STATE_FRAME_COUNT
             else
                 # Add new cache entry and update index lookup string
                 local new_idx=${#META_CACHE_IDS[@]}
                 META_CACHE_IDS+=("$id")
-                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker")
+                META_CACHE_DATA+=("$manager|$created_epoch|$model|$prompt|$worker|$tmux_session")
                 META_CACHE_MTIME+=("$current_mtime")
                 META_CACHE_STABLE+=("$STATE_FRAME_COUNT")
                 META_CACHE_INDEX="${META_CACHE_INDEX}|$id:$new_idx|"
             fi
+        fi
+
+        # Update session name cache (O(1) lookup for session_name function)
+        # Only add if not already present
+        if [[ "$SESSION_NAME_CACHE_INDEX" != *"|$id:"* ]]; then
+            # Use cached tmux_session or fallback
+            [[ -z "$tmux_session" ]] && tmux_session="${SESSION_PREFIX}$id"
+            SESSION_NAME_CACHE_INDEX="${SESSION_NAME_CACHE_INDEX}|$id:$tmux_session|"
         fi
 
         # Calculate age (must be fresh each time)
