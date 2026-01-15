@@ -7,3 +7,5 @@ max_agents: 20
 model: sonnet
 fps: 15
 external_diff_tool: opendiff
+auto_compact_threshold:
+no_ff: false

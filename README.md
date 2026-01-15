@@ -185,6 +185,7 @@ Create `.ittybitty.json` in your project root for full configuration:
   "createPullRequests": false,
   "allowAgentQuestions": true,
   "noFastForward": false,
+  "autoCompactThreshold": 80,
   "externalDiffTool": "",
   "permissions": {
     "manager": {
@@ -207,6 +208,7 @@ Create `.ittybitty.json` in your project root for full configuration:
 | `createPullRequests` | false | Create PRs instead of leaving changes on branch |
 | `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
 | `noFastForward` | false | Always create merge commits with `--no-ff` |
+| `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
 | `permissions.manager.allow` | [] | Additional tools to allow for manager agents |
 | `permissions.manager.deny` | [] | Tools to deny for manager agents |

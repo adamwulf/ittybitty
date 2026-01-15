@@ -551,7 +551,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD
 load_config() {
     CONFIG_MANAGER_ALLOW=""
     CONFIG_MANAGER_DENY=""
@@ -563,6 +563,8 @@ load_config() {
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
     CONFIG_EXTERNAL_DIFF_TOOL=""
+    CONFIG_AUTO_COMPACT_THRESHOLD=""
+    CONFIG_NO_FF="false"
 
     local config_file=".ittybitty.json"
     if [[ ! -f "$config_file" ]]; then
@@ -605,6 +607,17 @@ load_config() {
     if [[ "$CONFIG_EXTERNAL_DIFF_TOOL" == "null" ]]; then
         CONFIG_EXTERNAL_DIFF_TOOL=""
     fi
+
+    # Read autoCompactThreshold setting (1-100 to enable, unset or >100 for auto)
+    # When set to a value 1-100, the watchdog will send /compact when context usage
+    # exceeds this percentage. When unset or >100, Claude handles compaction automatically.
+    CONFIG_AUTO_COMPACT_THRESHOLD=$(jq -r '.autoCompactThreshold // ""' "$config_file" 2>/dev/null)
+    if [[ "$CONFIG_AUTO_COMPACT_THRESHOLD" == "null" ]]; then
+        CONFIG_AUTO_COMPACT_THRESHOLD=""
+    fi
+
+    # Read noFastForward setting (defaults to false, allowing fast-forward merges)
+    CONFIG_NO_FF=$(jq -r '.noFastForward // false' "$config_file" 2>/dev/null)
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -1504,7 +1517,7 @@ compute_state_from_content() {
 }
 
 # Parse state from tmux output text
-# States: running, waiting, complete, unknown
+# States: running, waiting, complete, compacting, rate_limited, creating, unknown
 # Input: Text content (passed as first argument or stdin if no argument)
 # Output: State string to stdout
 #
@@ -1566,7 +1579,15 @@ parse_state() {
         very_recent="${very_recent#*$'\n'}"
     done
 
-    # Check for ACTIVE running indicators FIRST in very recent output
+    # Check for compacting state FIRST (highest priority among running states)
+    # This appears as: "✽ Compacting conversation… (esc to interrupt)"
+    # Must check before running indicators since compacting also has "(esc to interrupt)"
+    if [[ "$very_recent" == *"Compacting conversation"* ]]; then
+        echo "compacting"
+        return
+    fi
+
+    # Check for ACTIVE running indicators in very recent output
     # These indicate something is definitely executing RIGHT NOW:
     # - "(esc to interrupt)" / "(ctrl+c to interrupt)" - shown during tool execution (in parens)
     # - "⎿  Running" - explicit running status indicator
@@ -1668,8 +1689,94 @@ parse_state() {
     echo "unknown"
 }
 
+# Encode a file path to Claude Code's project directory name format
+# Example: /Users/foo/bar/.baz/qux -> -Users-foo-bar--baz-qux
+# Both / and . are replaced with -
+encode_claude_project_path() {
+    local path="$1"
+    # Replace both / and . with -
+    echo "$path" | tr '/.' '--'
+}
+
+# Get context usage percentage from an agent's transcript file
+# Returns: Usage percentage (0-100) or empty if not available
+# Sets: _CONTEXT_USAGE_PCT (global for caller convenience)
+#
+# Reads the agent's transcript file and calculates:
+# (input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens) / context_size * 100
+#
+# Args: $1 = agent ID
+get_agent_context_usage() {
+    _CONTEXT_USAGE_PCT=""
+    local agent_id="$1"
+
+    if [[ -z "$agent_id" ]]; then
+        return 1
+    fi
+
+    local agent_dir="$AGENTS_DIR/$agent_id"
+    if [[ ! -d "$agent_dir" ]]; then
+        return 1
+    fi
+
+    # Get session_id from meta.json
+    local session_id
+    session_id=$(read_meta_field "$agent_dir/meta.json" "session_id" "")
+    if [[ -z "$session_id" || "$session_id" == "null" ]]; then
+        return 1
+    fi
+
+    # Build the project directory path from worktree path
+    local worktree_path="$agent_dir/repo"
+    local encoded_path
+    encoded_path=$(encode_claude_project_path "$worktree_path")
+    local project_dir="$HOME/.claude/projects/$encoded_path"
+    local transcript_file="$project_dir/$session_id.jsonl"
+
+    if [[ ! -f "$transcript_file" ]]; then
+        return 1
+    fi
+
+    # Get the model to determine context window size
+    local model
+    model=$(read_meta_field "$agent_dir/meta.json" "model" "sonnet")
+    local context_size=200000
+    # Sonnet 4.5 has 1M context, others have 200K
+    if [[ "$model" == *"4-5"* || "$model" == *"4.5"* ]]; then
+        context_size=1000000
+    fi
+
+    # Read the last entry with usage data (skip sidechain entries)
+    # We read from the end and find the first non-sidechain entry with usage
+    local usage_json
+    usage_json=$(tail -100 "$transcript_file" 2>/dev/null | \
+        jq -s 'map(select(.isSidechain != true and .message.usage != null)) | last | .message.usage // empty' 2>/dev/null)
+
+    if [[ -z "$usage_json" || "$usage_json" == "null" ]]; then
+        return 1
+    fi
+
+    # Calculate total tokens used
+    local input_tokens cache_creation cache_read output_tokens total_tokens
+    input_tokens=$(echo "$usage_json" | jq -r '.input_tokens // 0' 2>/dev/null)
+    cache_creation=$(echo "$usage_json" | jq -r '.cache_creation_input_tokens // 0' 2>/dev/null)
+    cache_read=$(echo "$usage_json" | jq -r '.cache_read_input_tokens // 0' 2>/dev/null)
+    output_tokens=$(echo "$usage_json" | jq -r '.output_tokens // 0' 2>/dev/null)
+
+    total_tokens=$((input_tokens + cache_creation + cache_read + output_tokens))
+
+    # Calculate percentage
+    if [[ $context_size -gt 0 ]]; then
+        _CONTEXT_USAGE_PCT=$((total_tokens * 100 / context_size))
+        echo "$_CONTEXT_USAGE_PCT"
+        return 0
+    fi
+
+    return 1
+}
+
 # Detect agent state from tmux
-# States: creating, running, waiting, stopped, complete, rate_limited, unknown
+# States: creating, running, waiting, stopped, complete, compacting, rate_limited, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
@@ -5276,7 +5383,11 @@ EOF
         }
         log_agent "$ID" "Merging $BRANCH_NAME..."
         local merge_error
-        merge_error=$(git merge "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
+        local merge_flags=""
+        if [[ "$CONFIG_NO_FF" == "true" ]]; then
+            merge_flags="--no-ff"
+        fi
+        merge_error=$(git merge $merge_flags "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
             echo "Error: merge failed" >&2
             echo "$merge_error" >&2
             log_agent "$ID" "ERROR: Merge failed - $merge_error"
@@ -5544,8 +5655,11 @@ cmd_hooks_agent_status() {
         [[ "$manager" == "null" ]] && manager=""
     fi
 
-    if [[ "$state" == "unknown" ]]; then
-        log_agent "$ID" "[hook] State unknown, sending nudge prompt" --quiet
+    if [[ "$state" == "unknown" || "$state" == "running" ]]; then
+        # Both "unknown" and "running" indicate the agent is actually idle
+        # (the Stop hook only fires when Claude stops) but tmux output still
+        # has stale indicators that make state detection think it's running.
+        log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
@@ -5599,7 +5713,9 @@ cmd_hooks_agent_status() {
             log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
         fi
     else
-        # State is running, stopped, or other - no action needed
+        # State is stopped, creating, rate_limited, or other - no action needed
+        # Note: "running" is handled above (treated same as "unknown" since
+        # Stop hook only fires when Claude is actually idle)
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
 
@@ -6793,7 +6909,7 @@ EOF
 
     # Parse config values using jq (similar to load_config but from input instead of file)
     local manager_allow manager_deny worker_allow worker_deny
-    local create_prs max_agents model fps external_diff_tool
+    local create_prs max_agents model fps external_diff_tool auto_compact_threshold no_ff
 
     manager_allow=$(echo "$input" | jq -r '.permissions.manager.allow // [] | @json' 2>/dev/null || echo "[]")
     manager_deny=$(echo "$input" | jq -r '.permissions.manager.deny // [] | @json' 2>/dev/null || echo "[]")
@@ -6804,6 +6920,8 @@ EOF
     model=$(echo "$input" | jq -r '.model // ""' 2>/dev/null || echo "")
     fps=$(echo "$input" | jq -r '.fps // 10' 2>/dev/null || echo "10")
     external_diff_tool=$(echo "$input" | jq -r '.externalDiffTool // ""' 2>/dev/null || echo "")
+    auto_compact_threshold=$(echo "$input" | jq -r '.autoCompactThreshold // ""' 2>/dev/null || echo "")
+    no_ff=$(echo "$input" | jq -r '.noFastForward // false' 2>/dev/null || echo "false")
 
     # Handle null values
     if [[ "$model" == "null" ]]; then
@@ -6811,6 +6929,9 @@ EOF
     fi
     if [[ "$external_diff_tool" == "null" ]]; then
         external_diff_tool=""
+    fi
+    if [[ "$auto_compact_threshold" == "null" ]]; then
+        auto_compact_threshold=""
     fi
 
     # Output in expected format
@@ -6823,6 +6944,8 @@ EOF
     echo "model:${model:+ $model}"
     echo "fps: $fps"
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
+    echo "auto_compact_threshold:${auto_compact_threshold:+ $auto_compact_threshold}"
+    echo "no_ff: $no_ff"
 }
 
 # =============================================================================
@@ -8849,6 +8972,17 @@ cmd_watchdog() {
     # Set up Ctrl+C trap for clean exit
     trap 'echo ""; echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Stopped monitoring $AGENT_ID"; log_agent "$AGENT_ID" "[watchdog] Stopped monitoring" --quiet; exit 0' INT
 
+    # Load configuration for auto-compact threshold
+    load_config
+    local auto_compact_threshold="${CONFIG_AUTO_COMPACT_THRESHOLD:-}"
+    local compact_sent=false
+
+    # Log auto-compact configuration if enabled
+    if [[ -n "$auto_compact_threshold" && "$auto_compact_threshold" =~ ^[0-9]+$ && "$auto_compact_threshold" -le 100 ]]; then
+        echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Auto-compact threshold: ${auto_compact_threshold}%"
+        log_agent "$AGENT_ID" "[watchdog] Auto-compact threshold: ${auto_compact_threshold}%" --quiet
+    fi
+
     echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] Monitoring agent $AGENT_ID (manager: $manager)"
     log_agent "$AGENT_ID" "[watchdog] Started monitoring (manager: $manager)" --quiet
 
@@ -8862,6 +8996,36 @@ cmd_watchdog() {
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
         state=$(get_state "$AGENT_ID")
+
+        # Check context usage and trigger /compact if threshold exceeded
+        # Only check if: threshold is set (1-100), not currently compacting, and not already sent /compact
+        if [[ -n "$auto_compact_threshold" && "$auto_compact_threshold" =~ ^[0-9]+$ && \
+              "$auto_compact_threshold" -le 100 && "$state" != "compacting" && "$compact_sent" == "false" ]]; then
+            # Get context usage from transcript file
+            if get_agent_context_usage "$AGENT_ID" >/dev/null 2>&1; then
+                local context_pct="$_CONTEXT_USAGE_PCT"
+                if [[ -n "$context_pct" && "$context_pct" -ge "$auto_compact_threshold" ]]; then
+                    echo "[watchdog] Context usage at ${context_pct}% (threshold: ${auto_compact_threshold}%), sending /compact"
+                    log_agent "$AGENT_ID" "[watchdog] Context at ${context_pct}%, triggering /compact" --quiet
+
+                    # Send /compact command to the agent
+                    local TMUX_SESSION
+                    TMUX_SESSION=$(session_name "$AGENT_ID")
+                    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+                        tmux send-keys -t "$TMUX_SESSION" "/compact" Enter
+                        compact_sent=true
+                        log_agent "$AGENT_ID" "[watchdog] Sent /compact command" --quiet
+                    fi
+                fi
+            fi
+        fi
+
+        # Reset compact_sent flag when compacting completes
+        if [[ "$state" != "compacting" && "$prev_state" == "compacting" ]]; then
+            compact_sent=false
+            echo "[watchdog] Compacting complete, resetting compact flag"
+            log_agent "$AGENT_ID" "[watchdog] Compacting complete" --quiet
+        fi
 
         case "$state" in
             waiting)
@@ -9034,6 +9198,17 @@ cmd_watchdog() {
                 fi
 
                 # Reset counters since we're handling this state specially
+                waiting_counter=0
+                notify_interval=6
+                ;;
+
+            compacting)
+                # Agent is compacting context - this is expected behavior, just wait
+                if [[ "$prev_state" != "compacting" ]]; then
+                    echo "[watchdog] Agent state: compacting (context being summarized)"
+                    log_agent "$AGENT_ID" "[watchdog] State changed to: compacting" --quiet
+                fi
+                # Reset counters - compacting is normal operation
                 waiting_counter=0
                 notify_interval=6
                 ;;
@@ -13464,7 +13639,7 @@ EOF
             esac
 
             # Full-width header for diff mode
-            local header="── DIFF$merge_indicator "
+            local header="── DIFF $selected_id$merge_indicator "
             while [[ ${#header} -lt $TERM_COLS ]]; do
                 header="${header}─"
             done
@@ -14627,6 +14802,24 @@ EOF
 # COMMAND: config
 # =============================================================================
 
+print_config_keys() {
+    cat <<EOF
+Available Keys:
+  maxAgents                   Maximum concurrent agents (default: 10)
+  model                       Default model: sonnet, opus, or haiku
+  fps                         Watch screen refresh rate (default: 10)
+  createPullRequests          Auto-create PRs on merge (default: false)
+  allowAgentQuestions         Allow agents to ask user questions (default: true)
+  noFastForward               Always create merge commits (default: false)
+  autoCompactThreshold        Context % to trigger /compact (1-100, unset=auto)
+  externalDiffTool            External diff tool command
+  permissions.manager.allow   Tools allowed for manager agents (JSON array)
+  permissions.manager.deny    Tools denied for manager agents (JSON array)
+  permissions.worker.allow    Tools allowed for worker agents (JSON array)
+  permissions.worker.deny     Tools denied for worker agents (JSON array)
+EOF
+}
+
 cmd_config() {
     local SUBCOMMAND="${1:-}"
     shift || true
@@ -14638,6 +14831,8 @@ cmd_config() {
             if [[ -z "$KEY" ]]; then
                 echo "Error: Key required" >&2
                 echo "Usage: ib config get <key>" >&2
+                echo "" >&2
+                print_config_keys >&2
                 exit 1
             fi
 
@@ -14651,6 +14846,7 @@ cmd_config() {
                 createPullRequests) default_value="false"; has_default=true ;;
                 allowAgentQuestions) default_value="true"; has_default=true ;;
                 noFastForward) default_value="false"; has_default=true ;;
+                autoCompactThreshold) default_value=""; has_default=true ;;
                 externalDiffTool) default_value=""; has_default=true ;;
                 permissions.manager.allow) default_value="[]"; has_default=true ;;
                 permissions.manager.deny) default_value="[]"; has_default=true ;;
@@ -14676,6 +14872,8 @@ cmd_config() {
                     echo "$default_value"
                 else
                     echo "Error: Key '$KEY' not found (no default value)" >&2
+                    echo "" >&2
+                    print_config_keys >&2
                     exit 1
                 fi
             else
@@ -14778,6 +14976,10 @@ Usage: ib config <subcommand> [options]
 Subcommands:
   get <key>         Get a configuration value from .ittybitty.json
   set <key> <value> Set a configuration value in .ittybitty.json
+
+EOF
+            print_config_keys
+            cat <<EOF
 
 Examples:
   ib config get model

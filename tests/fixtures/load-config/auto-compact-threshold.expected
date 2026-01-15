@@ -1,11 +1,11 @@
 manager_allow: []
 manager_deny: []
-worker_allow: ["Read"]
-worker_deny: ["Write","Edit","Bash"]
+worker_allow: []
+worker_deny: []
 create_prs: false
 max_agents: 10
-model:
+model: sonnet
 fps: 10
 external_diff_tool:
-auto_compact_threshold:
+auto_compact_threshold: 80
 no_ff: false
