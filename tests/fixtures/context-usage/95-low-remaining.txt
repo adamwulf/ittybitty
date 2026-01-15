@@ -1,4 +1,0 @@
-Working on the implementation...
-Some output here
-
-Context left until auto-compact: 5%

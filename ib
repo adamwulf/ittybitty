@@ -1685,39 +1685,89 @@ parse_state() {
     echo "unknown"
 }
 
-# Parse context usage percentage from tmux output
-# Returns: Usage percentage (0-100) or empty if not found
+# Encode a file path to Claude Code's project directory name format
+# Example: /Users/foo/bar/.baz/qux -> -Users-foo-bar--baz-qux
+# Both / and . are replaced with -
+encode_claude_project_path() {
+    local path="$1"
+    # Replace both / and . with -
+    echo "$path" | tr '/.' '--'
+}
+
+# Get context usage percentage from an agent's transcript file
+# Returns: Usage percentage (0-100) or empty if not available
 # Sets: _CONTEXT_USAGE_PCT (global for caller convenience)
 #
-# Claude shows context remaining like: "Context left until auto-compact: 11%"
-# Usage = 100 - remaining
+# Reads the agent's transcript file and calculates:
+# (input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens) / context_size * 100
 #
-# Input: Text content (passed as first argument or stdin if no argument)
-parse_context_usage() {
+# Args: $1 = agent ID
+get_agent_context_usage() {
     _CONTEXT_USAGE_PCT=""
+    local agent_id="$1"
 
-    local input
-    if [[ $# -gt 0 ]]; then
-        input="$1"
-    else
-        input=$(cat)
-    fi
-
-    # Empty input = no context info
-    if [[ -z "$input" ]]; then
+    if [[ -z "$agent_id" ]]; then
         return 1
     fi
 
-    # Look for "Context left until auto-compact: X%"
-    # Extract the percentage remaining and calculate usage
-    if [[ "$input" =~ Context\ left\ until\ auto-compact:\ ([0-9]+)% ]]; then
-        local remaining="${BASH_REMATCH[1]}"
-        _CONTEXT_USAGE_PCT=$((100 - remaining))
+    local agent_dir="$AGENTS_DIR/$agent_id"
+    if [[ ! -d "$agent_dir" ]]; then
+        return 1
+    fi
+
+    # Get session_id from meta.json
+    local session_id
+    session_id=$(read_meta_field "$agent_dir/meta.json" "session_id" "")
+    if [[ -z "$session_id" || "$session_id" == "null" ]]; then
+        return 1
+    fi
+
+    # Build the project directory path from worktree path
+    local worktree_path="$agent_dir/repo"
+    local encoded_path
+    encoded_path=$(encode_claude_project_path "$worktree_path")
+    local project_dir="$HOME/.claude/projects/$encoded_path"
+    local transcript_file="$project_dir/$session_id.jsonl"
+
+    if [[ ! -f "$transcript_file" ]]; then
+        return 1
+    fi
+
+    # Get the model to determine context window size
+    local model
+    model=$(read_meta_field "$agent_dir/meta.json" "model" "sonnet")
+    local context_size=200000
+    # Sonnet 4.5 has 1M context, others have 200K
+    if [[ "$model" == *"4-5"* || "$model" == *"4.5"* ]]; then
+        context_size=1000000
+    fi
+
+    # Read the last entry with usage data (skip sidechain entries)
+    # We read from the end and find the first non-sidechain entry with usage
+    local usage_json
+    usage_json=$(tail -100 "$transcript_file" 2>/dev/null | \
+        jq -s 'map(select(.isSidechain != true and .message.usage != null)) | last | .message.usage // empty' 2>/dev/null)
+
+    if [[ -z "$usage_json" || "$usage_json" == "null" ]]; then
+        return 1
+    fi
+
+    # Calculate total tokens used
+    local input_tokens cache_creation cache_read output_tokens total_tokens
+    input_tokens=$(echo "$usage_json" | jq -r '.input_tokens // 0' 2>/dev/null)
+    cache_creation=$(echo "$usage_json" | jq -r '.cache_creation_input_tokens // 0' 2>/dev/null)
+    cache_read=$(echo "$usage_json" | jq -r '.cache_read_input_tokens // 0' 2>/dev/null)
+    output_tokens=$(echo "$usage_json" | jq -r '.output_tokens // 0' 2>/dev/null)
+
+    total_tokens=$((input_tokens + cache_creation + cache_read + output_tokens))
+
+    # Calculate percentage
+    if [[ $context_size -gt 0 ]]; then
+        _CONTEXT_USAGE_PCT=$((total_tokens * 100 / context_size))
         echo "$_CONTEXT_USAGE_PCT"
         return 0
     fi
 
-    # No context info found
     return 1
 }
 
@@ -5995,73 +6045,6 @@ EOF
 }
 
 # =============================================================================
-# COMMAND: test-context-usage
-# =============================================================================
-
-# Test parse_context_usage() with a text fixture file or stdin
-# This command allows testing context percentage parsing in isolation
-# Input: Text containing "Context left until auto-compact: X%"
-# Output: Usage percentage (0-100) or 'none' if not found
-cmd_test_context_usage() {
-    local input_file=""
-
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -h|--help)
-                cat <<EOF
-Usage: ib test-context-usage [options] [file]
-
-Test the parse_context_usage() function.
-
-Reads from stdin if no file is provided, or from the specified file.
-Looks for "Context left until auto-compact: X%" and outputs usage percentage.
-
-Output: Usage percentage (0-100) or 'none' if not found
-
-Examples:
-  echo "Context left until auto-compact: 11%" | ib test-context-usage
-  # Output: 89
-
-  ib test-context-usage tests/fixtures/context-usage/89-basic.txt
-EOF
-                exit 0
-                ;;
-            -*)
-                echo "Unknown option: $1" >&2
-                exit 1
-                ;;
-            *)
-                input_file="$1"
-                shift
-                ;;
-        esac
-    done
-
-    local input
-    if [[ -n "$input_file" ]]; then
-        if [[ ! -f "$input_file" ]]; then
-            echo "Error: file not found: $input_file" >&2
-            exit 1
-        fi
-        input=$(cat "$input_file")
-    else
-        # Check if stdin is a terminal (no data piped)
-        if [[ -t 0 ]]; then
-            echo "Error: no input provided. Use a file argument or pipe input." >&2
-            exit 1
-        fi
-        input=$(cat)
-    fi
-
-    if parse_context_usage "$input" >/dev/null 2>&1; then
-        echo "$_CONTEXT_USAGE_PCT"
-    else
-        echo "none"
-    fi
-}
-
-# =============================================================================
 # COMMAND: test-tool-match
 # =============================================================================
 
@@ -9003,8 +8986,8 @@ cmd_watchdog() {
         # Only check if: threshold is set (1-100), not currently compacting, and not already sent /compact
         if [[ -n "$auto_compact_threshold" && "$auto_compact_threshold" =~ ^[0-9]+$ && \
               "$auto_compact_threshold" -le 100 && "$state" != "compacting" && "$compact_sent" == "false" ]]; then
-            # LAST_TMUX_CAPTURE was set by get_state, use it to check context usage
-            if parse_context_usage "$LAST_TMUX_CAPTURE" >/dev/null 2>&1; then
+            # Get context usage from transcript file
+            if get_agent_context_usage "$AGENT_ID" >/dev/null 2>&1; then
                 local context_pct="$_CONTEXT_USAGE_PCT"
                 if [[ -n "$context_pct" && "$context_pct" -ge "$auto_compact_threshold" ]]; then
                     echo "[watchdog] Context usage at ${context_pct}% (threshold: ${auto_compact_threshold}%), sending /compact"
@@ -15051,10 +15034,6 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
-        ;;
-    test-context-usage)
-        shift
-        cmd_test_context_usage "$@"
         ;;
     test-tool-match)
         shift
