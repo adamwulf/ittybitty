@@ -1291,6 +1291,71 @@ _tail_file() {
     done
 }
 
+# Pure bash tail for strings - get last N lines from a string (no subprocess)
+# Args: $1 = string, $2 = number of lines (default 15)
+# Result: stored in _TAIL_STRING_RESULT global variable
+_TAIL_STRING_RESULT=""
+_tail_string() {
+    local input="$1"
+    local lines="${2:-15}"
+
+    _TAIL_STRING_RESULT=""
+    [[ -z "$input" ]] && return
+
+    # Count total newlines to determine line count
+    local no_newlines="${input//$'\n'/}"
+    local total_newlines=$(( ${#input} - ${#no_newlines} ))
+    local line_count=$((total_newlines + 1))
+
+    # If we have fewer or equal lines than requested, return all
+    if [[ $line_count -le $lines ]]; then
+        _TAIL_STRING_RESULT="$input"
+        return
+    fi
+
+    # Skip (line_count - lines) newlines from start
+    local skip=$((line_count - lines))
+    local remaining="$input"
+    local i
+    for ((i=0; i<skip; i++)); do
+        remaining="${remaining#*$'\n'}"
+    done
+    _TAIL_STRING_RESULT="$remaining"
+}
+
+# Pure bash head for strings - get first N lines from a string (no subprocess)
+# Args: $1 = string, $2 = number of lines (default 100)
+# Result: stored in _HEAD_STRING_RESULT global variable
+_HEAD_STRING_RESULT=""
+_head_string() {
+    local input="$1"
+    local lines="${2:-100}"
+
+    _HEAD_STRING_RESULT=""
+    [[ -z "$input" ]] && return
+
+    # Build result by taking first N lines
+    local result=""
+    local remaining="$input"
+    local count=0
+
+    while [[ $count -lt $lines && -n "$remaining" ]]; do
+        if [[ "$remaining" == *$'\n'* ]]; then
+            local line="${remaining%%$'\n'*}"
+            [[ -n "$result" ]] && result+=$'\n'
+            result+="$line"
+            remaining="${remaining#*$'\n'}"
+        else
+            # Last line (no newline)
+            [[ -n "$result" ]] && result+=$'\n'
+            result+="$remaining"
+            remaining=""
+        fi
+        ((count++)) || true
+    done
+    _HEAD_STRING_RESULT="$result"
+}
+
 # Pure bash fold - wrap text to specified width (no subprocess)
 # Args: $1 = text to wrap, $2 = width
 # Result: stored in _FOLD_LINES array
@@ -1411,9 +1476,9 @@ parse_state() {
     fi
 
     # Get last 15 lines once (covers both 5-line and 15-line windows)
-    # This single tail call is more efficient than two separate tail calls
-    local last_lines
-    last_lines=$(printf '%s' "$input" | tail -15)
+    # Use pure bash _tail_string instead of subprocess tail
+    _tail_string "$input" 15
+    local last_lines="$_TAIL_STRING_RESULT"
 
     # Count lines efficiently: line count = (total length - length without newlines) + 1
     local no_newlines="${last_lines//$'\n'/}"
@@ -1557,9 +1622,11 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    # Get first 100 lines from full tmux history
-    local full_history
-    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100)
+    # Get first 100 lines from full tmux history using pure bash
+    local raw_history
+    raw_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null) || true
+    _head_string "$raw_history" 100
+    local full_history="$_HEAD_STRING_RESULT"
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
@@ -1587,9 +1654,9 @@ get_state() {
         eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
 
         # Check if session is very new (minimal output, just bash starting up)
-        # Count lines using grep -c (efficient for this size of input)
-        local line_count
-        line_count=$(printf '%s' "$full_history" | grep -c '' || echo 0)
+        # Count lines using pure bash: count newlines + 1
+        local no_newlines="${full_history//$'\n'/}"
+        local line_count=$(( ${#full_history} - ${#no_newlines} + 1 ))
         if [[ "$line_count" -lt 10 ]]; then
             echo "creating"
             return
