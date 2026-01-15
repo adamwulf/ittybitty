@@ -9707,6 +9707,7 @@ EOF
     local _DIALOG_TEXT_START_ROW=0   # Row where text area starts
     local _DIALOG_TEXT_WIDTH=0       # Width of text content area
     local _DIALOG_TEXT_HEIGHT=0      # Height of text area
+    local _DIALOG_BUTTONS_ROW=0      # Row where buttons are drawn
 
     # Calculate starting column for centered dialog
     # Sets: _DIALOG_START_COL
@@ -9866,6 +9867,40 @@ EOF
             printf '│ │'
             ((row++))
         done
+    }
+
+    # Redraw just the buttons row for Send dialog
+    # Uses cached geometry from _DIALOG_BUTTONS_ROW, _DIALOG_START_COL
+    # Reads SEND_TEXT and SEND_FOCUS globals
+    dialog_redraw_send_buttons() {
+        local row=$_DIALOG_BUTTONS_ROW
+        [[ $row -le 0 ]] && return
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local send_disabled=$([[ -z "$SEND_TEXT" ]] && echo 1 || echo 0)
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$send_disabled")
+        local btn_visual_width=18  # [Cancel] = 8, [Send] = 6, gap = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$send_btn" "$right_pad" ""
+    }
+
+    # Redraw just the buttons row for New Agent dialog
+    # Uses cached geometry from _DIALOG_BUTTONS_ROW, _DIALOG_START_COL
+    # Reads NEW_AGENT_PROMPT and NEW_AGENT_FOCUS globals
+    dialog_redraw_new_agent_buttons() {
+        local row=$_DIALOG_BUTTONS_ROW
+        [[ $row -le 0 ]] && return
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local create_disabled=$([[ -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
+        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
+        local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$create_btn" "$right_pad" ""
     }
 
     # ==========================================================================
@@ -10040,6 +10075,8 @@ EOF
             # Use cached geometry for partial redraw
             local text_focused=$([[ $SEND_FOCUS -eq 0 ]] && echo 1 || echo 0)
             dialog_redraw_text_area "$SEND_TEXT" "$text_focused"
+            # Also redraw buttons since enabled state depends on text content
+            dialog_redraw_send_buttons
             return
         fi
 
@@ -10161,13 +10198,9 @@ EOF
         ((row++))
 
         # Buttons (Cancel on left, Send on right)
-        local send_disabled=$([[ -z "$SEND_TEXT" ]] && echo 1 || echo 0)
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $SEND_FOCUS -eq 1 ]] && echo 1 || echo 0)")
-        local send_btn=$(dialog_format_button "Send" "$([[ $SEND_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$send_disabled")
-        local btn_visual_width=18  # [Cancel] = 8, [Send] = 6, gap = 4
-        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
-        local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$send_btn" "$right_pad" ""
+        # Cache button row for text-only redraws
+        _DIALOG_BUTTONS_ROW=$row
+        dialog_redraw_send_buttons
         ((row++))
 
         # Bottom border
@@ -10593,6 +10626,8 @@ EOF
             # Use cached geometry for partial redraw
             local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
             dialog_redraw_text_area "$NEW_AGENT_PROMPT" "$prompt_focused"
+            # Also redraw buttons since enabled state depends on prompt content
+            dialog_redraw_new_agent_buttons
             return
         fi
 
@@ -10759,13 +10794,9 @@ EOF
         ((row++))
 
         # Buttons - Create disabled if prompt empty (name uses default if not provided)
-        local create_disabled=$([[ -z "$NEW_AGENT_PROMPT" ]] && echo 1 || echo 0)
-        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NEW_AGENT_FOCUS -eq 4 ]] && echo 1 || echo 0)")
-        local create_btn=$(dialog_format_button "Create" "$([[ $NEW_AGENT_FOCUS -eq 5 ]] && echo 1 || echo 0)" "$create_disabled")
-        local btn_visual_width=20  # [Cancel] = 8, [Create] = 8, gap = 4
-        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
-        local right_pad=$((inner_width - btn_visual_width - left_pad))
-        printf '\e[%d;%dH│ %*s%s    %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$cancel_btn" "$create_btn" "$right_pad" ""
+        # Cache button row for text-only redraws
+        _DIALOG_BUTTONS_ROW=$row
+        dialog_redraw_new_agent_buttons
         ((row++))
 
         # Bottom border
