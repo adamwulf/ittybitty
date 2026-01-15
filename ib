@@ -12189,7 +12189,7 @@ EOF
         [[ $DEBUG_MODE -eq 1 ]] && t_footer_start=$(get_ms)
         local footer_row=$((_WATCH_PANE_START_ROW + _WATCH_PANE_HEIGHT + 1))
         watch_render_footer "$footer_row" "$t_frame_start"
-        [[ $DEBUG_MODE -eq 1 ]] && { t_footer_end=$(get_ms); _debug_timing_record "render_footer" $((t_footer_end - t_footer_start)); }
+        [[ $DEBUG_MODE -eq 1 ]] && { t_footer_end=$(get_ms); _debug_timing_record "render_footer" $((t_footer_end - t_footer_start)); } || true
         # tmpfile cleanup handled by RETURN trap
     }
 
