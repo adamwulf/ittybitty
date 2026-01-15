@@ -8507,10 +8507,17 @@ Options:
 
 Controls:
   j/k     Select next/previous agent
-  /       Quick jump to agent by name
+  @       Quick jump to agent by name (fuzzy search)
+  /       Quick jump to command/panel (fuzzy search)
   p/n     Cycle right pane mode (agent log → prompt → denials → tree → diff)
   d       Jump to diff pane (shows changes and merge status)
+  e       Jump to errors pane
   ;/l     Scroll panes down/up
+  s       Send message to agent
+  m       Merge agent's branch
+  x       Kill agent
+  a       Create new agent
+  h       Open setup dialog
   Ctrl-C  Exit
 
 The display shows:
@@ -8594,7 +8601,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=cmd_jump
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -8624,8 +8631,13 @@ EOF
     local NEW_AGENT_PROMPT=""
     local NEW_AGENT_FOCUS=0  # 0=name, 1=model, 2=worker, 3=prompt, 4=Cancel, 5=Create
 
-    # Jump dialog state
+    # Jump dialog state (agent jump - @)
     local JUMP_PATTERN=""
+    local JUMP_SELECTED=0  # Index of highlighted match in jump dialog
+
+    # Command/Panel Jump dialog state (cmd jump - /)
+    local CMD_JUMP_PATTERN=""
+    local CMD_JUMP_SELECTED=0  # Index of highlighted match in cmd jump dialog
 
     # Merge dialog state
     local MERGE_FOCUS=0   # 0=Cancel, 1=Feedback, 2=Merge
@@ -10511,6 +10523,7 @@ EOF
 
     watch_dialog_init_jump() {
         JUMP_PATTERN=""
+        JUMP_SELECTED=0
         _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
     }
@@ -10533,7 +10546,8 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 9) / 2 ))  # 9 lines tall
+        local dialog_height=12  # title + blank + search + blank + count + 5 items max + border
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
 
         # Find matching agents
@@ -10550,8 +10564,17 @@ EOF
         done
         shopt -u nocasematch
 
+        local match_count=${#matching_ids[@]}
+
+        # Clamp JUMP_SELECTED to valid range
+        if [[ $match_count -eq 0 ]]; then
+            JUMP_SELECTED=0
+        elif [[ $JUMP_SELECTED -ge $match_count ]]; then
+            JUMP_SELECTED=$((match_count - 1))
+        fi
+
         # Clear dialog area
-        dialog_clear "$start_row" 10
+        dialog_clear "$start_row" "$((dialog_height + 2))"
 
         # Draw dialog box
         local row=$start_row
@@ -10578,32 +10601,50 @@ EOF
         ((row++))
 
         # Match count and status
-        local match_count=${#matching_ids[@]}
         local match_text
         if [[ $match_count -eq 0 ]]; then
             match_text="No matches"
-        elif [[ $match_count -eq 1 ]]; then
-            match_text="Match: ${matching_ids[0]}"
         else
-            match_text="$match_count matches"
+            match_text="$match_count match"
+            [[ $match_count -gt 1 ]] && match_text="${match_text}es"
         fi
         dialog_draw_line "$row" "$match_text"
         ((row++))
 
-        # Show first few matches if multiple
-        if [[ $match_count -gt 1 && $match_count -le 3 ]]; then
-            local m
-            for m in "${matching_ids[@]:0:3}"; do
-                dialog_draw_line "$row" "  $m"
-                ((row++))
-            done
-        else
-            # Blank lines for consistent height
-            dialog_draw_line "$row" ""
-            ((row++))
-            dialog_draw_line "$row" ""
-            ((row++))
+        # Show matches with selection highlighting (up to 5 items)
+        local max_display=5
+        local display_count=$match_count
+        [[ $display_count -gt $max_display ]] && display_count=$max_display
+
+        # Calculate scroll offset to keep selection visible
+        local scroll_offset=0
+        if [[ $match_count -gt $max_display ]]; then
+            # Keep selected item in the middle when possible
+            if [[ $JUMP_SELECTED -gt $((max_display / 2)) ]]; then
+                scroll_offset=$((JUMP_SELECTED - max_display / 2))
+                local max_offset=$((match_count - max_display))
+                [[ $scroll_offset -gt $max_offset ]] && scroll_offset=$max_offset
+            fi
         fi
+
+        local i
+        for ((i=0; i<max_display; i++)); do
+            local idx=$((scroll_offset + i))
+            if [[ $idx -lt $match_count ]]; then
+                local agent_id="${matching_ids[$idx]}"
+                local prefix="  "
+                if [[ $idx -eq $JUMP_SELECTED ]]; then
+                    # Selected item - show with reverse video and > prefix
+                    printf '\e[%d;%dH│ \e[7m>%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$((inner_width - 1))" " $agent_id"
+                else
+                    printf '\e[%d;%dH│  %-*s │' "$row" "$_DIALOG_START_COL" "$((inner_width - 1))" " $agent_id"
+                fi
+            else
+                # Empty row
+                dialog_draw_line "$row" ""
+            fi
+            ((row++))
+        done
 
         # Bottom border
         dialog_draw_hline "$row" "└" "─" "┘"
@@ -10612,7 +10653,7 @@ EOF
         ((row++))
         printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
         printf '%*s' "$DIALOG_WIDTH" ''
-        local hint="Enter: select   Esc: cancel"
+        local hint="Enter: select   ↑↓: navigate   Esc: cancel"
         printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
     }
 
@@ -10627,10 +10668,26 @@ EOF
         :
     }
 
+    # Helper to get matching agents count for key navigation
+    _watch_jump_get_match_count() {
+        local -a matching_ids=()
+        local agent_dir id
+        shopt -s nocasematch
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            id="${agent_dir%/}"; id="${id##*/}"
+            if [[ -z "$JUMP_PATTERN" ]] || [[ "$id" == *"$JUMP_PATTERN"* ]]; then
+                matching_ids+=("$id")
+            fi
+        done
+        shopt -u nocasematch
+        echo "${#matching_ids[@]}"
+    }
+
     watch_dialog_key_jump() {
         local key="$1"
         case "$key" in
-            $'\x1e')  # Enter - select if exactly one match, or close dialog
+            $'\x1e')  # Enter - select the highlighted match
                 # Find matching agents
                 local -a matching_ids=()
                 local agent_dir id
@@ -10644,13 +10701,15 @@ EOF
                 done
                 shopt -u nocasematch
 
-                if [[ ${#matching_ids[@]} -eq 1 ]]; then
-                    # Exactly one match - select it and close dialog
-                    SELECTED_NAME="${matching_ids[0]}"
+                local match_count=${#matching_ids[@]}
+                if [[ $match_count -gt 0 ]]; then
+                    # Ensure JUMP_SELECTED is in valid range
+                    [[ $JUMP_SELECTED -ge $match_count ]] && JUMP_SELECTED=$((match_count - 1))
+                    # Select the highlighted match
+                    SELECTED_NAME="${matching_ids[$JUMP_SELECTED]}"
                     SELECTED_INDEX=-1  # Will be reconciled in render
                     DIALOG_MODE=0
                 fi
-                # If no match or multiple matches, do nothing on Enter
                 ;;
             $'\e')  # Escape - check for sequence
                 _DIALOG_ESC_PENDING=1
@@ -10661,22 +10720,77 @@ EOF
                 else
                     # Typing in search field
                     JUMP_PATTERN="${JUMP_PATTERN}["
+                    JUMP_SELECTED=0  # Reset selection on pattern change
                     _DIALOG_DIRTY=1
                     watch_jump_check_single_match
                 fi
                 ;;
-            'A'|'B'|'C'|'D'|'Z')  # Arrow keys or shift-tab
+            'A')  # Up arrow (or regular A)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Up arrow - move selection up (wrap around)
+                    local match_count
+                    match_count=$(_watch_jump_get_match_count)
+                    if [[ $match_count -gt 0 ]]; then
+                        JUMP_SELECTED=$(( (JUMP_SELECTED - 1 + match_count) % match_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Regular character in search
+                    JUMP_PATTERN="${JUMP_PATTERN}A"
+                    JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                    watch_jump_check_single_match
+                fi
+                ;;
+            'B')  # Down arrow (or regular B)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Down arrow - move selection down (wrap around)
+                    local match_count
+                    match_count=$(_watch_jump_get_match_count)
+                    if [[ $match_count -gt 0 ]]; then
+                        JUMP_SELECTED=$(( (JUMP_SELECTED + 1) % match_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Regular character in search
+                    JUMP_PATTERN="${JUMP_PATTERN}B"
+                    JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                    watch_jump_check_single_match
+                fi
+                ;;
+            'C'|'D'|'Z')  # Other arrow keys or shift-tab (just consume if escape sequence)
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
                     _DIALOG_ESC_PENDING=0
                 else
                     # Regular character in search
                     JUMP_PATTERN="${JUMP_PATTERN}${key}"
+                    JUMP_SELECTED=0
                     _DIALOG_DIRTY=1
                     watch_jump_check_single_match
                 fi
                 ;;
             $'\x15')  # Ctrl+U - clear all
                 JUMP_PATTERN=""
+                JUMP_SELECTED=0
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x10')  # Ctrl+P - move selection up (vim-style)
+                local match_count
+                match_count=$(_watch_jump_get_match_count)
+                if [[ $match_count -gt 0 ]]; then
+                    JUMP_SELECTED=$(( (JUMP_SELECTED - 1 + match_count) % match_count ))
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x0e')  # Ctrl+N - move selection down (vim-style)
+                local match_count
+                match_count=$(_watch_jump_get_match_count)
+                if [[ $match_count -gt 0 ]]; then
+                    JUMP_SELECTED=$(( (JUMP_SELECTED + 1) % match_count ))
+                fi
                 _DIALOG_DIRTY=1
                 ;;
             $'\x7f'|$'\b')  # Backspace
@@ -10690,6 +10804,7 @@ EOF
                         # Regular backspace - delete one char
                         JUMP_PATTERN="${JUMP_PATTERN%?}"
                     fi
+                    JUMP_SELECTED=0  # Reset selection on pattern change
                     _DIALOG_DIRTY=1
                 fi
                 ;;
@@ -10700,6 +10815,7 @@ EOF
                 else
                     # Add character to search pattern
                     JUMP_PATTERN="${JUMP_PATTERN}${key}"
+                    JUMP_SELECTED=0  # Reset selection on pattern change
                     _DIALOG_DIRTY=1
                     watch_jump_check_single_match
                 fi
@@ -10710,6 +10826,376 @@ EOF
 
     # ==========================================================================
     # End Jump Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # Command/Panel Jump Dialog (DIALOG_MODE=8)
+    # ==========================================================================
+
+    # Define searchable commands and panels
+    # Format: "name:action:description"
+    # action is either a dialog mode number, panel mode number, or special key
+    _CMD_JUMP_COMMANDS=(
+        "send:cmd:1:Send message to agent"
+        "merge:cmd:7:Merge agent branch"
+        "kill:cmd:2:Kill agent"
+        "nuke:cmd:3:Terminate all agents"
+        "new:cmd:4:Create new agent"
+        "setup:cmd:6:Open setup dialog"
+    )
+    _CMD_JUMP_PANELS=(
+        "log:panel:0:Agent Log - live tmux output"
+        "prompt:panel:1:Initial Prompt"
+        "denials:panel:2:Permission Denials"
+        "tree:panel:3:Agent Tree"
+        "errors:panel:4:Error Messages"
+        "diff:panel:5:Git Diff"
+    )
+
+    watch_dialog_init_cmd_jump() {
+        CMD_JUMP_PATTERN=""
+        CMD_JUMP_SELECTED=0
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    # Helper to build the list of matching items
+    _watch_cmd_jump_get_matches() {
+        local -a result=()
+        local item name
+
+        # Search commands
+        shopt -s nocasematch
+        for item in "${_CMD_JUMP_COMMANDS[@]}"; do
+            name="${item%%:*}"
+            if [[ -z "$CMD_JUMP_PATTERN" ]] || [[ "$name" == *"$CMD_JUMP_PATTERN"* ]]; then
+                result+=("$item")
+            fi
+        done
+
+        # Search panels
+        for item in "${_CMD_JUMP_PANELS[@]}"; do
+            name="${item%%:*}"
+            if [[ -z "$CMD_JUMP_PATTERN" ]] || [[ "$name" == *"$CMD_JUMP_PATTERN"* ]]; then
+                result+=("$item")
+            fi
+        done
+        shopt -u nocasematch
+
+        # Return result by printing
+        local i
+        for i in "${result[@]}"; do
+            printf '%s\n' "$i"
+        done
+    }
+
+    watch_dialog_render_cmd_jump() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return 0
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" == "1" ]] || return 0
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local dialog_height=16  # title + blank + search + blank + section + items + border
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Build matching items list
+        local -a matching_items=()
+        local line
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && matching_items+=("$line")
+        done < <(_watch_cmd_jump_get_matches)
+
+        local match_count=${#matching_items[@]}
+
+        # Clamp CMD_JUMP_SELECTED to valid range
+        if [[ $match_count -eq 0 ]]; then
+            CMD_JUMP_SELECTED=0
+        elif [[ $CMD_JUMP_SELECTED -ge $match_count ]]; then
+            CMD_JUMP_SELECTED=$((match_count - 1))
+        fi
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 2))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "Jump to Command/Panel"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Search input line
+        local input_display="${CMD_JUMP_PATTERN}_"
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local input_width=$((inner_width - 10))  # "Search: " is 8 chars + some padding
+        printf '\e[%d;%dH│ Search: \e[7m%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$input_width" "${input_display:0:$input_width}"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Show matches with selection highlighting (up to 8 items)
+        local max_display=8
+        local display_count=$match_count
+        [[ $display_count -gt $max_display ]] && display_count=$max_display
+
+        # Calculate scroll offset to keep selection visible
+        local scroll_offset=0
+        if [[ $match_count -gt $max_display ]]; then
+            if [[ $CMD_JUMP_SELECTED -gt $((max_display / 2)) ]]; then
+                scroll_offset=$((CMD_JUMP_SELECTED - max_display / 2))
+                local max_offset=$((match_count - max_display))
+                [[ $scroll_offset -gt $max_offset ]] && scroll_offset=$max_offset
+            fi
+        fi
+
+        local i
+        for ((i=0; i<max_display; i++)); do
+            local idx=$((scroll_offset + i))
+            if [[ $idx -lt $match_count ]]; then
+                local item="${matching_items[$idx]}"
+                # Parse item: "name:type:mode:description"
+                local item_name="${item%%:*}"
+                local rest="${item#*:}"
+                local item_type="${rest%%:*}"
+                rest="${rest#*:}"
+                local item_mode="${rest%%:*}"
+                local item_desc="${rest#*:}"
+
+                # Format display: "[s] send    - Send message to agent" or "    log     - Agent Log"
+                local prefix_char=" "
+                local key_hint=""
+                if [[ "$item_type" == "cmd" ]]; then
+                    # Commands show a key hint
+                    case "$item_name" in
+                        send) key_hint="[s]" ;;
+                        merge) key_hint="[m]" ;;
+                        kill) key_hint="[x]" ;;
+                        nuke) key_hint="[!]" ;;
+                        new) key_hint="[a]" ;;
+                        setup) key_hint="[h]" ;;
+                        *) key_hint="   " ;;
+                    esac
+                else
+                    key_hint="   "
+                fi
+
+                # Truncate description to fit
+                local max_desc_len=$((inner_width - 18))  # key_hint(3) + space(1) + name(8) + " - "(3) + padding
+                [[ ${#item_desc} -gt $max_desc_len ]] && item_desc="${item_desc:0:$((max_desc_len - 1))}.."
+
+                local display_text
+                printf -v display_text '%s %-8s - %s' "$key_hint" "$item_name" "$item_desc"
+
+                if [[ $idx -eq $CMD_JUMP_SELECTED ]]; then
+                    # Selected item - show with reverse video and > prefix
+                    printf '\e[%d;%dH│\e[7m>%-*s\e[0m│' "$row" "$_DIALOG_START_COL" "$((inner_width + 1))" " $display_text"
+                else
+                    printf '\e[%d;%dH│ %-*s │' "$row" "$_DIALOG_START_COL" "$inner_width" "$display_text"
+                fi
+            else
+                # Empty row
+                dialog_draw_line "$row" ""
+            fi
+            ((row++))
+        done
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Enter: jump   ↑↓: navigate   Esc: cancel"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
+    }
+
+    # Helper to get matching items count for key navigation
+    _watch_cmd_jump_get_match_count() {
+        local count=0
+        local line
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && count=$((count + 1))
+        done < <(_watch_cmd_jump_get_matches)
+        echo "$count"
+    }
+
+    watch_dialog_key_cmd_jump() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter - execute the selected item
+                # Build matching items list
+                local -a matching_items=()
+                local line
+                while IFS= read -r line; do
+                    [[ -n "$line" ]] && matching_items+=("$line")
+                done < <(_watch_cmd_jump_get_matches)
+
+                local match_count=${#matching_items[@]}
+                if [[ $match_count -gt 0 ]]; then
+                    # Ensure CMD_JUMP_SELECTED is in valid range
+                    [[ $CMD_JUMP_SELECTED -ge $match_count ]] && CMD_JUMP_SELECTED=$((match_count - 1))
+
+                    local item="${matching_items[$CMD_JUMP_SELECTED]}"
+                    # Parse item: "name:type:mode:description"
+                    local item_name="${item%%:*}"
+                    local rest="${item#*:}"
+                    local item_type="${rest%%:*}"
+                    rest="${rest#*:}"
+                    local item_mode="${rest%%:*}"
+
+                    if [[ "$item_type" == "cmd" ]]; then
+                        # Open the command's dialog
+                        case "$item_mode" in
+                            1) watch_dialog_init_send; DIALOG_MODE=1 ;;
+                            2) watch_dialog_init_kill; DIALOG_MODE=2 ;;
+                            3) watch_dialog_init_nuke; DIALOG_MODE=3 ;;
+                            4) watch_dialog_init_new_agent; DIALOG_MODE=4 ;;
+                            6) watch_dialog_init_setup; DIALOG_MODE=6 ;;
+                            7) watch_dialog_init_merge; DIALOG_MODE=7 ;;
+                            *) DIALOG_MODE=0 ;;
+                        esac
+                    elif [[ "$item_type" == "panel" ]]; then
+                        # Jump to the panel
+                        watch_set_pane_mode "$item_mode" "$_WATCH_SELECTED_ID"
+                        SCROLL_OFFSET=0
+                        DIALOG_MODE=0
+                    else
+                        DIALOG_MODE=0
+                    fi
+                fi
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                else
+                    # Typing in search field
+                    CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}["
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'A')  # Up arrow (or regular A)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Up arrow - move selection up (wrap around)
+                    local match_count
+                    match_count=$(_watch_cmd_jump_get_match_count)
+                    if [[ $match_count -gt 0 ]]; then
+                        CMD_JUMP_SELECTED=$(( (CMD_JUMP_SELECTED - 1 + match_count) % match_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Regular character in search
+                    CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}A"
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B')  # Down arrow (or regular B)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Down arrow - move selection down (wrap around)
+                    local match_count
+                    match_count=$(_watch_cmd_jump_get_match_count)
+                    if [[ $match_count -gt 0 ]]; then
+                        CMD_JUMP_SELECTED=$(( (CMD_JUMP_SELECTED + 1) % match_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Regular character in search
+                    CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}B"
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'C'|'D'|'Z')  # Other arrow keys or shift-tab (just consume if escape sequence)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    _DIALOG_ESC_PENDING=0
+                else
+                    # Regular character in search
+                    CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}${key}"
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\x15')  # Ctrl+U - clear all
+                CMD_JUMP_PATTERN=""
+                CMD_JUMP_SELECTED=0
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x10')  # Ctrl+P - move selection up (vim-style)
+                local match_count
+                match_count=$(_watch_cmd_jump_get_match_count)
+                if [[ $match_count -gt 0 ]]; then
+                    CMD_JUMP_SELECTED=$(( (CMD_JUMP_SELECTED - 1 + match_count) % match_count ))
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x0e')  # Ctrl+N - move selection down (vim-style)
+                local match_count
+                match_count=$(_watch_cmd_jump_get_match_count)
+                if [[ $match_count -gt 0 ]]; then
+                    CMD_JUMP_SELECTED=$(( (CMD_JUMP_SELECTED + 1) % match_count ))
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ -n "$CMD_JUMP_PATTERN" ]]; then
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$CMD_JUMP_PATTERN"
+                        CMD_JUMP_PATTERN="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        # Regular backspace - delete one char
+                        CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN%?}"
+                    fi
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                else
+                    # Add character to search pattern
+                    CMD_JUMP_PATTERN="${CMD_JUMP_PATTERN}${key}"
+                    CMD_JUMP_SELECTED=0
+                    _DIALOG_DIRTY=1
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Command/Panel Jump Dialog
     # ==========================================================================
 
     # ==========================================================================
@@ -11120,7 +11606,7 @@ EOF
             esac
         else
             # Normal mode: show action keys
-            action_text="/: jump    s: send    m: merge    x: kill    !: nuke    a: new agent"
+            action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
             action_text_visible_len=${#action_text}
             # Add errors indicator if there are unread errors (in red, then restore dim)
             if [[ $ERRORS_UNREAD_COUNT -gt 0 ]]; then
@@ -12304,6 +12790,7 @@ EOF
                 5) watch_dialog_key_jump "$key" ;;
                 6) watch_dialog_key_hooks "$key" ;;
                 7) watch_dialog_key_merge "$key" ;;
+                8) watch_dialog_key_cmd_jump "$key" ;;
             esac
             return
         fi
@@ -12446,13 +12933,19 @@ EOF
                 watch_dialog_init_new_agent
                 DIALOG_MODE=4
                 ;;
-            /)
+            @)
                 _WATCH_ESC_PENDING=0
-                # Open Jump dialog
+                # Open agent Jump dialog
                 if [[ $AGENT_COUNT -gt 0 ]]; then
                     watch_dialog_init_jump
                     DIALOG_MODE=5
                 fi
+                ;;
+            /)
+                _WATCH_ESC_PENDING=0
+                # Open Command/Panel Jump dialog
+                watch_dialog_init_cmd_jump
+                DIALOG_MODE=8
                 ;;
             e)
                 _WATCH_ESC_PENDING=0
@@ -12620,6 +13113,7 @@ EOF
                 5) watch_dialog_render_jump ;;
                 6) watch_dialog_render_hooks ;;
                 7) watch_dialog_render_merge ;;
+                8) watch_dialog_render_cmd_jump ;;
             esac
             set -e
         else
