@@ -11160,16 +11160,29 @@ EOF
         local tmpfile="$3"
 
         # Check if selected agent is orphaned (worker with missing manager)
+        # Extract worker and manager from tmpfile (format: id|manager|state|age|model|prompt|worker)
         local is_orphaned=false
-        local agent_meta="$AGENTS_DIR/$selected_id/meta.json"
-        if [[ -f "$agent_meta" ]]; then
-            local agent_worker=$(read_meta_field "$agent_meta" "worker" "false")
-            local agent_manager=$(read_meta_field "$agent_meta" "manager" "")
-            if [[ "$agent_worker" == "true" && -n "$agent_manager" ]]; then
-                # This is a worker with a manager - check if manager exists
-                if [[ ! -d "$AGENTS_DIR/$agent_manager" ]]; then
-                    is_orphaned=true
-                fi
+        local agent_worker="false"
+        local agent_manager=""
+        local line
+        while IFS= read -r line; do
+            local line_id="${line%%|*}"
+            if [[ "$line_id" == "$selected_id" ]]; then
+                # Parse: id|manager|state|age|model|prompt|worker
+                local rest="${line#*|}"          # manager|state|age|model|prompt|worker
+                agent_manager="${rest%%|*}"       # manager
+                rest="${rest#*|}"                 # state|age|model|prompt|worker
+                rest="${rest#*|}"                 # age|model|prompt|worker
+                rest="${rest#*|}"                 # model|prompt|worker
+                rest="${rest#*|}"                 # prompt|worker
+                agent_worker="${rest#*|}"         # worker
+                break
+            fi
+        done < "$tmpfile"
+        if [[ "$agent_worker" == "true" && -n "$agent_manager" ]]; then
+            # This is a worker with a manager - check if manager exists
+            if [[ ! -d "$AGENTS_DIR/$agent_manager" ]]; then
+                is_orphaned=true
             fi
         fi
 
@@ -11551,8 +11564,8 @@ EOF
 
         # ===== ORPHAN WARNING PANE =====
         if [[ "$is_orphaned" == "true" ]]; then
-            # Get manager ID from meta
-            local manager_id=$(read_meta_field "$agent_meta" "manager" "unknown")
+            # Use agent_manager extracted earlier from tmpfile
+            local manager_id="${agent_manager:-unknown}"
             local warning_msg="⚠️  WARNING: This worker agent is orphaned. Manager '$manager_id' no longer exists."
             # Print warning pane (2 lines: message + separator)
             printf '\e[33m%-*s\e[0m\n' "$TERM_COLS" "$warning_msg"
