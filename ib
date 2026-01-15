@@ -586,13 +586,48 @@ load_config() {
     CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$config_file" 2>/dev/null)
 }
 
-# Fetch Claude usage percentages from Anthropic API
-# Uses OAuth token from macOS Keychain
-# Sets global variables: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT
+# Format seconds into human-readable duration for reset times
+# Examples: "44m", "2h", "3d 8h"
+# Args: $1=seconds
+# Returns: formatted string via stdout
+format_reset_time() {
+    local seconds="$1"
+
+    # Handle edge cases
+    if [[ -z "$seconds" || "$seconds" -le 0 ]]; then
+        echo "now"
+        return
+    fi
+
+    local days=$((seconds / 86400))
+    local hours=$(( (seconds % 86400) / 3600 ))
+    local minutes=$(( (seconds % 3600) / 60 ))
+
+    if [[ $days -gt 0 ]]; then
+        if [[ $hours -gt 0 ]]; then
+            echo "${days}d ${hours}h"
+        else
+            echo "${days}d"
+        fi
+    elif [[ $hours -gt 0 ]]; then
+        if [[ $minutes -gt 0 && $hours -lt 5 ]]; then
+            # Only show minutes if less than 5 hours
+            echo "${hours}h ${minutes}m"
+        else
+            echo "${hours}h"
+        fi
+    else
+        echo "${minutes}m"
+    fi
+}
+
 # Returns 0 on success, 1 on failure
+# Sets: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT, _USAGE_SESSION_RESET, _USAGE_WEEKLY_RESET
 fetch_claude_usage() {
     _USAGE_SESSION_PCT=""
     _USAGE_WEEKLY_PCT=""
+    _USAGE_SESSION_RESET=""
+    _USAGE_WEEKLY_RESET=""
 
     # Get OAuth access token from macOS Keychain
     # The credentials are stored as JSON under "Claude Code-credentials"
@@ -621,9 +656,11 @@ fetch_claude_usage() {
         return 1
     fi
 
-    local session_util weekly_util
+    local session_util weekly_util session_reset weekly_reset
     session_util=$(echo "$response" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
     weekly_util=$(echo "$response" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
+    session_reset=$(echo "$response" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
+    weekly_reset=$(echo "$response" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
 
     # API returns utilization as percentage (0-100), just round to integer
     if [[ -n "$session_util" && "$session_util" != "null" ]]; then
@@ -631,6 +668,43 @@ fetch_claude_usage() {
     fi
     if [[ -n "$weekly_util" && "$weekly_util" != "null" ]]; then
         _USAGE_WEEKLY_PCT=$(printf '%.0f' "$weekly_util" 2>/dev/null)
+    fi
+
+    # Calculate time remaining until reset
+    # The resets_at field is ISO 8601 format: "2025-12-12T20:59:59.707736+00:00"
+    local now_epoch
+    now_epoch=$(date +%s)
+
+    if [[ -n "$session_reset" && "$session_reset" != "null" ]]; then
+        # Parse ISO 8601 timestamp to epoch using date command
+        # macOS date can parse ISO 8601 with -j -f option, but using perl is more portable
+        local reset_epoch
+        reset_epoch=$(perl -MTime::Piece -e '
+            my $ts = shift;
+            $ts =~ s/\.\d+//;  # Remove fractional seconds
+            my $t = Time::Piece->strptime($ts, "%Y-%m-%dT%H:%M:%S%z");
+            print $t->epoch;
+        ' "$session_reset" 2>/dev/null) || reset_epoch=""
+
+        if [[ -n "$reset_epoch" ]]; then
+            local remaining=$((reset_epoch - now_epoch))
+            _USAGE_SESSION_RESET=$(format_reset_time "$remaining")
+        fi
+    fi
+
+    if [[ -n "$weekly_reset" && "$weekly_reset" != "null" ]]; then
+        local reset_epoch
+        reset_epoch=$(perl -MTime::Piece -e '
+            my $ts = shift;
+            $ts =~ s/\.\d+//;  # Remove fractional seconds
+            my $t = Time::Piece->strptime($ts, "%Y-%m-%dT%H:%M:%S%z");
+            print $t->epoch;
+        ' "$weekly_reset" 2>/dev/null) || reset_epoch=""
+
+        if [[ -n "$reset_epoch" ]]; then
+            local remaining=$((reset_epoch - now_epoch))
+            _USAGE_WEEKLY_RESET=$(format_reset_time "$remaining")
+        fi
     fi
 
     return 0
@@ -8580,6 +8654,8 @@ EOF
     # Usage tracking state (refreshed periodically)
     local USAGE_SESSION_PCT=""   # 5-hour session utilization percentage
     local USAGE_WEEKLY_PCT=""    # 7-day weekly utilization percentage
+    local USAGE_SESSION_RESET="" # Time until session reset (e.g., "44m")
+    local USAGE_WEEKLY_RESET=""  # Time until weekly reset (e.g., "3d 8h")
     local USAGE_LAST_FETCH=0     # Timestamp of last successful fetch
     local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
 
@@ -8667,6 +8743,8 @@ EOF
             if fetch_claude_usage; then
                 USAGE_SESSION_PCT="$_USAGE_SESSION_PCT"
                 USAGE_WEEKLY_PCT="$_USAGE_WEEKLY_PCT"
+                USAGE_SESSION_RESET="$_USAGE_SESSION_RESET"
+                USAGE_WEEKLY_RESET="$_USAGE_WEEKLY_RESET"
             fi
         fi
     }
@@ -8878,25 +8956,31 @@ EOF
         fi
     }
 
-    # Format session percentage with color coding
+    # Format session percentage with color coding and optional reset time
     # - Yellow if >80%
     # - Red if >90%
-    # Args: $1=percentage (number without %)
-    # Returns: colored string with % (restores dim after color)
+    # Args: $1=percentage (number without %), $2=label ("session" or "weekly"), $3=reset_time (optional)
+    # Returns: colored string with % and reset time (restores dim after color)
+    # Example output: "session:57% (44m)" or "weekly:35% (3d 8h)"
     format_usage_pct() {
         local pct="$1"
         local label="$2"  # "session" or "weekly"
+        local reset_time="$3"  # Optional: time until reset (e.g., "44m", "3d 8h")
         if [[ -z "$pct" ]]; then
             echo ""
             return
         fi
         local pct_num="${pct%.*}"  # Remove decimal part if any
+        local reset_suffix=""
+        if [[ -n "$reset_time" ]]; then
+            reset_suffix=" (${reset_time})"
+        fi
         if [[ $pct_num -gt 90 ]]; then
-            echo "${COLOR_RED}${label}:${pct}%${COLOR_RESET}${COLOR_DIM}"
+            echo "${COLOR_RED}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
         elif [[ $pct_num -gt 80 ]]; then
-            echo "${COLOR_YELLOW}${label}:${pct}%${COLOR_RESET}${COLOR_DIM}"
+            echo "${COLOR_YELLOW}${label}:${pct}%${reset_suffix}${COLOR_RESET}${COLOR_DIM}"
         else
-            echo "${label}:${pct}%"
+            echo "${label}:${pct}%${reset_suffix}"
         fi
     }
 
@@ -10947,21 +11031,32 @@ EOF
         fi
 
         # Build usage info string for right side of row 1 with color coding
+        # Format: "session:57% (44m)  weekly:35% (3d 8h)"
         local usage_info=""
         local usage_info_visible_len=0
         if [[ -n "$USAGE_SESSION_PCT" || -n "$USAGE_WEEKLY_PCT" ]]; then
             local session_str=""
             local weekly_str=""
             if [[ -n "$USAGE_SESSION_PCT" ]]; then
-                session_str=$(format_usage_pct "$USAGE_SESSION_PCT" "session")
-                usage_info_visible_len=$((usage_info_visible_len + 8 + ${#USAGE_SESSION_PCT} + 1))  # "session:" + pct + "%"
+                session_str=$(format_usage_pct "$USAGE_SESSION_PCT" "session" "$USAGE_SESSION_RESET")
+                # "session:" + pct + "%" = 8 + len(pct) + 1
+                usage_info_visible_len=$((usage_info_visible_len + 8 + ${#USAGE_SESSION_PCT} + 1))
+                # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
+                if [[ -n "$USAGE_SESSION_RESET" ]]; then
+                    usage_info_visible_len=$((usage_info_visible_len + 2 + ${#USAGE_SESSION_RESET} + 1))
+                fi
             fi
             if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
-                weekly_str=$(format_usage_pct "$USAGE_WEEKLY_PCT" "weekly")
+                weekly_str=$(format_usage_pct "$USAGE_WEEKLY_PCT" "weekly" "$USAGE_WEEKLY_RESET")
                 if [[ -n "$session_str" ]]; then
                     usage_info_visible_len=$((usage_info_visible_len + 2))  # "  " separator
                 fi
-                usage_info_visible_len=$((usage_info_visible_len + 7 + ${#USAGE_WEEKLY_PCT} + 1))  # "weekly:" + pct + "%"
+                # "weekly:" + pct + "%" = 7 + len(pct) + 1
+                usage_info_visible_len=$((usage_info_visible_len + 7 + ${#USAGE_WEEKLY_PCT} + 1))
+                # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
+                if [[ -n "$USAGE_WEEKLY_RESET" ]]; then
+                    usage_info_visible_len=$((usage_info_visible_len + 2 + ${#USAGE_WEEKLY_RESET} + 1))
+                fi
             fi
             if [[ -n "$session_str" && -n "$weekly_str" ]]; then
                 usage_info="$session_str  $weekly_str"
