@@ -9698,6 +9698,16 @@ EOF
     # Dialog Helper Functions
     # ==========================================================================
 
+    # Text-only dirty flag for optimized partial redraws
+    # When only text content changes, we redraw just the text field instead of the whole dialog
+    local _DIALOG_TEXT_DIRTY=0
+
+    # Cached dialog geometry for partial redraws
+    local _DIALOG_START_ROW=0
+    local _DIALOG_TEXT_START_ROW=0   # Row where text area starts
+    local _DIALOG_TEXT_WIDTH=0       # Width of text content area
+    local _DIALOG_TEXT_HEIGHT=0      # Height of text area
+
     # Calculate starting column for centered dialog
     # Sets: _DIALOG_START_COL
     dialog_calc_position() {
@@ -9796,6 +9806,66 @@ EOF
             # No newline, delete everything
             _DIALOG_TEXT_RESULT=""
         fi
+    }
+
+    # Redraw a multi-line text area without redrawing entire dialog
+    # Uses cached geometry from _DIALOG_TEXT_START_ROW, _DIALOG_TEXT_WIDTH, _DIALOG_TEXT_HEIGHT
+    # Args: $1=text content, $2=focused (0/1)
+    dialog_redraw_text_area() {
+        local text="$1" focused="${2:-0}"
+        local text_width=$_DIALOG_TEXT_WIDTH
+        local text_height=$_DIALOG_TEXT_HEIGHT
+        local start_row=$_DIALOG_TEXT_START_ROW
+
+        [[ $text_width -le 0 || $text_height -le 0 || $start_row -le 0 ]] && return
+
+        # Add cursor if focused
+        local display_text="$text"
+        [[ $focused == "1" ]] && display_text="${display_text}_"
+
+        # Split text by newlines and wrap long lines
+        local -a display_lines=()
+        local line="" char i
+        local len=${#display_text}
+        for ((i=0; i<len; i++)); do
+            char="${display_text:$i:1}"
+            if [[ "$char" == $'\n' ]]; then
+                display_lines+=("$line")
+                line=""
+            else
+                line="${line}${char}"
+                if [[ ${#line} -ge $text_width ]]; then
+                    display_lines+=("$line")
+                    line=""
+                fi
+            fi
+        done
+        [[ -n "$line" ]] && display_lines+=("$line")
+
+        # Show last N lines (scroll to bottom)
+        local total_lines=${#display_lines[@]}
+        local start_line=0
+        if [[ $total_lines -gt $text_height ]]; then
+            start_line=$((total_lines - text_height))
+        fi
+
+        # Draw text area lines
+        local row=$start_row line_idx content_idx content
+        for ((line_idx=0; line_idx<text_height; line_idx++)); do
+            content_idx=$((start_line + line_idx))
+            content=""
+            if [[ $content_idx -lt $total_lines ]]; then
+                content="${display_lines[$content_idx]}"
+            fi
+            printf '\e[%d;%dH│ │' "$row" "$_DIALOG_START_COL"
+            if [[ $focused == "1" ]]; then
+                printf '\e[7m%-*s\e[0m' "$text_width" "$content"
+            else
+                printf '%-*s' "$text_width" "$content"
+            fi
+            printf '│ │'
+            ((row++))
+        done
     }
 
     # ==========================================================================
@@ -9958,9 +10028,25 @@ EOF
             return
         fi
 
-        # Only redraw when dirty
+        # Calculate geometry once for text-only redraws
+        local dialog_height=13  # Total dialog height
+        local text_area_height=4  # Lines in the text area
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))  # 44 chars for content
+
+        # Check for text-only redraw (optimization to reduce flicker)
+        if [[ "${_DIALOG_TEXT_DIRTY:-0}" == "1" && "${_DIALOG_DIRTY:-0}" != "1" ]]; then
+            _DIALOG_TEXT_DIRTY=0
+            # Use cached geometry for partial redraw
+            local text_focused=$([[ $SEND_FOCUS -eq 0 ]] && echo 1 || echo 0)
+            dialog_redraw_text_area "$SEND_TEXT" "$text_focused"
+            return
+        fi
+
+        # Only full redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
+        _DIALOG_TEXT_DIRTY=0  # Clear text dirty too since we're doing full redraw
 
         # Get terminal size
         TERM_LINES=$(tput lines)
@@ -9968,8 +10054,6 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=13  # Total dialog height
-        local text_area_height=4  # Lines in the text area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
 
@@ -10005,13 +10089,16 @@ EOF
         # Both lines: │ ┌───┐ │ and │ │xxx│ │ should total DIALOG_WIDTH
         # │ ┌ (3) + dashes + ┐ │ (3) = 50, so dashes = 44
         # │ │ (3) + content + │ │ (3) = 50, so content = 44
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local text_width=$((inner_width - 2))  # 44 chars for content
         printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
         local i
         for ((i=0; i<text_width; i++)); do printf '─'; done
         printf '┐ │'
         ((row++))
+
+        # Cache geometry for text-only redraws
+        _DIALOG_TEXT_START_ROW=$row
+        _DIALOG_TEXT_WIDTH=$text_width
+        _DIALOG_TEXT_HEIGHT=$text_area_height
 
         # Parse text into lines and display in text area
         local text_focused=$([[ $SEND_FOCUS -eq 0 ]] && echo 1 || echo 0)
@@ -10115,14 +10202,14 @@ EOF
                 else
                     # In text area, type the character
                     SEND_TEXT="${SEND_TEXT}a"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x1e')  # Enter
                 if [[ $SEND_FOCUS -eq 0 ]]; then
                     # In text area, add newline
                     SEND_TEXT="${SEND_TEXT}"$'\n'
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 elif [[ $SEND_FOCUS -eq 1 ]]; then
                     # Cancel button
                     DIALOG_MODE=0
@@ -10155,7 +10242,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}["
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'Z')  # Shift+Tab (part of \e[Z sequence)
@@ -10172,7 +10259,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}Z"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'A'|'B'|'C'|'D')  # Arrow keys (as part of escape sequence) or regular letters
@@ -10198,14 +10285,14 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field - add the letter
                     SEND_TEXT="${SEND_TEXT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
                 if [[ $SEND_FOCUS -eq 0 && -n "$SEND_TEXT" ]]; then
                     dialog_delete_line "$SEND_TEXT"
                     SEND_TEXT="$_DIALOG_TEXT_RESULT"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
@@ -10219,7 +10306,7 @@ EOF
                         # Regular backspace - delete one char
                         SEND_TEXT="${SEND_TEXT%?}"
                     fi
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             *)  # Any other key
@@ -10229,7 +10316,7 @@ EOF
                 elif [[ $SEND_FOCUS -eq 0 ]]; then
                     # Typing in text field
                     SEND_TEXT="${SEND_TEXT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 _DIALOG_ESC_PENDING=0
                 ;;
@@ -10494,9 +10581,25 @@ EOF
             return
         fi
 
-        # Only redraw when dirty
+        # Calculate geometry constants
+        local dialog_height=16  # Total dialog height
+        local prompt_area_height=3  # Lines in the prompt area
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))  # 44 chars for content
+
+        # Check for text-only redraw (optimization for prompt area)
+        if [[ "${_DIALOG_TEXT_DIRTY:-0}" == "1" && "${_DIALOG_DIRTY:-0}" != "1" ]]; then
+            _DIALOG_TEXT_DIRTY=0
+            # Use cached geometry for partial redraw
+            local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
+            dialog_redraw_text_area "$NEW_AGENT_PROMPT" "$prompt_focused"
+            return
+        fi
+
+        # Only full redraw when dirty
         [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
         _DIALOG_DIRTY=0
+        _DIALOG_TEXT_DIRTY=0  # Clear text dirty too since we're doing full redraw
 
         # Get terminal size
         TERM_LINES=$(tput lines)
@@ -10504,8 +10607,6 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local dialog_height=16  # Total dialog height
-        local prompt_area_height=3  # Lines in the prompt area
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
         [[ $start_row -lt 1 ]] && start_row=1
 
@@ -10586,13 +10687,16 @@ EOF
         ((row++))
 
         # Prompt text area box - top border
-        local inner_width=$((DIALOG_WIDTH - 4))
-        local text_width=$((inner_width - 2))  # 44 chars for content
         printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
         local i
         for ((i=0; i<text_width; i++)); do printf '─'; done
         printf '┐ │'
         ((row++))
+
+        # Cache geometry for text-only redraws
+        _DIALOG_TEXT_START_ROW=$row
+        _DIALOG_TEXT_WIDTH=$text_width
+        _DIALOG_TEXT_HEIGHT=$prompt_area_height
 
         # Parse prompt text into lines and display
         local prompt_focused=$([[ $NEW_AGENT_FOCUS -eq 3 ]] && echo 1 || echo 0)
@@ -10704,7 +10808,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field - add space
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT} "
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x1e')  # Enter
@@ -10715,7 +10819,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # In prompt area, add newline
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}"$'\n'
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 elif [[ $NEW_AGENT_FOCUS -eq 4 ]]; then
                     # Cancel button
                     DIALOG_MODE=0
@@ -10763,7 +10867,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'k'|'K')  # k - previous model (when on model field)
@@ -10779,7 +10883,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\e')  # Escape - check for sequence
@@ -10793,7 +10897,7 @@ EOF
                     :
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}["
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'Z')  # Shift+Tab (part of \e[Z sequence)
@@ -10816,7 +10920,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}Z"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'A')  # Up arrow - previous model (when on model field), or backward navigation
@@ -10844,7 +10948,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}A"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'B')  # Down arrow - next model (when on model field), or forward navigation
@@ -10872,7 +10976,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}B"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'D')  # Left arrow - backward navigation (like Shift+Tab)
@@ -10896,7 +11000,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}D"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             'C')  # Right arrow - forward navigation (like Tab)
@@ -10920,7 +11024,7 @@ EOF
                     fi
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}C"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x15')  # Ctrl+U - delete to start of line
@@ -10931,7 +11035,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 && -n "$NEW_AGENT_PROMPT" ]]; then
                     dialog_delete_line "$NEW_AGENT_PROMPT"
                     NEW_AGENT_PROMPT="$_DIALOG_TEXT_RESULT"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             $'\x7f'|$'\b')  # Backspace (DEL or BS)
@@ -10954,7 +11058,7 @@ EOF
                     else
                         NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT%?}"
                     fi
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 ;;
             *)  # Any other key
@@ -10970,7 +11074,7 @@ EOF
                 elif [[ $NEW_AGENT_FOCUS -eq 3 ]]; then
                     # Typing in prompt field
                     NEW_AGENT_PROMPT="${NEW_AGENT_PROMPT}${key}"
-                    _DIALOG_DIRTY=1
+                    _DIALOG_TEXT_DIRTY=1
                 fi
                 _DIALOG_ESC_PENDING=0
                 ;;
