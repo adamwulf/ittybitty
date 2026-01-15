@@ -1108,6 +1108,138 @@ ensure_ittybitty_dirs() {
     mkdir -p "$ROOT_REPO_PATH/$ITTYBITTY_DIR/archive" 2>/dev/null || true
 }
 
+# ==========================================================================
+# Feedback State Management
+# ==========================================================================
+# Tracks user feedback dialog state in .ittybitty/feedback.json
+# Fields:
+#   session_count: number of ib watch sessions
+#   last_shown: ISO timestamp when dialog was last shown
+#   response: "positive", "neutral", "negative", or "" (not yet responded)
+
+FEEDBACK_STATE_FILE=""  # Set by init_feedback_state
+
+init_feedback_state() {
+    [[ -z "$ROOT_REPO_PATH" ]] && return
+    FEEDBACK_STATE_FILE="$ROOT_REPO_PATH/$ITTYBITTY_DIR/feedback.json"
+
+    # Create file with defaults if it doesn't exist
+    if [[ ! -f "$FEEDBACK_STATE_FILE" ]]; then
+        echo '{"session_count":0,"last_shown":"","response":""}' > "$FEEDBACK_STATE_FILE"
+    fi
+}
+
+# Get a field from feedback state (uses pure bash to avoid jq overhead)
+get_feedback_field() {
+    local field="$1"
+    [[ -z "$FEEDBACK_STATE_FILE" || ! -f "$FEEDBACK_STATE_FILE" ]] && return
+
+    local content
+    content=$(<"$FEEDBACK_STATE_FILE")
+
+    case "$field" in
+        session_count)
+            if [[ "$content" =~ \"session_count\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+                echo "${BASH_REMATCH[1]}"
+            else
+                echo "0"
+            fi
+            ;;
+        last_shown)
+            if [[ "$content" =~ \"last_shown\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+                echo "${BASH_REMATCH[1]}"
+            fi
+            ;;
+        response)
+            if [[ "$content" =~ \"response\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+                echo "${BASH_REMATCH[1]}"
+            fi
+            ;;
+    esac
+}
+
+# Set a field in feedback state
+set_feedback_field() {
+    local field="$1"
+    local value="$2"
+    [[ -z "$FEEDBACK_STATE_FILE" || ! -f "$FEEDBACK_STATE_FILE" ]] && return
+
+    local content
+    content=$(<"$FEEDBACK_STATE_FILE")
+
+    case "$field" in
+        session_count)
+            # Replace numeric value
+            if [[ "$content" =~ \"session_count\"[[:space:]]*:[[:space:]]*[0-9]+ ]]; then
+                content="${content/\"session_count\"*([0-9]+)/\"session_count\":$value}"
+                # Use sed for reliable replacement
+                content=$(echo "$content" | sed "s/\"session_count\"[[:space:]]*:[[:space:]]*[0-9]*/\"session_count\":$value/")
+            fi
+            ;;
+        last_shown|response)
+            # Replace string value
+            content=$(echo "$content" | sed "s/\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"$field\":\"$value\"/")
+            ;;
+    esac
+
+    echo "$content" > "$FEEDBACK_STATE_FILE"
+}
+
+# Increment session count
+increment_feedback_session() {
+    [[ -z "$FEEDBACK_STATE_FILE" || ! -f "$FEEDBACK_STATE_FILE" ]] && return
+
+    local count
+    count=$(get_feedback_field "session_count")
+    count=$((count + 1))
+    set_feedback_field "session_count" "$count"
+}
+
+# Check if we should show the feedback dialog
+# Returns 0 (true) if should show, 1 (false) if not
+should_show_feedback_dialog() {
+    [[ -z "$FEEDBACK_STATE_FILE" || ! -f "$FEEDBACK_STATE_FILE" ]] && return 1
+
+    # Don't show if user already responded with positive/neutral/negative
+    local response
+    response=$(get_feedback_field "response")
+    [[ -n "$response" ]] && return 1
+
+    # Only show after 5+ sessions
+    local session_count
+    session_count=$(get_feedback_field "session_count")
+    [[ $session_count -lt 5 ]] && return 1
+
+    # Don't show more than once per 7 days
+    local last_shown
+    last_shown=$(get_feedback_field "last_shown")
+    if [[ -n "$last_shown" ]]; then
+        # Parse the timestamp and check if 7 days have passed
+        local timestamp="${last_shown%[-+]*}"
+        local then
+        then=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$timestamp" +%s 2>/dev/null) || return 1
+        local now
+        now=$(date +%s)
+        local days_elapsed=$(( (now - then) / 86400 ))
+        [[ $days_elapsed -lt 7 ]] && return 1
+    fi
+
+    return 0
+}
+
+# Mark feedback dialog as shown
+mark_feedback_shown() {
+    local timestamp
+    timestamp=$(date -Iseconds)
+    set_feedback_field "last_shown" "$timestamp"
+}
+
+# Record user's feedback response
+record_feedback_response() {
+    local response="$1"  # positive, neutral, negative
+    set_feedback_field "response" "$response"
+}
+
 # Format age from ISO timestamp
 format_age() {
     local created="$1"
@@ -8877,6 +9009,16 @@ EOF
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
 
+    # Initialize and track feedback state
+    init_feedback_state
+    increment_feedback_session
+
+    # Check if we should show the feedback dialog
+    local SHOW_FEEDBACK_DIALOG=0
+    if should_show_feedback_dialog; then
+        SHOW_FEEDBACK_DIALOG=1
+    fi
+
     # Validate agent metadata before starting (catches invalid meta.json early)
     validate_agent_metadata
 
@@ -8895,7 +9037,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback
     local DIALOG_WIDTH=50  # Fixed dialog width
 
     # Frame rate control
@@ -8952,6 +9094,10 @@ EOF
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
+
+    # Feedback dialog state
+    local FEEDBACK_FOCUS=0  # 0=Yes, 1=Okay, 2=No, 3=Later
+    local FEEDBACK_SHOWN_THIS_SESSION=0  # Prevent re-showing during same session
 
     # Errors cache for async agent creation failures
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
@@ -12055,6 +12201,203 @@ EOF
     # End External Diff Tool Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # Feedback Dialog (DIALOG_MODE=10)
+    # ==========================================================================
+    # Asks user if they're enjoying ittybitty. Shows after 5+ sessions,
+    # max once per 7 days, stops after user responds.
+
+    watch_dialog_init_feedback() {
+        FEEDBACK_FOCUS=0  # Start with "Yes" focused
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    watch_dialog_render_feedback() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local dialog_height=12
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        dialog_draw_line "$row" "Are you enjoying ittybitty?"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Message
+        dialog_draw_line "$row" "Your feedback helps improve ib!"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Options - draw as a list with highlight
+        local inner_width=$((DIALOG_WIDTH - 4))
+
+        # Option 1: Yes, loving it!
+        local opt1="Yes, loving it!"
+        local opt1_len=${#opt1}
+        local opt1_pad=$((inner_width - opt1_len))
+        [[ $opt1_pad -lt 0 ]] && opt1_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $FEEDBACK_FOCUS -eq 0 ]]; then
+            printf '\e[7m%s\e[0m' "$opt1"
+        else
+            printf '%s' "$opt1"
+        fi
+        printf '%*s │' "$opt1_pad" ""
+        ((row++))
+
+        # Option 2: It's okay
+        local opt2="It's okay"
+        local opt2_len=${#opt2}
+        local opt2_pad=$((inner_width - opt2_len))
+        [[ $opt2_pad -lt 0 ]] && opt2_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $FEEDBACK_FOCUS -eq 1 ]]; then
+            printf '\e[7m%s\e[0m' "$opt2"
+        else
+            printf '%s' "$opt2"
+        fi
+        printf '%*s │' "$opt2_pad" ""
+        ((row++))
+
+        # Option 3: Not really
+        local opt3="Not really"
+        local opt3_len=${#opt3}
+        local opt3_pad=$((inner_width - opt3_len))
+        [[ $opt3_pad -lt 0 ]] && opt3_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $FEEDBACK_FOCUS -eq 2 ]]; then
+            printf '\e[7m%s\e[0m' "$opt3"
+        else
+            printf '%s' "$opt3"
+        fi
+        printf '%*s │' "$opt3_pad" ""
+        ((row++))
+
+        # Option 4: Ask me later
+        local opt4="Ask me later"
+        local opt4_len=${#opt4}
+        local opt4_pad=$((inner_width - opt4_len))
+        [[ $opt4_pad -lt 0 ]] && opt4_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $FEEDBACK_FOCUS -eq 3 ]]; then
+            printf '\e[7m%s\e[0m' "$opt4"
+        else
+            printf '%s' "$opt4"
+        fi
+        printf '%*s │' "$opt4_pad" ""
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_feedback() {
+        local key="$1"
+        case "$key" in
+            $'\x1e'|' ')  # Enter or Space - select current option
+                case $FEEDBACK_FOCUS in
+                    0)  # Yes, loving it!
+                        record_feedback_response "positive"
+                        DIALOG_MODE=0
+                        # Open GitHub sponsors page
+                        open "https://github.com/sponsors/adamwulf" 2>/dev/null || true
+                        ;;
+                    1)  # It's okay
+                        record_feedback_response "neutral"
+                        DIALOG_MODE=0
+                        ;;
+                    2)  # Not really
+                        record_feedback_response "negative"
+                        DIALOG_MODE=0
+                        # Open GitHub issues for feedback
+                        open "https://github.com/adamwulf/ittybitty/issues" 2>/dev/null || true
+                        ;;
+                    3)  # Ask me later
+                        mark_feedback_shown  # Reset the 7-day timer
+                        DIALOG_MODE=0
+                        ;;
+                esac
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t'|'j')  # Tab or j - move down
+                FEEDBACK_FOCUS=$(( (FEEDBACK_FOCUS + 1) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'B')  # Down arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    FEEDBACK_FOCUS=$(( (FEEDBACK_FOCUS + 1) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'k')  # k - move up
+                FEEDBACK_FOCUS=$(( (FEEDBACK_FOCUS - 1 + 4) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'A'|'Z')  # Up arrow or Shift+Tab - move up
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    FEEDBACK_FOCUS=$(( (FEEDBACK_FOCUS - 1 + 4) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Real escape - close dialog without recording response
+                    mark_feedback_shown  # Still mark as shown to avoid re-prompting
+                    DIALOG_MODE=0
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Feedback Dialog
+    # ==========================================================================
+
     # Open external diff tool for an agent
     # Args: $1=agent_id
     watch_open_external_diff() {
@@ -13406,6 +13749,7 @@ EOF
                 7) watch_dialog_key_merge "$key" ;;
                 8) watch_dialog_key_ext_diff_tool "$key" ;;
                 9) watch_dialog_key_cmd_jump "$key" ;;
+                10) watch_dialog_key_feedback "$key" ;;
             esac
             return
         fi
@@ -13714,9 +14058,25 @@ EOF
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
 
+    # Track if we need to show feedback dialog after first frame
+    local FEEDBACK_TRIGGER_FRAME=0
+    if [[ $SHOW_FEEDBACK_DIALOG -eq 1 ]]; then
+        FEEDBACK_TRIGGER_FRAME=3  # Show after 3 frames (give UI time to render)
+    fi
+
     # Main loop
+    local FRAME_NUMBER=0
     while true; do
         local frame_start_ms=$(get_ms)
+        FRAME_NUMBER=$((FRAME_NUMBER + 1))
+
+        # Show feedback dialog after initial frames render (one-time trigger)
+        if [[ $FEEDBACK_TRIGGER_FRAME -gt 0 && $FRAME_NUMBER -ge $FEEDBACK_TRIGGER_FRAME && $DIALOG_MODE -eq 0 ]]; then
+            FEEDBACK_TRIGGER_FRAME=0  # Only trigger once
+            mark_feedback_shown  # Mark as shown immediately
+            watch_dialog_init_feedback
+            DIALOG_MODE=10
+        fi
 
         # Load any new errors from background processes
         watch_load_errors_from_file
@@ -13737,6 +14097,7 @@ EOF
                 7) watch_dialog_render_merge ;;
                 8) watch_dialog_render_ext_diff_tool ;;
                 9) watch_dialog_render_cmd_jump ;;
+                10) watch_dialog_render_feedback ;;
             esac
             set -e
         else
