@@ -1424,8 +1424,9 @@ capture_tmux() {
 
     # Fallback: capture directly from tmux
     # Note: || true prevents set -e from exiting when session doesn't exist
+    # Use -E - to capture TO the end of scrollback (prevents scroll jumping during heavy output)
     local raw_capture
-    raw_capture=$(tmux capture-pane -t "$session" -p -S "-$lines" 2>/dev/null) || true
+    raw_capture=$(tmux capture-pane -t "$session" -p -S "-$lines" -E - 2>/dev/null) || true
     # Strip ANSI codes for consistent pattern matching (matches background cache behavior)
     _strip_ansi "$raw_capture"
     LAST_TMUX_CAPTURE="$_STRIP_ANSI_RESULT"
@@ -13305,7 +13306,8 @@ EOF
         else
             # Fallback: capture directly from tmux and strip ANSI codes
             local raw_output
-            raw_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" 2>/dev/null) || true
+            # Use -E - to capture TO the end of scrollback (prevents scroll jumping during heavy output)
+            raw_output=$(tmux capture-pane -t "$tmux_session" -p -S -"$capture_lines" -E - 2>/dev/null) || true
             if [[ -n "$raw_output" ]]; then
                 _strip_ansi "$raw_output"
                 tmux_output="$_STRIP_ANSI_RESULT"
@@ -14167,7 +14169,10 @@ EOF
                 [[ "$sessions" == *"$tmux_session"* ]] || continue
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
                 local raw_capture
-                raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 2>/dev/null) || true
+                # Use -E - to explicitly capture TO the end of scrollback, preventing
+                # scroll position jumping during heavy output (otherwise -S -500 captures
+                # relative to current cursor position which can shift during active output)
+                raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -500 -E - 2>/dev/null) || true
                 if [[ -n "$raw_capture" ]]; then
                     _strip_ansi "$raw_capture"
                     printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
