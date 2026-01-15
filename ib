@@ -1476,9 +1476,9 @@ parse_state() {
     fi
 
     # Get last 15 lines once (covers both 5-line and 15-line windows)
-    # Use pure bash _tail_string instead of subprocess tail
-    _tail_string "$input" 15
-    local last_lines="$_TAIL_STRING_RESULT"
+    # Note: subprocess tail is faster than pure bash for large content (500+ lines)
+    local last_lines
+    last_lines=$(printf '%s' "$input" | tail -15)
 
     # Count lines efficiently: line count = (total length - length without newlines) + 1
     local no_newlines="${last_lines//$'\n'/}"
@@ -1622,11 +1622,10 @@ get_state() {
     # - "Claude Code v" (version in logo on some versions)
     # - "╭─ Claude Code" (welcome box header)
     # - "[USER TASK]" or "[AGENT CONTEXT]" (agent prompt markers)
-    # Get first 100 lines from full tmux history using pure bash
-    local raw_history
-    raw_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null) || true
-    _head_string "$raw_history" 100
-    local full_history="$_HEAD_STRING_RESULT"
+    # Get first 100 lines from full tmux history
+    # Note: subprocess head is faster than pure bash for large content
+    local full_history
+    full_history=$(tmux capture-pane -t "$tmux_session" -p -S - 2>/dev/null | head -100) || true
 
     # Use pure bash pattern matching instead of grep
     local claude_started=false
@@ -2363,9 +2362,6 @@ build_agent_data_file() {
     local all_data=()  # Each element: "manager|age|model|prompt"
     local all_ids_index=""  # O(1) lookup string: "|id1:0|id2:1|"
 
-    local t_pass1_start t_pass1_end
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_pass1_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
-
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" ]] || continue
         [[ -f "$agent_dir/meta.json" ]] || continue
@@ -2491,14 +2487,10 @@ build_agent_data_file() {
         all_ids_index="${all_ids_index}|$id:$all_idx|"
     done
 
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_pass1_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "pass1_meta_cache" $((t_pass1_end - t_pass1_start)); }
-
     # === Compute tree order (with caching) ===
     # Build cache key from agent IDs and manager relationships
     # Uses a simple string key: count + length + concatenated id:mgr pairs
     # This is much faster than the previous printf-based ASCII hash approach
-    local t_tree_order_start t_tree_order_end
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_tree_order_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
     local _key_parts=""
     local _idx
     for ((_idx=0; _idx<${#all_ids[@]}; _idx++)); do
@@ -2535,11 +2527,7 @@ build_agent_data_file() {
         TREE_ORDER_KEY="$id_key"
     fi
 
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_tree_order_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "tree_order" $((t_tree_order_end - t_tree_order_start)); }
-
     # === PASS 2: Write tmpfile in TREE ORDER ===
-    local t_pass2_start t_pass2_end
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_pass2_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
     local idx
     for ((idx=0; idx<${#tree_ids[@]}; idx++)); do
         local id="${tree_ids[$idx]}"
@@ -2586,11 +2574,7 @@ build_agent_data_file() {
             if [[ "$session_exists" == "true" ]]; then
                 # Refresh one agent per frame (round-robin) or if not cached
                 if [[ $((STATE_FRAME_COUNT % 5)) -eq $visible_offset || $state_cache_idx -lt 0 ]]; then
-                    # Debug timing: duplicates get_ms() because get_ms is defined inside cmd_watch and not accessible here
-                    local t_state_start t_state_end
-                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_state_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
                     state=$(get_state "$id")
-                    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_state_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "state_detection" $((t_state_end - t_state_start)); }
                     [[ "$state" == "unknown" ]] && state="waiting"
                     # Update cache
                     if [[ $state_cache_idx -ge 0 ]]; then
@@ -2621,8 +2605,6 @@ build_agent_data_file() {
 
         echo "$id|$manager|$state|$age|$model|$prompt|$worker" >> "$tmpfile"
     done
-
-    [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_pass2_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "pass2_state_write" $((t_pass2_end - t_pass2_start)); }
 
     # Increment frame counter for round-robin state refresh
     # Reset after ~24 hours at 30fps to prevent overflow (2592000 = 24*60*60*30)
