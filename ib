@@ -574,9 +574,6 @@ load_config() {
     CONFIG_ALLOW_AGENT_QUESTIONS=$(jq -r '.allowAgentQuestions // true' "$config_file" 2>/dev/null)
 }
 
-# Fetch Claude usage percentages from Anthropic API
-# Uses OAuth token from macOS Keychain
-# Sets global variables: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT
 # Format seconds into human-readable duration for reset times
 # Examples: "44m", "2h", "3d 8h"
 # Args: $1=seconds
