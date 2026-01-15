@@ -176,6 +176,66 @@ If the script exits unexpectedly:
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
+## Custom Prompts
+
+You can add custom instructions to agents by creating markdown files in `.ittybitty/prompts/`:
+
+| File | Applied To | Use Case |
+|------|------------|----------|
+| `.ittybitty/prompts/all.md` | All agents (managers and workers) | Project-wide coding standards, context about the codebase |
+| `.ittybitty/prompts/manager.md` | Manager agents only | Manager-specific workflow guidance, escalation policies |
+| `.ittybitty/prompts/worker.md` | Worker agents only | Worker-specific constraints, output format requirements |
+
+**Example `.ittybitty/prompts/all.md`:**
+```markdown
+## Project Standards
+- Use TypeScript strict mode
+- Follow the existing code style in src/
+- Run `npm test` before committing
+```
+
+**Example `.ittybitty/prompts/manager.md`:**
+```markdown
+## Manager Guidelines
+- For UI changes, always spawn a separate worker for tests
+- Prefer smaller, focused workers over large multi-task workers
+```
+
+Custom prompts are injected into the agent's context in these sections:
+- `[CUSTOM INSTRUCTIONS]` - from `all.md`
+- `[CUSTOM MANAGER INSTRUCTIONS]` - from `manager.md`
+- `[CUSTOM WORKER INSTRUCTIONS]` - from `worker.md`
+
+## User Hooks
+
+You can run custom scripts when agents are created by placing executable scripts in `.ittybitty/hooks/`:
+
+| Hook | Trigger | Use Case |
+|------|---------|----------|
+| `post-create-agent` | After agent is created | Logging, notifications, custom setup |
+
+The hook receives agent information via environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `IB_AGENT_ID` | The agent's unique ID |
+| `IB_AGENT_TYPE` | "manager" or "worker" |
+| `IB_AGENT_DIR` | Path to agent's data directory |
+| `IB_AGENT_BRANCH` | Git branch name (e.g., "agent/abc123") |
+| `IB_AGENT_MANAGER` | Parent manager ID (empty for root managers) |
+| `IB_AGENT_PROMPT` | The user task prompt |
+| `IB_AGENT_MODEL` | Model being used (e.g., "sonnet") |
+
+**Example `.ittybitty/hooks/post-create-agent`:**
+```bash
+#!/bin/bash
+echo "[$(date -Iseconds)] Agent $IB_AGENT_ID created (type: $IB_AGENT_TYPE)" >> .ittybitty/creation.log
+```
+
+Make sure to make the hook executable: `chmod +x .ittybitty/hooks/post-create-agent`
+
+Hook output is appended to the agent's `agent.log` file.
+
 ## Agent Hooks
 
 Each spawned agent automatically gets Claude Code hooks configured in their `settings.local.json`:

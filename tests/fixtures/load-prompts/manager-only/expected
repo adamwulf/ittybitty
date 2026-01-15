@@ -1,0 +1,3 @@
+all: (empty)
+manager: Prefer small focused workers.
+worker: (empty)

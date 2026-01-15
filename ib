@@ -593,6 +593,31 @@ load_config() {
     fi
 }
 
+# Load custom prompts from .ittybitty/prompts/ directory
+# Sets: CONFIG_PROMPT_ALL, CONFIG_PROMPT_MANAGER, CONFIG_PROMPT_WORKER
+load_custom_prompts() {
+    CONFIG_PROMPT_ALL=""
+    CONFIG_PROMPT_MANAGER=""
+    CONFIG_PROMPT_WORKER=""
+
+    local prompts_dir="$ITTYBITTY_DIR/prompts"
+
+    # Load all-agents prompt
+    if [[ -f "$prompts_dir/all.md" ]]; then
+        CONFIG_PROMPT_ALL=$(<"$prompts_dir/all.md")
+    fi
+
+    # Load manager-specific prompt
+    if [[ -f "$prompts_dir/manager.md" ]]; then
+        CONFIG_PROMPT_MANAGER=$(<"$prompts_dir/manager.md")
+    fi
+
+    # Load worker-specific prompt
+    if [[ -f "$prompts_dir/worker.md" ]]; then
+        CONFIG_PROMPT_WORKER=$(<"$prompts_dir/worker.md")
+    fi
+}
+
 # Format seconds into human-readable duration for reset times
 # Examples: "44m", "2h", "3d 8h"
 # Args: $1=seconds
@@ -2867,8 +2892,9 @@ EOF
         fi
     fi
 
-    # Load config for PR settings
+    # Load config for PR settings and custom prompts
     load_config
+    load_custom_prompts
 
     # Apply model from config if not specified via --model parameter
     if [[ -z "$MODEL" && -n "$CONFIG_MODEL" ]]; then
@@ -3208,12 +3234,36 @@ Before completing, verify your work:
 
     # Add role identifier for spawned agents
     local ROLE_MARKER=""
+    local CUSTOM_ROLE_PROMPT=""
     if [[ "$WORKER_MODE" == true ]]; then
         ROLE_MARKER="<ittybitty>You are an IttyBitty worker agent.</ittybitty>
 
 "
+        # Add custom worker prompt if configured
+        if [[ -n "$CONFIG_PROMPT_WORKER" ]]; then
+            CUSTOM_ROLE_PROMPT="[CUSTOM WORKER INSTRUCTIONS]
+$CONFIG_PROMPT_WORKER
+
+"
+        fi
     else
         ROLE_MARKER="<ittybitty>You are an IttyBitty manager agent.</ittybitty>
+
+"
+        # Add custom manager prompt if configured
+        if [[ -n "$CONFIG_PROMPT_MANAGER" ]]; then
+            CUSTOM_ROLE_PROMPT="[CUSTOM MANAGER INSTRUCTIONS]
+$CONFIG_PROMPT_MANAGER
+
+"
+        fi
+    fi
+
+    # Add custom all-agents prompt if configured
+    local CUSTOM_ALL_PROMPT=""
+    if [[ -n "$CONFIG_PROMPT_ALL" ]]; then
+        CUSTOM_ALL_PROMPT="[CUSTOM INSTRUCTIONS]
+$CONFIG_PROMPT_ALL
 
 "
     fi
@@ -3225,7 +3275,7 @@ $PATH_ISOLATION
 $GIT_WORKTREE_CONTEXT
 $IB_INSTRUCTIONS
 $COMPLETION_INSTRUCTIONS
-
+${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}
 [USER TASK]
 $PROMPT"
 
@@ -3371,6 +3421,23 @@ EOF
 
     # Output the agent ID immediately so caller isn't blocked
     echo "$ID"
+
+    # Run post-create-agent hook if it exists
+    local POST_CREATE_HOOK="$ITTYBITTY_DIR/hooks/post-create-agent"
+    if [[ -x "$POST_CREATE_HOOK" ]]; then
+        # Run hook with agent info as environment variables
+        # Hook runs in background to not block agent creation
+        (
+            export IB_AGENT_ID="$ID"
+            export IB_AGENT_TYPE="$( [[ "$WORKER_MODE" == true ]] && echo "worker" || echo "manager" )"
+            export IB_AGENT_DIR="$AGENT_DIR"
+            export IB_AGENT_BRANCH="$BRANCH_NAME"
+            export IB_AGENT_MANAGER="$MANAGER"
+            export IB_AGENT_PROMPT="$PROMPT"
+            export IB_AGENT_MODEL="$MODEL"
+            "$POST_CREATE_HOOK" >> "$AGENT_DIR/agent.log" 2>&1
+        ) &
+    fi
 
     # For non-yolo mode, auto-accept the workspace trust dialog in background
     # (yolo bypasses this entirely, but default and strict still see it)
@@ -6378,6 +6445,86 @@ EOF
     echo "model:${model:+ $model}"
     echo "fps: $fps"
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
+}
+
+# =============================================================================
+# COMMAND: test-load-prompts
+# =============================================================================
+
+# Test load_custom_prompts() function output
+# This is for testing only - blocked from running inside agents
+# Input: a directory path containing prompts/ subdirectory
+cmd_test_load_prompts() {
+    local input_dir=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-load-prompts [options] <directory>
+
+Test custom prompts loading logic.
+
+Reads prompt files from <directory>/prompts/ and outputs the loaded values.
+This command is primarily for testing the load_custom_prompts() logic.
+
+Options:
+  -h, --help     Show this help
+
+Output format:
+  all: <content or empty>
+  manager: <content or empty>
+  worker: <content or empty>
+EOF
+                exit 0
+                ;;
+            *)
+                if [[ -z "$input_dir" ]]; then
+                    input_dir="$1"
+                else
+                    echo "Error: unexpected argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_dir" ]]; then
+        echo "Error: no directory provided." >&2
+        echo "Usage: ib test-load-prompts <directory>" >&2
+        exit 1
+    fi
+
+    if [[ ! -d "$input_dir" ]]; then
+        echo "Error: directory not found: $input_dir" >&2
+        exit 1
+    fi
+
+    # Temporarily override ITTYBITTY_DIR to load from the test directory
+    local old_ittybitty_dir="$ITTYBITTY_DIR"
+    ITTYBITTY_DIR="$input_dir"
+    load_custom_prompts
+    ITTYBITTY_DIR="$old_ittybitty_dir"
+
+    # Output in expected format
+    # Use %q to safely quote multiline content, or show (empty) for empty
+    if [[ -n "$CONFIG_PROMPT_ALL" ]]; then
+        echo "all: $CONFIG_PROMPT_ALL"
+    else
+        echo "all: (empty)"
+    fi
+    if [[ -n "$CONFIG_PROMPT_MANAGER" ]]; then
+        echo "manager: $CONFIG_PROMPT_MANAGER"
+    else
+        echo "manager: (empty)"
+    fi
+    if [[ -n "$CONFIG_PROMPT_WORKER" ]]; then
+        echo "worker: $CONFIG_PROMPT_WORKER"
+    else
+        echo "worker: (empty)"
+    fi
 }
 
 # =============================================================================
@@ -13416,6 +13563,10 @@ case "${1:-help}" in
     test-load-config)
         shift
         cmd_test_load_config "$@"
+        ;;
+    test-load-prompts)
+        shift
+        cmd_test_load_prompts "$@"
         ;;
     test-resolve-id)
         shift
