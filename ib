@@ -257,6 +257,10 @@ enforce_command_access() {
     if [[ "$is_claude" == "true" ]]; then
         case "$cmd" in
             watch)
+                # Allow watch --debug for performance testing (no TTY required)
+                if [[ "$subcmd" == "--debug" ]]; then
+                    return 0
+                fi
                 echo "Error: '$cmd' requires an interactive terminal" >&2
                 echo "Ask the user to run 'ib watch' in a separate terminal window" >&2
                 exit 1
