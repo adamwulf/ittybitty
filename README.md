@@ -18,7 +18,7 @@ Benefits:
 
 When you spawn an agent with `ib`, it:
 
-1. Creates a **git worktree** on a new branch (`agent/<id>`) - isolated from your main working tree (inside `.ittybitty/agents/[agent-id]/`)
+1. Creates a **git worktree** on a new branch (`agent/<id>`) - isolated from your main working tree (inside `.ittybitty/agents/<id>/`)
 2. Starts a **tmux session** running Claude Code in that worktree
 3. Monitors the agent's state (running, waiting, complete, stopped)
 
@@ -166,7 +166,7 @@ Some tools are required for `ib` to function properly, and will always be enable
 
 **Hooks**
 
-`ittybitty` uses hooks to prevent agents from moving into other agent's worktrees, including the primary repository. All agent worktrees are located in `.ittybitty/agents/[agent-id]`.
+`ittybitty` uses hooks to prevent agents from moving into other agent's worktrees, including the primary repository. All agent worktrees are located in `.ittybitty/agents/<id>`.
 
 **Archives**
 
