@@ -7,6 +7,7 @@
 
 set -e
 
+VERSION="0.1.0"
 ITTYBITTY_DIR="${ITTYBITTY_DIR:-.ittybitty}"
 SESSION_PREFIX="ittybitty-"  # Will be updated to include repo UUID after init_paths()
 TMUX_WIDTH=60  # Width for agent tmux panes (used by watch command)
@@ -14585,9 +14586,10 @@ EOF
         # Format: \e]8;;URL\e\\TEXT\e]8;;\e\\ (using \a as terminator for compatibility)
         local sponsor_link=$'\e]8;;https://github.com/sponsors/adamwulf\a'"♡ sponsor"$'\e]8;;\a'
         local sponsor_visible_len=9  # "♡ sponsor" = 9 visible chars
-        printf -v right_info "fps:%2d  %s  %s" "$fps" "$sponsor_link" "$current_time"
-        # Visible length: "fps:XX  " (8) + sponsor (9) + "  " (2) + time (8) = 27
-        local right_info_visible_len=$((8 + sponsor_visible_len + 2 + 8))
+        local version_str="v$VERSION"
+        printf -v right_info "fps:%2d  %s  %s  %s" "$fps" "$sponsor_link" "$current_time" "$version_str"
+        # Visible length: "fps:XX  " (8) + sponsor (9) + "  " (2) + time (8) + "  " (2) + version (len)
+        local right_info_visible_len=$((8 + sponsor_visible_len + 2 + 8 + 2 + ${#version_str}))
         local padding=$((TERM_COLS - action_text_visible_len - right_info_visible_len))
         printf "%s%*s%s%s" "$action_text" "$padding" "" "$right_info" "$COLOR_RESET"
     }
