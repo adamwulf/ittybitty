@@ -2200,6 +2200,15 @@ init_paths() {
     fi
 }
 
+# Require git repo - exits with clear error message if not in a git repository
+# Call this at the start of commands that need to operate on a git repo
+require_git_repo() {
+    if [[ -z "$ROOT_REPO_PATH" ]]; then
+        echo "Error: must be run from within a git repository" >&2
+        exit 1
+    fi
+}
+
 # Check if merging source_branch into target_branch would cause conflicts
 # Args: $1 = target branch (e.g., "main"), $2 = source branch (e.g., "agent/task-123")
 # Returns: 0 if merge would succeed (no conflicts), 1 if conflicts would occur
@@ -4421,11 +4430,8 @@ EOF
         exit 1
     fi
 
-    # Verify we're in a git repo
-    if [[ -z "$ROOT_REPO_PATH" ]]; then
-        echo "Error: must be run from within a git repository" >&2
-        exit 1
-    fi
+    # Require git repo
+    require_git_repo
 
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
@@ -5122,6 +5128,9 @@ EOF
         esac
     done
 
+    # Require git repo
+    require_git_repo
+
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
 
@@ -5337,6 +5346,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     local ID
     ID=$(resolve_agent_id "$TARGET_ID") || exit 1
@@ -5458,6 +5470,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
     local TMUX_SESSION=$(session_name "$ID")
@@ -5540,6 +5555,9 @@ EOF
         echo "Usage: ib status <id>" >&2
         exit 1
     fi
+
+    # Require git repo
+    require_git_repo
 
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
@@ -5680,6 +5698,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
@@ -5773,6 +5794,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
@@ -5848,6 +5872,9 @@ EOF
         echo "Usage: ib kill <id> [options]" >&2
         exit 1
     fi
+
+    # Require git repo
+    require_git_repo
 
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
@@ -5938,6 +5965,9 @@ EOF
                 ;;
         esac
     done
+
+    # Require git repo
+    require_git_repo
 
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
@@ -6167,6 +6197,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
@@ -6364,6 +6397,9 @@ EOF
         echo "Usage: ib merge <id> [options]" >&2
         exit 1
     fi
+
+    # Require git repo
+    require_git_repo
 
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
@@ -6644,6 +6680,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
@@ -6705,6 +6744,9 @@ EOF
 cmd_hooks() {
     local SUBCMD="$1"
     shift 2>/dev/null || true
+
+    # Require git repo for all hooks subcommands
+    require_git_repo
 
     case "$SUBCMD" in
         agent-status)
@@ -9881,6 +9923,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     # Resolve partial ID if needed
     AGENT_ID=$(resolve_agent_id "$AGENT_ID") || exit 1
 
@@ -9966,6 +10011,9 @@ EOF
         echo "Usage: ib ask \"question\"" >&2
         exit 1
     fi
+
+    # Require git repo
+    require_git_repo
 
     # Resolve partial ID
     AGENT_ID=$(resolve_agent_id "$AGENT_ID") || exit 1
@@ -10092,6 +10140,9 @@ EOF
         exit 1
     fi
 
+    # Require git repo
+    require_git_repo
+
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
 
     if [[ ! -f "$questions_file" ]]; then
@@ -10164,6 +10215,9 @@ EOF
                 ;;
         esac
     done
+
+    # Require git repo
+    require_git_repo
 
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
 
@@ -10561,6 +10615,9 @@ EOF
         esac
     done
 
+    # Require git repo
+    require_git_repo
+
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
 
@@ -10655,6 +10712,9 @@ EOF
                 ;;
         esac
     done
+
+    # Require git repo for watch command
+    require_git_repo
 
     # Print timing summary (called on exit)
     # Uses global DEBUG_TIMING_* arrays populated by _debug_timing_record
