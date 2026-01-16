@@ -162,7 +162,9 @@ Use `--force` to skip confirmation prompts.
 
 `ittybitty` is built for safety first, and does not require `--yolo` mode. Any tool that is not explicitly allowed in Claude's normal settings.json will be auto-denied. This keeps you in control of what agents can and can't do.
 
-Some tools are required for `ib` to function properly, and will always be enabled:
+Some tools are required for `ib` to function properly, and will always be enabled: `Bash(ib:*), Bash(./ib:*), Bash(git status:*), Bash(git add:*), Bash(git commit:*), Bash(git diff:*), Bash(git show:*), Bash(git log:*), Bash(git ls-files:*), Bash(git grep:*), Bash(git rm:*), Bash(git merge:*), Bash(git rebase:*), Bash(pwd:*), Bash(ls:*), Bash(head:*), Bash(tail:*), Bash(cat:*), Bash(grep:*), Read, Write, Edit, MultiEdit, Glob, Grep, LS, TodoWrite, Task, TaskOutput, KillShell, NotebookEdit, WebFetch, WebSearch, AskUserQuestion`
+
+Plan mode tools are always disabled: `EnterPlanMode, ExitPlanMode`
 
 **Hooks**
 
