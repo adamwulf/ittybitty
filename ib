@@ -16379,23 +16379,24 @@ cmd_config() {
                     ;;
             esac
 
-            # Determine if value is a number, boolean, array, or string
+            # Determine if value is a literal (number, boolean, array, object) or string
+            # Literals use : prefix for json_set, strings are passed directly
             local json_value
             if [[ "$VALUE" =~ ^[0-9]+$ ]]; then
-                # Integer
-                json_value="$VALUE"
+                # Integer - literal
+                json_value=":$VALUE"
             elif [[ "$VALUE" == "true" || "$VALUE" == "false" ]]; then
-                # Boolean
-                json_value="$VALUE"
+                # Boolean - literal
+                json_value=":$VALUE"
             elif [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
-                # Array (assume it's valid JSON)
-                json_value="$VALUE"
+                # Array - literal (assume it's valid JSON)
+                json_value=":$VALUE"
             elif [[ "$VALUE" == "{"* && "$VALUE" == *"}" ]]; then
-                # Object (assume it's valid JSON)
-                json_value="$VALUE"
+                # Object - literal (assume it's valid JSON)
+                json_value=":$VALUE"
             else
-                # String - needs quoting
-                json_value="\"$VALUE\""
+                # String - json_set handles encoding via base64
+                json_value="$VALUE"
             fi
 
             # Use json_set helper to set the value at the specified key path
