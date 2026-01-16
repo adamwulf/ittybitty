@@ -209,13 +209,13 @@ else
     fail "get missing key returns empty" "Expected empty, got '$result'"
 fi
 
-# Test: Get from missing file
+# Test: Get from missing file returns empty (defaults)
 rm -f .ittybitty.json
-result=$("$IB" config get model 2>&1) || true
-if [[ "$result" == *"not found"* ]]; then
-    pass "get from missing file shows error"
+result=$("$IB" config get model 2>/dev/null) || true
+if [[ -z "$result" || "$result" == "" ]]; then
+    pass "get from missing file returns empty"
 else
-    fail "get from missing file shows error" "Output: $result"
+    fail "get from missing file returns empty" "Expected empty, got '$result'"
 fi
 
 # ===========================================
