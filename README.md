@@ -65,7 +65,7 @@ The setup dialog configures:
 | **ib instructions** | Adds `<ittybitty>` block to CLAUDE.md so Claude knows how to use `ib` |
 | **STATUS.md import** | Enables visibility into agent questions via `@.ittybitty/STATUS.md` |
 | **.gitignore** | Adds `.ittybitty/` to your .gitignore |
-| **Config file** | Creates default `.ittybitty.json` with starter configuration |
+| **Config file** | (Optional) Creates `.ittybitty.json` for `ib config` settings |
 
 Toggle options with Space or Enter. The first four options should be enabled for full functionality.
 
