@@ -37,6 +37,12 @@ Worker Agents (focused workers, no sub-agents)
 - Agent data stored in `.ittybitty/agents/<id>/` (meta.json, prompt.txt, start.sh, repo/, agent.log)
 - Messages between agents are prefixed with `[sent by agent <id>]:`
 
+## Version
+
+The version is defined at the top of the `ib` script (line 10): `VERSION="x.y.z"`
+
+When bumping the version, update only this line.
+
 ## Script Structure
 
 The `ib` script is organized into commands, each implemented as a function:
