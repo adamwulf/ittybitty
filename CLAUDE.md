@@ -436,7 +436,7 @@ The `kill_agent_process` function uses two strategies:
 
 2. **Fallback**: Read from `meta.json` (set at startup via start.sh)
    ```bash
-   PID=$(jq -r '.claude_pid' "$AGENT_DIR/meta.json")
+   PID=$(json_get "$AGENT_DIR/meta.json" "claude_pid")
    ```
 
 ### Agent State Detection

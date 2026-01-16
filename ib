@@ -8485,7 +8485,7 @@ Usage: ib test-questions [options] <file>
 Test questions JSON parsing.
 
 Reads a questions JSON file and outputs the count of pending questions.
-This tests the jq queries used in generate_questions_block() and cmd_questions().
+This tests the JSON parsing logic used in generate_questions_block() and cmd_questions().
 
 Options:
   -h, --help      Show this help
@@ -8552,7 +8552,7 @@ Usage: ib test-token-usage [options] <file>
 Test token usage calculation from transcript JSONL.
 
 Reads a transcript JSONL file and calculates context usage percentage.
-This tests the jq queries used in get_agent_context_usage().
+This tests the JSON parsing logic used in get_agent_context_usage().
 
 Options:
   --context-size N  Set context window size (default: 200000)
@@ -16540,10 +16540,6 @@ cmd_config() {
 
             if [[ -f "$config_file" ]]; then
                 has_config=true
-                if ! command -v jq &>/dev/null; then
-                    echo "Error: jq is required for config commands" >&2
-                    exit 1
-                fi
             fi
 
             # Define all known keys with their defaults and descriptions
@@ -16581,17 +16577,8 @@ cmd_config() {
                 is_customized=false
 
                 if [[ "$has_config" == "true" ]]; then
-                    # Check if this is an array key
-                    case "$key" in
-                        permissions.*)
-                            # Use compact output (-c) for arrays to keep them on one line
-                            current_value=$(jq -c ".$key // empty" "$config_file" 2>/dev/null)
-                            ;;
-                        *)
-                            # Use raw output (-r) for scalar values
-                            current_value=$(jq -r ".$key // empty" "$config_file" 2>/dev/null)
-                            ;;
-                    esac
+                    # Use json_get helper to read value (returns JSON for arrays/objects, strings for scalars)
+                    current_value=$(json_get "$config_file" "$key" "")
                     # Check if it's non-empty
                     if [[ -n "$current_value" && "$current_value" != "null" ]]; then
                         is_customized=true
