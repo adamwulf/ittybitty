@@ -54,6 +54,37 @@ session_name() {
 # =============================================================================
 
 # =============================================================================
+# DEPENDENCY CHECK
+# Check that required tools are installed before running any command
+# =============================================================================
+
+check_dependencies() {
+    local missing=()
+
+    if ! command -v git >/dev/null 2>&1; then
+        missing+=("git")
+    fi
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        missing+=("tmux")
+    fi
+
+    if ! command -v claude >/dev/null 2>&1; then
+        missing+=("claude")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "Error: ittybitty requires the following tools to be installed:" >&2
+        for tool in "${missing[@]}"; do
+            echo "  - $tool" >&2
+        done
+        echo "" >&2
+        echo "Please install the missing tools and try again." >&2
+        exit 1
+    fi
+}
+
+# =============================================================================
 # JSON HELPERS - Pure bash/osascript alternatives to jq
 # These use macOS's built-in osascript with JavaScript for JSON parsing.
 #
@@ -16666,6 +16697,9 @@ EOF
 # =============================================================================
 # MAIN DISPATCH
 # =============================================================================
+
+# Check that all required dependencies are installed
+check_dependencies
 
 # Initialize paths to use root repo (handles running from worktrees)
 init_paths
