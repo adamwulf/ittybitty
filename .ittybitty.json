@@ -3,12 +3,29 @@
   "fps": 10,
   "permissions": {
     "manager": {
-      "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash(jq:*)", "Bash(wc:*)", "Bash(chmod +x tests/:*)", "Bash(chmod +x ./tests/:*)", "Bash(./tests/*.sh:*)"],
+      "allow": [
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash(jq:*)",
+        "Bash(wc:*)",
+        "Bash(chmod +x tests/:*)",
+        "Bash(chmod +x ./tests/:*)",
+        "Bash(./tests/*.sh:*)"
+      ],
       "deny": []
     },
     "worker": {
-      "allow": ["Read", "Write", "Edit", "Bash"],
+      "allow": [
+        "Read",
+        "Write",
+        "Edit",
+        "Bash"
+      ],
       "deny": []
     }
-  }
+  },
+  "noFastForward": true
 }
