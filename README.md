@@ -2,9 +2,11 @@
 
 A single bash script that lets you spawn, organize, and control multiple Claude Code agents.
 
-Benefits:
+![screenshot of ittybitty in action](screenshot.png)
 
-- Staying safe (Tool use is auto-denied unless pre-approved. Yolo mode is optional, not required.)
+**Benefits:**
+
+- Staying safe: Tool use is pre-approved only, all others denied. Yolo mode is optional, *not required*.
 - Simple command line interface to start, stop, monitor, merge, and kill agents. Simple for Claude to understand and use within your normal Claude sessions. Use Claude to spawn teams of Claude agents!
 - View and control any agent, use `$ ib watch` to view and control all agents running in a repo
 - Each agent gets its own git worktree (keep working in your normal git repo while agents fix bugs for you.)
@@ -22,16 +24,15 @@ When you spawn an agent with `ib`, it:
 2. Starts a **tmux session** running Claude Code in that worktree
 3. Monitors the agent's state (running, waiting, complete, stopped)
 
-Agents can spawn sub-agents, creating a hierarchy. Manager agents coordinate work; worker agents execute focused tasks. When an agent completes, you review its changes and merge them back to your branch.
+Agents are either managers or workers. Manager agents coordinate work and can spawn other managers and workers; worker agents execute focused tasks and cannot create new agents. When an agent completes, you review its changes and merge them back to your branch.
 
-```
-You (human)
-  ↕ conversation
-Primary Claude (your normal main session)
-  ↓ spawns via ib
-Manager Agent (can spawn sub-agents)
-  ↓ spawns via ib
-Worker Agents (focused execution, no sub-agents)
+```mermaid
+flowchart LR
+    A[You - Human] <-->|claude code| B[Primary Claude]
+    B -->|spawns via ib| C[Manager Agent]
+    C -->|spawns via ib| D[Worker Agents]
+    E[ib watch] -->|new agent 'a' key| C
+    A -->|command line| E
 ```
 
 You don't need to change your workflow to use `ittybitty`. You can think of its agents as _just_ another Claude Code terminal that can work independently, stays within allowed tool permissions, and can spawn message other agents. You can view, merge, or kill any agent at any time.
