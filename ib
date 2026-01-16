@@ -14359,15 +14359,6 @@ EOF
         # Move cursor to footer row and start dim mode for footer
         printf '\e[%d;1H%s' "$footer_row" "$COLOR_DIM"
 
-        # Check background process health and show age (uses CACHED_NOW from build_agent_data_file)
-        local bg_status=""
-        if [[ -n "$HEARTBEAT_FILE" && -f "$HEARTBEAT_FILE" ]]; then
-            local hb_time hb_age
-            read -r hb_time < "$HEARTBEAT_FILE" 2>/dev/null || hb_time=0
-            hb_age=$((CACHED_NOW - hb_time))
-            bg_status="bg:${hb_age}s  "
-        fi
-
         # Build usage info string for right side of row 1 with color coding
         # Format: "session:57% (44m)  weekly:35% (3d 8h)"
         local usage_info=""
@@ -14507,9 +14498,9 @@ EOF
         # Format: \e]8;;URL\e\\TEXT\e]8;;\e\\ (using \a as terminator for compatibility)
         local sponsor_link=$'\e]8;;https://github.com/sponsors/adamwulf\a'"♡ sponsor"$'\e]8;;\a'
         local sponsor_visible_len=9  # "♡ sponsor" = 9 visible chars
-        printf -v right_info "%sframe:%3dms  fps:%2d  %s  %s" "$bg_status" "$frame_ms" "$fps" "$sponsor_link" "$current_time"
-        # Visible length: bg_status + "frame:XXXms  fps:XX  " (21) + sponsor (9) + "  " (2) + time (8) = 40 + bg_status
-        local right_info_visible_len=$((${#bg_status} + 21 + sponsor_visible_len + 2 + 8))
+        printf -v right_info "fps:%2d  %s  %s" "$fps" "$sponsor_link" "$current_time"
+        # Visible length: "fps:XX  " (8) + sponsor (9) + "  " (2) + time (8) = 27
+        local right_info_visible_len=$((8 + sponsor_visible_len + 2 + 8))
         local padding=$((TERM_COLS - action_text_visible_len - right_info_visible_len))
         printf "%s%*s%s%s" "$action_text" "$padding" "" "$right_info" "$COLOR_RESET"
     }
