@@ -9798,21 +9798,6 @@ EOF
     echo "Created $config_file with default settings"
 }
 
-# Remove .ittybitty.json config file (just reports - user should delete manually)
-cmd_setup_config_file_uninstall() {
-    local config_file=".ittybitty.json"
-
-    if [[ ! -f "$config_file" ]]; then
-        echo "No $config_file file found"
-        return 0
-    fi
-
-    # We don't delete user config - just report it exists
-    # User may have customized it and we don't want to lose their settings
-    rm "$config_file"
-    echo "Removed $config_file"
-}
-
 # =============================================================================
 # COMMAND: log
 # =============================================================================
