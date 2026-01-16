@@ -9768,6 +9768,51 @@ cmd_setup_gitignore_uninstall() {
     echo ".ittybitty removed from $gitignore"
 }
 
+# Create default .ittybitty.json config file
+cmd_setup_config_file_install() {
+    local config_file=".ittybitty.json"
+
+    # Check if already exists
+    if [[ -f "$config_file" ]]; then
+        echo "$config_file already exists"
+        return 0
+    fi
+
+    # Create default config file with common settings
+    cat > "$config_file" <<'EOF'
+{
+  "maxAgents": 10,
+  "model": "sonnet",
+  "permissions": {
+    "manager": {
+      "allow": [],
+      "deny": []
+    },
+    "worker": {
+      "allow": [],
+      "deny": []
+    }
+  }
+}
+EOF
+    echo "Created $config_file with default settings"
+}
+
+# Remove .ittybitty.json config file (just reports - user should delete manually)
+cmd_setup_config_file_uninstall() {
+    local config_file=".ittybitty.json"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo "No $config_file file found"
+        return 0
+    fi
+
+    # We don't delete user config - just report it exists
+    # User may have customized it and we don't want to lose their settings
+    rm "$config_file"
+    echo "Removed $config_file"
+}
+
 # =============================================================================
 # COMMAND: log
 # =============================================================================
@@ -10748,7 +10793,8 @@ EOF
     local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
     local SETUP_STATUS_IMPORT=0       # @.ittybitty/STATUS.md inside <ittybitty> block
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
-    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=Close button
+    local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
+    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=config file, 5=ext diff, 6=Close
 
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
@@ -10837,12 +10883,23 @@ EOF
         fi
     }
 
+    # Check if .ittybitty.json config file exists
+    watch_check_config_file() {
+        local config_file="$ROOT_REPO_PATH/.ittybitty.json"
+        if [[ -f "$config_file" ]]; then
+            SETUP_CONFIG_FILE=1
+        else
+            SETUP_CONFIG_FILE=2
+        fi
+    }
+
     # Check all setup items on startup
     watch_check_all_setup() {
         watch_check_hooks_status
         watch_check_ib_instructions
         watch_check_status_import
         watch_check_gitignore
+        watch_check_config_file
     }
 
     # Check all setup items on startup
@@ -12608,11 +12665,11 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 21) / 2 ))  # 21 lines tall
+        local start_row=$(( (TERM_LINES - 24) / 2 ))  # 24 lines tall
         [[ $start_row -lt 1 ]] && start_row=1
 
         # Clear dialog area
-        dialog_clear "$start_row" 22
+        dialog_clear "$start_row" 25
 
         # Draw dialog box
         local row=$start_row
@@ -12723,8 +12780,45 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 5: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Option 5: Config file (shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        local config_checkbox config_disabled=0
+        if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
+            config_checkbox="[+]"
+            config_disabled=1
+        else
+            config_checkbox="[ ]"
+        fi
+        local config_text="$config_checkbox Config file"
+        local config_len=${#config_text}
+        local config_inner_width=$((DIALOG_WIDTH - 4))
+        local config_padding=$((config_inner_width - config_len))
+        [[ $config_padding -lt 0 ]] && config_padding=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $config_disabled -eq 1 ]]; then
+            printf '\e[2m%s\e[0m' "$config_text"
+        elif [[ $config_focused == "1" ]]; then
+            printf '\e[7m%s\e[0m' "$config_text"
+        else
+            printf '%s' "$config_text"
+        fi
+        printf '%*s │' "$config_padding" ""
+        ((row++))
+
+        # Description for config file
+        if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
+            dialog_draw_line "$row" "  .ittybitty.json exists"
+        else
+            dialog_draw_line "$row" "  Create .ittybitty.json"
+        fi
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Option 6: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -12755,7 +12849,7 @@ EOF
         ((row++))
 
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 6 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -12819,11 +12913,19 @@ EOF
                         watch_check_gitignore
                         _DIALOG_DIRTY=1
                         ;;
-                    4)  # External diff tool - open input dialog
+                    4)  # Config file (only create, not remove)
+                        if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
+                            cmd_setup_config_file_install >/dev/null 2>&1
+                            watch_check_config_file
+                            _DIALOG_DIRTY=1
+                        fi
+                        # If file already exists, do nothing (can't remove via UI)
+                        ;;
+                    5)  # External diff tool - open input dialog
                         watch_dialog_init_ext_diff_tool
                         DIALOG_MODE=8
                         ;;
-                    5)  # Close button
+                    6)  # Close button
                         DIALOG_MODE=0
                         ;;
                 esac
@@ -12837,23 +12939,23 @@ EOF
                 fi
                 ;;
             $'\t'|'j')  # Tab or j - move down
-                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 6 ))
+                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 7 ))
                 _DIALOG_DIRTY=1
                 ;;
             'B')  # Down arrow
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 6 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 7 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
                 ;;
             'k')  # k - move up
-                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 6) % 6 ))
+                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 7) % 7 ))
                 _DIALOG_DIRTY=1
                 ;;
             'A'|'Z')  # Up arrow or Shift+Tab - move up
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 6) % 6 ))
+                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 7) % 7 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
