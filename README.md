@@ -4,7 +4,7 @@ A minimal multi-agent orchestration tool for Claude Code. Spawn persistent backg
 
 **How simple can multi-agent orchestration be?** Just four features: agents that spawn agents, inter-agent communication, status tracking, and isolated git worktrees.
 
-`ib` uses only `claude`, `tmux`, `jq`, and `git` to provide a single CLI for spawning and coordinating background agents.
+`ib` uses only `claude`, `tmux`, and `git` to provide a single CLI for spawning and coordinating background agents.
 
 ## How It Works
 
@@ -31,7 +31,6 @@ Worker Agents (focused execution, no sub-agents)
 ### Prerequisites
 
 - **tmux** - terminal multiplexer
-- **jq** - JSON processor
 - **git** - version control
 - **claude** - Claude Code CLI
 

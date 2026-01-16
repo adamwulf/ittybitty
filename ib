@@ -55,8 +55,12 @@ session_name() {
 
 # =============================================================================
 # JSON HELPERS - Pure bash/osascript alternatives to jq
-# These use macOS's built-in osascript with JavaScript for JSON parsing
-# Base64 encoding ensures safe handling of special characters
+# These use macOS's built-in osascript with JavaScript for JSON parsing.
+#
+# Why base64? Values are passed to JavaScript via string interpolation in the
+# osascript command. Special characters like quotes, newlines, $, *, and shell
+# metacharacters would break the JavaScript syntax or be interpreted by bash.
+# Base64 encoding makes all data safe for transport, then JavaScript decodes it.
 # =============================================================================
 
 # Read a value from JSON file or string by keypath
