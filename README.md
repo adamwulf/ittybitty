@@ -207,23 +207,34 @@ You can always ask Claude to check on agents, and it will `ib list` to see their
 
 ## Configuration
 
+### Config Files
+
+ittybitty uses two config files with this precedence:
+
+| File | Scope | Priority |
+|------|-------|----------|
+| `.ittybitty.json` | Project (repo root) | Highest - overrides user settings |
+| `~/.ittybitty.json` | User (home directory) | Lower - provides personal defaults |
+
+Use project config for repo-specific settings. Use user config for personal preferences like `externalDiffTool` or `noFastForward`.
+
 ### Quick Config with `ib config`
 
 ```bash
-# View a setting (returns default if not set)
-# maxAgents defaults to 10
-ib config get maxAgents
+# View all settings with their sources
+ib config list                              # Shows (project), (user), or (default)
 
-# Change a setting
+# Get/set project config (default)
+ib config get maxAgents
 ib config set maxAgents 20
-ib config set model sonnet
+
+# Get/set user config (with --global)
+ib config --global set noFastForward true   # Your personal default
+ib config --global set externalDiffTool "code --diff"
+ib config --global list                     # Show user config only
 ```
 
-View all configuration options with `ib conflg list`
-
-### Configuration File
-
-Create `.ittybitty.json` in your project root for full configuration. You can setup a default `.ittybitty.json` file with `ib watch` and then enter its setup with `h` hotkey. This json file stores the configuration that you can also view and edit with `ib config`
+### Configuration Options
 
 | Option | Default | Description |
 |--------|---------|-------------|

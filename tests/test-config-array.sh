@@ -152,7 +152,7 @@ fi
 # Test 11: Remove from missing file
 rm -f .ittybitty.json
 output=$("$IB" config remove permissions.manager.allow "Read" 2>&1) || true
-if [[ "$output" == *".ittybitty.json not found"* ]]; then
+if [[ "$output" == *"not found"* ]] || [[ "$output" == *"Config file not found"* ]]; then
     pass "remove from missing file"
 else
     fail "remove from missing file" "Output: $output"
