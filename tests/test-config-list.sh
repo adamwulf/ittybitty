@@ -74,7 +74,7 @@ fi
 rm -f .ittybitty.json
 "$IB" config set model opus >/dev/null
 result=$("$IB" config list)
-if [[ "$result" == *"model:"* ]] && [[ "$result" == *"opus"* ]] && [[ "$result" == *"(customized)"* ]]; then
+if [[ "$result" == *"model:"* ]] && [[ "$result" == *"opus"* ]] && [[ "$result" == *"(project)"* ]]; then
     pass "list shows customized string value"
 else
     fail "list shows customized string value" "Output: $result"
@@ -84,7 +84,7 @@ fi
 rm -f .ittybitty.json
 "$IB" config set maxAgents 25 >/dev/null
 result=$("$IB" config list)
-if [[ "$result" == *"maxAgents:"* ]] && [[ "$result" == *"25"* ]] && [[ "$result" == *"(customized)"* ]]; then
+if [[ "$result" == *"maxAgents:"* ]] && [[ "$result" == *"25"* ]] && [[ "$result" == *"(project)"* ]]; then
     pass "list shows customized integer value"
 else
     fail "list shows customized integer value" "Output: $result"
@@ -94,7 +94,7 @@ fi
 rm -f .ittybitty.json
 "$IB" config set createPullRequests true >/dev/null
 result=$("$IB" config list)
-if [[ "$result" == *"createPullRequests:"* ]] && [[ "$result" == *"true"* ]] && [[ "$result" == *"(customized)"* ]]; then
+if [[ "$result" == *"createPullRequests:"* ]] && [[ "$result" == *"true"* ]] && [[ "$result" == *"(project)"* ]]; then
     pass "list shows customized boolean value"
 else
     fail "list shows customized boolean value" "Output: $result"
@@ -105,7 +105,7 @@ rm -f .ittybitty.json
 "$IB" config add permissions.manager.allow 'Read' >/dev/null
 "$IB" config add permissions.manager.allow 'Write' >/dev/null
 result=$("$IB" config list)
-if [[ "$result" == *"permissions.manager.allow:"* ]] && [[ "$result" == *"Read"* ]] && [[ "$result" == *"(customized)"* ]]; then
+if [[ "$result" == *"permissions.manager.allow:"* ]] && [[ "$result" == *"Read"* ]] && [[ "$result" == *"(project)"* ]]; then
     pass "list shows customized array value"
 else
     fail "list shows customized array value" "Output: $result"
@@ -117,8 +117,8 @@ rm -f .ittybitty.json
 "$IB" config set fps 30 >/dev/null
 result=$("$IB" config list)
 # model and fps should be customized
-if [[ "$result" == *"model:"*"haiku"*"(customized)"* ]] && \
-   [[ "$result" == *"fps:"*"30"*"(customized)"* ]] && \
+if [[ "$result" == *"model:"*"haiku"*"(project)"* ]] && \
+   [[ "$result" == *"fps:"*"30"*"(project)"* ]] && \
    [[ "$result" == *"maxAgents:"*"10"*"(default)"* ]]; then
     pass "list shows mixed customized and default values"
 else
@@ -128,7 +128,7 @@ fi
 # Test: List includes legend
 rm -f .ittybitty.json
 result=$("$IB" config list)
-if [[ "$result" == *"Legend:"* ]] && [[ "$result" == *"customized"* ]] && [[ "$result" == *"default"* ]]; then
+if [[ "$result" == *"Legend:"* ]] && [[ "$result" == *"(project)"* ]] && [[ "$result" == *"(user)"* ]] && [[ "$result" == *"(default)"* ]]; then
     pass "list includes legend"
 else
     fail "list includes legend" "Output: $result"

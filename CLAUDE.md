@@ -187,13 +187,40 @@ If the script exits unexpectedly:
 
 ## Configuration
 
-`.ittybitty.json` configures permissions and behavior for spawned agents:
+Configuration is loaded from two files with the following precedence:
+
+| File | Scope | Priority |
+|------|-------|----------|
+| `.ittybitty.json` | Project (repo root) | Highest - overrides user settings |
+| `~/.ittybitty.json` | User (home directory) | Lower - provides defaults |
+
+**Key behavior**: If a key exists in project config, it's used. Otherwise, if a key exists in user config, that's used. Built-in defaults apply only when a key is not set in either file.
+
+### Available Settings
+
 - `permissions.manager.allow/deny` - tools for manager agents
 - `permissions.worker.allow/deny` - tools for worker agents
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
 - `noFastForward` - when `true`, `ib merge` always creates a merge commit with `--no-ff` (default: false)
+- `externalDiffTool` - external diff tool command for `ib diff --external`
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
+
+### Managing Config with `ib config`
+
+```bash
+# List all config with sources
+ib config list                              # Shows (project), (user), or (default)
+ib config list --global                     # Shows user config only
+
+# Get/set project config (default)
+ib config get noFastForward
+ib config set noFastForward true
+
+# Get/set user config (with --global)
+ib config --global set noFastForward true   # Set user default
+ib config --global set externalDiffTool "code --diff"
+```
 
 ### Auto-Compact Threshold
 
