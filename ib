@@ -205,6 +205,10 @@ json_get() {
         if [[ "$result" == "null" ]]; then
             result=""
         fi
+        # Compact JSON arrays/objects for consistency with osascript engine
+        if [[ "$result" == "["* || "$result" == "{"* ]]; then
+            result=$(echo "$result" | jq -c '.' 2>/dev/null) || true
+        fi
     else
         local json_b64
         json_b64=$(echo -n "$json_content" | base64)
