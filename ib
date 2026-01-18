@@ -1376,8 +1376,9 @@ fetch_latest_version() {
         return 1
     fi
 
-    # Strip leading 'v' if present for consistency
-    local version="${tag_name#v}"
+    # Strip path prefix (e.g., 'release/') and 'v' prefix for consistency
+    local version="${tag_name##*/}"  # Strip everything up to last '/'
+    version="${version#v}"           # Also strip 'v' prefix if present
 
     # Write to cache file (atomic write)
     printf '%s' "$version" > "${cache_file}.tmp" && mv "${cache_file}.tmp" "$cache_file" 2>/dev/null
@@ -16662,6 +16663,7 @@ EOF
     local update_cache_file=$(mktemp)
     UPDATE_CHECK_FILE="$update_cache_file"  # Global for reading cached version
     (
+        set +e  # Disable exit-on-error - network failures should not kill the checker
         local cache_file="$update_cache_file"
         # Initial fetch on startup
         fetch_latest_version "$cache_file"
