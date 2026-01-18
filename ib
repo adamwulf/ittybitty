@@ -8674,6 +8674,168 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-settings-load
+# =============================================================================
+
+# Test the single-parse settings loading optimization
+# Usage: ib test-settings-load <file>
+# This tests the same single-parse approach used in settings_load_all_values()
+# to verify the jq/osascript parsing works correctly.
+cmd_test_settings_load() {
+    local input_file="$1"
+
+    if [[ -z "$input_file" ]]; then
+        echo "Usage: ib test-settings-load <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    local json_content
+    json_content=$(<"$input_file")
+
+    if [[ -z "$json_content" ]]; then
+        # Empty file - output empty values
+        echo "maxAgents:"
+        echo "model:"
+        echo "fps:"
+        echo "createPullRequests:"
+        echo "allowAgentQuestions:"
+        echo "noFastForward:"
+        echo "autoCompactThreshold:"
+        echo "externalDiffTool:"
+        echo "permissions.manager:"
+        echo "permissions.worker:"
+        return 0
+    fi
+
+    # Use the same single-parse approach as settings_load_all_values()
+    # Note: We use "__UNSET__" as placeholder for missing values because bash's
+    # read command collapses consecutive tab delimiters
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            [
+                (if has("maxAgents") then .maxAgents else "__UNSET__" end),
+                (if has("model") then .model else "__UNSET__" end),
+                (if has("fps") then .fps else "__UNSET__" end),
+                (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
+                (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
+                (if has("noFastForward") then .noFastForward else "__UNSET__" end),
+                (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
+                (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
+                ((.permissions.manager.allow // []) | length),
+                ((.permissions.manager.deny // []) | length),
+                ((.permissions.worker.allow // []) | length),
+                ((.permissions.worker.deny // []) | length)
+            ] | @tsv
+        ' 2>/dev/null) || true
+    else
+        local json_b64
+        json_b64=$(echo -n "$json_content" | base64)
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var d = JSON.parse(decoded);
+    var p = d.permissions || {};
+    var pm = p.manager || {};
+    var pw = p.worker || {};
+    [
+        d.maxAgents !== undefined ? d.maxAgents : '__UNSET__',
+        d.model !== undefined ? d.model : '__UNSET__',
+        d.fps !== undefined ? d.fps : '__UNSET__',
+        d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
+        d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
+        d.noFastForward !== undefined ? d.noFastForward : '__UNSET__',
+        d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
+        d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
+        (pm.allow || []).length,
+        (pm.deny || []).length,
+        (pw.allow || []).length,
+        (pw.deny || []).length
+    ].join('\t');
+} catch(e) { ''; }
+" 2>/dev/null) || true
+    fi
+
+    # Parse TSV result
+    local maxAgents model fps createPRs allowQuestions noFF autoCompact extDiff
+    local pm_allow pm_deny pw_allow pw_deny
+    if [[ -n "$result" ]]; then
+        IFS=$'\t' read -r \
+            maxAgents model fps createPRs allowQuestions noFF autoCompact extDiff \
+            pm_allow pm_deny pw_allow pw_deny \
+            <<< "$result"
+    fi
+
+    # Convert placeholder back to empty
+    [[ "$maxAgents" == "__UNSET__" ]] && maxAgents=""
+    [[ "$model" == "__UNSET__" ]] && model=""
+    [[ "$fps" == "__UNSET__" ]] && fps=""
+    [[ "$createPRs" == "__UNSET__" ]] && createPRs=""
+    [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions=""
+    [[ "$noFF" == "__UNSET__" ]] && noFF=""
+    [[ "$autoCompact" == "__UNSET__" ]] && autoCompact=""
+    [[ "$extDiff" == "__UNSET__" ]] && extDiff=""
+
+    # Output in consistent format
+    echo "maxAgents:${maxAgents:+ $maxAgents}"
+    echo "model:${model:+ $model}"
+    echo "fps:${fps:+ $fps}"
+    echo "createPullRequests:${createPRs:+ $createPRs}"
+    echo "allowAgentQuestions:${allowQuestions:+ $allowQuestions}"
+    echo "noFastForward:${noFF:+ $noFF}"
+    echo "autoCompactThreshold:${autoCompact:+ $autoCompact}"
+    echo "externalDiffTool:${extDiff:+ $extDiff}"
+
+    # Build permissions display
+    local pm_display="" pw_display=""
+    if [[ "${pm_allow:-0}" -gt 0 || "${pm_deny:-0}" -gt 0 ]]; then
+        pm_display="allow: ${pm_allow:-0}, deny: ${pm_deny:-0}"
+    fi
+    if [[ "${pw_allow:-0}" -gt 0 || "${pw_deny:-0}" -gt 0 ]]; then
+        pw_display="allow: ${pw_allow:-0}, deny: ${pw_deny:-0}"
+    fi
+    echo "permissions.manager:${pm_display:+ $pm_display}"
+    echo "permissions.worker:${pw_display:+ $pw_display}"
+}
+
+# =============================================================================
+# COMMAND: test-settings-scope-check
+# =============================================================================
+
+# Test the scope mismatch detection logic used in settings_get_config_value()
+# Usage: ib test-settings-scope-check <cached_scope> <requested_scope>
+# Returns: "ok" if scopes match, "error" with details if mismatch
+cmd_test_settings_scope_check() {
+    local cached_scope="$1"
+    local requested_scope="$2"
+
+    if [[ -z "$cached_scope" || -z "$requested_scope" ]]; then
+        echo "Usage: ib test-settings-scope-check <cached_scope> <requested_scope>" >&2
+        exit 1
+    fi
+
+    # Simulate the scope check from settings_get_config_value()
+    if [[ -n "$cached_scope" && "$cached_scope" != "$requested_scope" ]]; then
+        echo "error: scope mismatch"
+        echo "  cached: $cached_scope"
+        echo "  requested: $requested_scope"
+        return 1
+    fi
+
+    echo "ok: scopes match"
+    return 0
+}
+
+# =============================================================================
 # COMMAND: test-json-has
 # =============================================================================
 
@@ -11552,7 +11714,7 @@ EOF
 
     # Dialog state variables
     local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback
-    local DIALOG_WIDTH=50  # Fixed dialog width
+    local DIALOG_WIDTH=60  # Fixed dialog width (increased from 50 for settings tabs)
 
     # Frame rate control
     local TARGET_FPS="${CONFIG_FPS:-10}"
@@ -11607,6 +11769,14 @@ EOF
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
     local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=config file, 5=ext diff, 6=Close
 
+    # Settings dialog tabs (expanded setup dialog)
+    local SETTINGS_TAB=0              # 0=Setup, 1=User Settings, 2=Project Settings
+    local SETTINGS_FOCUS_USER=0       # Focus index for user settings tab
+    local SETTINGS_FOCUS_PROJECT=0    # Focus index for project settings tab
+    # Config keys for settings tabs (8 scalar + 2 permission groups = 10 items + 1 Close button)
+    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "noFastForward" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
+    local SETTINGS_ITEMS_COUNT=11     # 10 config items + Close button
+
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
     local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
@@ -11614,6 +11784,29 @@ EOF
     # Feedback dialog state
     local FEEDBACK_FOCUS=0  # 0=Yes, 1=Okay, 2=No, 3=Later
     local FEEDBACK_SHOWN_THIS_SESSION=0  # Prevent re-showing during same session
+
+    # Number input dialog state (DIALOG_MODE=11)
+    local NUMBER_INPUT_KEY=""          # Config key being edited
+    local NUMBER_INPUT_FILE=""         # Config file path
+    local NUMBER_INPUT_VALUE=""        # Current input value
+    local NUMBER_INPUT_FOCUS=0         # 0=input, 1=Clear, 2=Cancel, 3=Save
+
+    # String input dialog state (DIALOG_MODE=12)
+    local STRING_INPUT_KEY=""          # Config key being edited
+    local STRING_INPUT_FILE=""         # Config file path
+    local STRING_INPUT_VALUE=""        # Current input value
+    local STRING_INPUT_FOCUS=0         # 0=input, 1=Clear, 2=Cancel, 3=Save
+
+    # Permissions editor dialog state (DIALOG_MODE=13)
+    local PERMS_EDIT_KEY=""            # "permissions.manager" or "permissions.worker"
+    local PERMS_EDIT_FILE=""           # Config file path
+    local -a PERMS_EDIT_ALLOW=()       # Current allow list
+    local -a PERMS_EDIT_DENY=()        # Current deny list
+    local PERMS_EDIT_TAB=0             # 0=allow, 1=deny
+    local PERMS_EDIT_SCROLL=0          # Scroll offset for list
+    local PERMS_EDIT_FOCUS=0           # 0..n-1=list items, n=add input, n+1=Done
+    local PERMS_EDIT_INPUT=""          # Text in "Add" input field
+    local PERMS_EDIT_MODE=0            # 0=list, 1=input focused
 
     # Errors cache for async agent creation failures
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
@@ -13452,6 +13645,9 @@ EOF
 
     watch_dialog_init_setup() {
         SETUP_FOCUS=0
+        SETTINGS_TAB=0  # Start on Setup tab
+        SETTINGS_FOCUS_USER=0
+        SETTINGS_FOCUS_PROJECT=0
         _DIALOG_ESC_PENDING=0
         _DIALOG_DIRTY=1
         # Refresh all setup status
@@ -13476,62 +13672,105 @@ EOF
 
         # Calculate dialog position (centered)
         dialog_calc_position
-        local start_row=$(( (TERM_LINES - 24) / 2 ))  # 24 lines tall
+        local start_row=$(( (TERM_LINES - 26) / 2 ))  # 26 lines tall (increased for tabs)
         [[ $start_row -lt 1 ]] && start_row=1
 
         # Clear dialog area
-        dialog_clear "$start_row" 25
+        dialog_clear "$start_row" 27
 
         # Draw dialog box
         local row=$start_row
         dialog_draw_hline "$row" "┌" "─" "┐"
         ((row++))
 
-        # Title
-        dialog_draw_line "$row" "SETUP"
+        # Tab bar
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local tab_setup tab_user tab_project
+        if [[ $SETTINGS_TAB -eq 0 ]]; then
+            tab_setup="\e[7m Setup \e[0m"
+        else
+            tab_setup=" Setup "
+        fi
+        if [[ $SETTINGS_TAB -eq 1 ]]; then
+            tab_user="\e[7m User Settings \e[0m"
+        else
+            tab_user=" User Settings "
+        fi
+        if [[ $SETTINGS_TAB -eq 2 ]]; then
+            tab_project="\e[7m Project Settings \e[0m"
+        else
+            tab_project=" Project Settings "
+        fi
+        # Visual width of tabs: 7 + 15 + 18 + 4 gaps = 44, center it
+        local tabs_visual_width=44
+        local tabs_left_pad=$(( (inner_width - tabs_visual_width) / 2 ))
+        local tabs_right_pad=$((inner_width - tabs_visual_width - tabs_left_pad))
+        printf '\e[%d;%dH│ %*s' "$row" "$_DIALOG_START_COL" "$tabs_left_pad" ""
+        printf '%b  %b  %b' "$tab_setup" "$tab_user" "$tab_project"
+        printf '%*s │' "$tabs_right_pad" ""
         ((row++))
+
+        # Separator line
+        dialog_draw_hline "$row" "├" "─" "┤"
+        ((row++))
+
+        # Render content based on selected tab
+        case $SETTINGS_TAB in
+            0)  # Setup tab
+                settings_render_setup_tab "$row"
+                ;;
+            1)  # User Settings tab
+                settings_render_config_tab "$row" "user"
+                ;;
+            2)  # Project Settings tab
+                settings_render_config_tab "$row" "project"
+                ;;
+        esac
+    }
+
+    # Draw a checkbox line with proper escape sequence handling
+    # Args: $1=row, $2=installed (1=yes, 0=no), $3=label, $4=focused (0/1), $5=disabled (0/1)
+    dialog_draw_checkbox() {
+        local row=$1
+        local installed=$2
+        local label=$3
+        local focused=$4
+        local disabled=${5:-0}
+
+        local checkbox
+        if [[ $installed -eq 1 ]]; then
+            checkbox="[x]"
+        else
+            checkbox="[ ]"
+        fi
+
+        local text="$checkbox $label"
+        local visual_len=${#text}
+        local inner_width=$((DIALOG_WIDTH - 4))  # 2 for borders, 2 for padding
+        local padding=$((inner_width - visual_len))
+        [[ $padding -lt 0 ]] && padding=0
+
+        # Build the line with proper escape sequences
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+
+        if [[ $disabled -eq 1 ]]; then
+            printf '\e[2m%s\e[0m' "$text"
+        elif [[ $focused -eq 1 ]]; then
+            printf '\e[7m%s\e[0m' "$text"
+        else
+            printf '%s' "$text"
+        fi
+
+        printf '%*s │' "$padding" ""
+    }
+
+    # Render the Setup tab content (original setup dialog content)
+    settings_render_setup_tab() {
+        local row=$1
 
         # Blank line
         dialog_draw_line "$row" ""
         ((row++))
-
-        # Draw a checkbox line with proper escape sequence handling
-        # Unlike dialog_draw_line, this handles escape sequences correctly by
-        # calculating visual width separately from the escape codes
-        # Args: $1=row, $2=installed (1=yes, 0=no), $3=label, $4=focused (0/1), $5=disabled (0/1)
-        dialog_draw_checkbox() {
-            local row=$1
-            local installed=$2
-            local label=$3
-            local focused=$4
-            local disabled=${5:-0}
-
-            local checkbox
-            if [[ $installed -eq 1 ]]; then
-                checkbox="[x]"
-            else
-                checkbox="[ ]"
-            fi
-
-            local text="$checkbox $label"
-            local visual_len=${#text}
-            local inner_width=$((DIALOG_WIDTH - 4))  # 2 for borders, 2 for padding
-            local padding=$((inner_width - visual_len))
-            [[ $padding -lt 0 ]] && padding=0
-
-            # Build the line with proper escape sequences
-            printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
-
-            if [[ $disabled -eq 1 ]]; then
-                printf '\e[2m%s\e[0m' "$text"
-            elif [[ $focused -eq 1 ]]; then
-                printf '\e[7m%s\e[0m' "$text"
-            else
-                printf '%s' "$text"
-            fi
-
-            printf '%*s │' "$padding" ""
-        }
 
         # Option 1: Safety hooks
         dialog_draw_checkbox "$row" "$SETUP_HOOKS_INSTALLED" "Safety hooks" "$([[ $SETUP_FOCUS -eq 0 ]] && echo 1 || echo 0)"
@@ -13678,66 +13917,373 @@ EOF
         dialog_draw_hline "$row" "└" "─" "┘"
     }
 
+    # Load all config values from a file in a single parse
+    # Args: $1=scope ("user" or "project")
+    # Sets: _SETTINGS_CACHE_* variables for each config key
+    #
+    # IMPORTANT: This function uses a single shared cache. Each call completely
+    # replaces the previous cache contents. The cache tracks which scope was
+    # last loaded via _SETTINGS_CACHE_LOADED. Callers should reload when
+    # switching between scopes (e.g., switching between User/Project tabs).
+    settings_load_all_values() {
+        local scope="$1"
+        local config_file
+        [[ "$scope" == "user" ]] && config_file="$HOME/.ittybitty.json" || config_file=".ittybitty.json"
+
+        # Reset cache
+        _SETTINGS_CACHE_maxAgents=""
+        _SETTINGS_CACHE_model=""
+        _SETTINGS_CACHE_fps=""
+        _SETTINGS_CACHE_createPullRequests=""
+        _SETTINGS_CACHE_allowAgentQuestions=""
+        _SETTINGS_CACHE_noFastForward=""
+        _SETTINGS_CACHE_autoCompactThreshold=""
+        _SETTINGS_CACHE_externalDiffTool=""
+        _SETTINGS_CACHE_permissions_manager=""
+        _SETTINGS_CACHE_permissions_worker=""
+        _SETTINGS_CACHE_LOADED="$scope"
+
+        if [[ ! -f "$config_file" ]]; then
+            return 0
+        fi
+
+        # Read and parse file once, extract all values
+        local json_content
+        json_content=$(<"$config_file")
+        [[ -z "$json_content" ]] && return 0
+
+        # Note: We use "__UNSET__" as placeholder for missing values because bash's
+        # read command collapses consecutive tab delimiters
+        local result
+        if [[ "$JSON_ENGINE" == "jq" ]]; then
+            result=$(echo "$json_content" | jq -r '
+                [
+                    (if has("maxAgents") then .maxAgents else "__UNSET__" end),
+                    (if has("model") then .model else "__UNSET__" end),
+                    (if has("fps") then .fps else "__UNSET__" end),
+                    (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
+                    (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
+                    (if has("noFastForward") then .noFastForward else "__UNSET__" end),
+                    (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
+                    (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
+                    ((.permissions.manager.allow // []) | length),
+                    ((.permissions.manager.deny // []) | length),
+                    ((.permissions.worker.allow // []) | length),
+                    ((.permissions.worker.deny // []) | length)
+                ] | @tsv
+            ' 2>/dev/null) || true
+        else
+            local json_b64
+            json_b64=$(echo -n "$json_content" | base64)
+            result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+try {
+    var d = JSON.parse(decoded);
+    var p = d.permissions || {};
+    var pm = p.manager || {};
+    var pw = p.worker || {};
+    [
+        d.maxAgents !== undefined ? d.maxAgents : '__UNSET__',
+        d.model !== undefined ? d.model : '__UNSET__',
+        d.fps !== undefined ? d.fps : '__UNSET__',
+        d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
+        d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
+        d.noFastForward !== undefined ? d.noFastForward : '__UNSET__',
+        d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
+        d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
+        (pm.allow || []).length,
+        (pm.deny || []).length,
+        (pw.allow || []).length,
+        (pw.deny || []).length
+    ].join('\t');
+} catch(e) { ''; }
+" 2>/dev/null) || true
+        fi
+
+        # Parse TSV result into cache variables
+        if [[ -n "$result" ]]; then
+            IFS=$'\t' read -r \
+                _SETTINGS_CACHE_maxAgents \
+                _SETTINGS_CACHE_model \
+                _SETTINGS_CACHE_fps \
+                _SETTINGS_CACHE_createPullRequests \
+                _SETTINGS_CACHE_allowAgentQuestions \
+                _SETTINGS_CACHE_noFastForward \
+                _SETTINGS_CACHE_autoCompactThreshold \
+                _SETTINGS_CACHE_externalDiffTool \
+                _pm_allow _pm_deny _pw_allow _pw_deny \
+                <<< "$result"
+
+            # Convert placeholder back to empty
+            [[ "$_SETTINGS_CACHE_maxAgents" == "__UNSET__" ]] && _SETTINGS_CACHE_maxAgents=""
+            [[ "$_SETTINGS_CACHE_model" == "__UNSET__" ]] && _SETTINGS_CACHE_model=""
+            [[ "$_SETTINGS_CACHE_fps" == "__UNSET__" ]] && _SETTINGS_CACHE_fps=""
+            [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests=""
+            [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions=""
+            [[ "$_SETTINGS_CACHE_noFastForward" == "__UNSET__" ]] && _SETTINGS_CACHE_noFastForward=""
+            [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold=""
+            [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool=""
+
+            # Build permissions display strings
+            if [[ "${_pm_allow:-0}" -gt 0 || "${_pm_deny:-0}" -gt 0 ]]; then
+                _SETTINGS_CACHE_permissions_manager="allow: ${_pm_allow:-0}, deny: ${_pm_deny:-0}"
+            fi
+            if [[ "${_pw_allow:-0}" -gt 0 || "${_pw_deny:-0}" -gt 0 ]]; then
+                _SETTINGS_CACHE_permissions_worker="allow: ${_pw_allow:-0}, deny: ${_pw_deny:-0}"
+            fi
+        fi
+    }
+
+    # Get config value from cache (must call settings_load_all_values first)
+    # Args: $1=key, $2=scope ("user" or "project")
+    # Sets: _SETTINGS_VALUE, _SETTINGS_SOURCE
+    #
+    # Note: The scope arg is used to determine the source label ("user" vs "project")
+    # but the actual values come from the shared cache. Ensure settings_load_all_values
+    # was called with the matching scope before calling this function.
+    settings_get_config_value() {
+        local key="$1"
+        local scope="$2"
+
+        # Safety check: verify requested scope matches cached scope
+        if [[ -n "$_SETTINGS_CACHE_LOADED" && "$_SETTINGS_CACHE_LOADED" != "$scope" ]]; then
+            echo "ERROR: settings_get_config_value scope mismatch!" >&2
+            echo "  Requested scope: $scope" >&2
+            echo "  Cached scope: $_SETTINGS_CACHE_LOADED" >&2
+            echo "  Key: $key" >&2
+            echo "  Call stack:" >&2
+            local i=0
+            while caller $i >&2; do ((i++)); done
+            return 1
+        fi
+
+        _SETTINGS_VALUE=""
+        _SETTINGS_SOURCE="default"
+
+        # Define defaults for known keys
+        local default_value=""
+        case "$key" in
+            maxAgents) default_value="10" ;;
+            model) default_value="" ;;
+            fps) default_value="10" ;;
+            createPullRequests) default_value="false" ;;
+            allowAgentQuestions) default_value="true" ;;
+            noFastForward) default_value="false" ;;
+            autoCompactThreshold) default_value="" ;;
+            externalDiffTool) default_value="" ;;
+            permissions.manager) default_value="allow: 0, deny: 0" ;;
+            permissions.worker) default_value="allow: 0, deny: 0" ;;
+        esac
+
+        # Get cached value
+        local cached_value=""
+        case "$key" in
+            maxAgents) cached_value="$_SETTINGS_CACHE_maxAgents" ;;
+            model) cached_value="$_SETTINGS_CACHE_model" ;;
+            fps) cached_value="$_SETTINGS_CACHE_fps" ;;
+            createPullRequests) cached_value="$_SETTINGS_CACHE_createPullRequests" ;;
+            allowAgentQuestions) cached_value="$_SETTINGS_CACHE_allowAgentQuestions" ;;
+            noFastForward) cached_value="$_SETTINGS_CACHE_noFastForward" ;;
+            autoCompactThreshold) cached_value="$_SETTINGS_CACHE_autoCompactThreshold" ;;
+            externalDiffTool) cached_value="$_SETTINGS_CACHE_externalDiffTool" ;;
+            permissions.manager) cached_value="$_SETTINGS_CACHE_permissions_manager" ;;
+            permissions.worker) cached_value="$_SETTINGS_CACHE_permissions_worker" ;;
+        esac
+
+        if [[ -n "$cached_value" && "$cached_value" != "null" ]]; then
+            _SETTINGS_VALUE="$cached_value"
+            _SETTINGS_SOURCE="$scope"
+        else
+            _SETTINGS_VALUE="$default_value"
+            _SETTINGS_SOURCE="default"
+        fi
+    }
+
+    # Render a config item line for settings tabs
+    # Args: $1=row, $2=key, $3=scope, $4=focus_index, $5=item_index
+    settings_render_config_line() {
+        local row=$1
+        local key=$2
+        local scope=$3
+        local focus_index=$4
+        local item_index=$5
+
+        settings_get_config_value "$key" "$scope"
+        local value="$_SETTINGS_VALUE"
+        local source="$_SETTINGS_SOURCE"
+
+        local focused=0
+        [[ $focus_index -eq $item_index ]] && focused=1
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+
+        # Format display
+        local display_value="$value"
+        [[ -z "$display_value" ]] && display_value="(unset)"
+
+        # Key display name (remove permissions. prefix for shorter display)
+        local display_key="$key"
+        [[ "$key" == "permissions.manager" ]] && display_key="manager perms"
+        [[ "$key" == "permissions.worker" ]] && display_key="worker perms"
+
+        # Format: "key          value                    (source)"
+        # Key: 20 chars, value: flexible, source: 10 chars
+        local key_width=20
+        local source_width=10
+        local value_width=$((inner_width - key_width - source_width - 2))
+
+        # Truncate value if needed
+        [[ ${#display_value} -gt $value_width ]] && display_value="${display_value:0:$((value_width - 2))}.."
+
+        local source_display="($source)"
+
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $focused -eq 1 ]]; then
+            printf '\e[7m%-*s %-*s %*s\e[0m' "$key_width" "$display_key" "$value_width" "$display_value" "$source_width" "$source_display"
+        else
+            printf '%-*s %-*s %*s' "$key_width" "$display_key" "$value_width" "$display_value" "$source_width" "$source_display"
+        fi
+        printf ' │'
+    }
+
+    # Render the User or Project Settings tab content
+    # Args: $1=start_row, $2=scope ("user" or "project")
+    settings_render_config_tab() {
+        local row=$1
+        local scope=$2
+        local focus_var current_focus
+
+        if [[ "$scope" == "user" ]]; then
+            current_focus=$SETTINGS_FOCUS_USER
+        else
+            current_focus=$SETTINGS_FOCUS_PROJECT
+        fi
+
+        # Load all config values in one parse (optimization: reduces 30+ osascript calls to 1)
+        settings_load_all_values "$scope"
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Render each config item (uses cached values)
+        local item_index=0
+        local key
+        for key in "${SETTINGS_CONFIG_KEYS[@]}"; do
+            settings_render_config_line "$row" "$key" "$scope" "$current_focus" "$item_index"
+            ((row++))
+            ((item_index++))
+        done
+
+        # Fill remaining rows with blank lines to match height
+        local remaining_rows=$((20 - item_index - 1))  # 20 content rows total
+        local i
+        for ((i=0; i<remaining_rows; i++)); do
+            dialog_draw_line "$row" ""
+            ((row++))
+        done
+
+        # Close button
+        local close_focused=$([[ $current_focus -eq $item_index ]] && echo 1 || echo 0)
+        local btn_visual_width=7  # [Close] = 7 chars
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s' "$row" "$_DIALOG_START_COL" "$left_pad" ""
+        if [[ $close_focused == "1" ]]; then
+            printf '\e[7m[Close]\e[0m'
+        else
+            printf '[Close]'
+        fi
+        printf '%*s │' "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
     watch_dialog_key_setup() {
         local key="$1"
+
+        # Get the current focus variable and item count based on tab
+        local current_focus item_count
+        case $SETTINGS_TAB in
+            0) current_focus=$SETUP_FOCUS; item_count=7 ;;
+            1) current_focus=$SETTINGS_FOCUS_USER; item_count=$SETTINGS_ITEMS_COUNT ;;
+            2) current_focus=$SETTINGS_FOCUS_PROJECT; item_count=$SETTINGS_ITEMS_COUNT ;;
+        esac
+
         case "$key" in
-            $'\x1e'|' ')  # Enter or Space - toggle current option
-                case $SETUP_FOCUS in
-                    0)  # Safety hooks
-                        if [[ $SETUP_HOOKS_INSTALLED -eq 1 ]]; then
-                            cmd_hooks_uninstall >/dev/null 2>&1
-                        else
-                            cmd_hooks_install >/dev/null 2>&1
-                        fi
-                        watch_check_hooks_status
-                        _DIALOG_DIRTY=1
+            $'\x1e'|' ')  # Enter or Space - toggle/edit current option
+                case $SETTINGS_TAB in
+                    0)  # Setup tab - original behavior
+                        case $SETUP_FOCUS in
+                            0)  # Safety hooks
+                                if [[ $SETUP_HOOKS_INSTALLED -eq 1 ]]; then
+                                    cmd_hooks_uninstall >/dev/null 2>&1
+                                else
+                                    cmd_hooks_install >/dev/null 2>&1
+                                fi
+                                watch_check_hooks_status
+                                _DIALOG_DIRTY=1
+                                ;;
+                            1)  # ib instructions
+                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
+                                    # Uninstalling ib instructions also removes status import
+                                    cmd_setup_status_import_uninstall >/dev/null 2>&1
+                                    cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
+                                else
+                                    cmd_setup_ib_instructions_install >/dev/null 2>&1
+                                fi
+                                watch_check_ib_instructions
+                                watch_check_status_import
+                                _DIALOG_DIRTY=1
+                                ;;
+                            2)  # Agent status (only if ib instructions installed)
+                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
+                                    if [[ $SETUP_STATUS_IMPORT -eq 1 ]]; then
+                                        cmd_setup_status_import_uninstall >/dev/null 2>&1
+                                    else
+                                        cmd_setup_status_import_install >/dev/null 2>&1
+                                    fi
+                                    watch_check_status_import
+                                    _DIALOG_DIRTY=1
+                                fi
+                                ;;
+                            3)  # Gitignore
+                                if [[ $SETUP_GITIGNORE -eq 1 ]]; then
+                                    cmd_setup_gitignore_uninstall >/dev/null 2>&1
+                                else
+                                    cmd_setup_gitignore_install >/dev/null 2>&1
+                                fi
+                                watch_check_gitignore
+                                _DIALOG_DIRTY=1
+                                ;;
+                            4)  # Config file (only create, not remove)
+                                if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
+                                    cmd_setup_config_file_install >/dev/null 2>&1
+                                    watch_check_config_file
+                                    _DIALOG_DIRTY=1
+                                fi
+                                # If file already exists, do nothing (can't remove via UI)
+                                ;;
+                            5)  # External diff tool - open input dialog
+                                watch_dialog_init_ext_diff_tool
+                                DIALOG_MODE=8
+                                ;;
+                            6)  # Close button
+                                DIALOG_MODE=0
+                                ;;
+                        esac
                         ;;
-                    1)  # ib instructions
-                        if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                            # Uninstalling ib instructions also removes status import
-                            cmd_setup_status_import_uninstall >/dev/null 2>&1
-                            cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
-                        else
-                            cmd_setup_ib_instructions_install >/dev/null 2>&1
-                        fi
-                        watch_check_ib_instructions
-                        watch_check_status_import
-                        _DIALOG_DIRTY=1
-                        ;;
-                    2)  # Agent status (only if ib instructions installed)
-                        if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                            if [[ $SETUP_STATUS_IMPORT -eq 1 ]]; then
-                                cmd_setup_status_import_uninstall >/dev/null 2>&1
-                            else
-                                cmd_setup_status_import_install >/dev/null 2>&1
-                            fi
-                            watch_check_status_import
-                            _DIALOG_DIRTY=1
-                        fi
-                        ;;
-                    3)  # Gitignore
-                        if [[ $SETUP_GITIGNORE -eq 1 ]]; then
-                            cmd_setup_gitignore_uninstall >/dev/null 2>&1
-                        else
-                            cmd_setup_gitignore_install >/dev/null 2>&1
-                        fi
-                        watch_check_gitignore
-                        _DIALOG_DIRTY=1
-                        ;;
-                    4)  # Config file (only create, not remove)
-                        if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
-                            cmd_setup_config_file_install >/dev/null 2>&1
-                            watch_check_config_file
-                            _DIALOG_DIRTY=1
-                        fi
-                        # If file already exists, do nothing (can't remove via UI)
-                        ;;
-                    5)  # External diff tool - open input dialog
-                        watch_dialog_init_ext_diff_tool
-                        DIALOG_MODE=8
-                        ;;
-                    6)  # Close button
-                        DIALOG_MODE=0
+                    1|2)  # User/Project Settings tabs
+                        local scope
+                        [[ $SETTINGS_TAB -eq 1 ]] && scope="user" || scope="project"
+                        settings_handle_config_action "$current_focus" "$scope"
                         ;;
                 esac
                 ;;
@@ -13750,23 +14296,33 @@ EOF
                 fi
                 ;;
             $'\t'|'j')  # Tab or j - move down
-                SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 7 ))
-                _DIALOG_DIRTY=1
+                settings_focus_move 1
                 ;;
             'B')  # Down arrow
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS + 1) % 7 ))
+                    settings_focus_move 1
+                    _DIALOG_ESC_PENDING=0
+                fi
+                ;;
+            'k')  # k - move up
+                settings_focus_move -1
+                ;;
+            'A'|'Z')  # Up arrow or Shift+Tab - move up
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    settings_focus_move -1
+                    _DIALOG_ESC_PENDING=0
+                fi
+                ;;
+            'C')  # Right arrow - next tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    SETTINGS_TAB=$(( (SETTINGS_TAB + 1) % 3 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
                 ;;
-            'k')  # k - move up
-                SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 7) % 7 ))
-                _DIALOG_DIRTY=1
-                ;;
-            'A'|'Z')  # Up arrow or Shift+Tab - move up
+            'D')  # Left arrow - previous tab
                 if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
-                    SETUP_FOCUS=$(( (SETUP_FOCUS - 1 + 7) % 7 ))
+                    SETTINGS_TAB=$(( (SETTINGS_TAB - 1 + 3) % 3 ))
                     _DIALOG_ESC_PENDING=0
                     _DIALOG_DIRTY=1
                 fi
@@ -13779,6 +14335,146 @@ EOF
                 _DIALOG_ESC_PENDING=0
                 ;;
         esac
+    }
+
+    # Move focus up or down within current tab
+    # Args: $1=direction (1 for down, -1 for up)
+    settings_focus_move() {
+        local direction=$1
+        local item_count
+
+        case $SETTINGS_TAB in
+            0)
+                item_count=7
+                SETUP_FOCUS=$(( (SETUP_FOCUS + direction + item_count) % item_count ))
+                ;;
+            1)
+                item_count=$SETTINGS_ITEMS_COUNT
+                SETTINGS_FOCUS_USER=$(( (SETTINGS_FOCUS_USER + direction + item_count) % item_count ))
+                ;;
+            2)
+                item_count=$SETTINGS_ITEMS_COUNT
+                SETTINGS_FOCUS_PROJECT=$(( (SETTINGS_FOCUS_PROJECT + direction + item_count) % item_count ))
+                ;;
+        esac
+        _DIALOG_DIRTY=1
+    }
+
+    # Handle Enter/Space action on a config item
+    # Args: $1=focus_index, $2=scope ("user" or "project")
+    settings_handle_config_action() {
+        local focus_index=$1
+        local scope=$2
+        local num_keys=${#SETTINGS_CONFIG_KEYS[@]}
+
+        # Check if Close button is focused
+        if [[ $focus_index -eq $num_keys ]]; then
+            DIALOG_MODE=0
+            return
+        fi
+
+        local key="${SETTINGS_CONFIG_KEYS[$focus_index]}"
+        local config_file
+        [[ "$scope" == "user" ]] && config_file="$HOME/.ittybitty.json" || config_file=".ittybitty.json"
+
+        # Determine action based on key type
+        case "$key" in
+            createPullRequests|allowAgentQuestions|noFastForward)
+                # Boolean toggle
+                settings_toggle_boolean "$key" "$config_file"
+                ;;
+            model)
+                # Enum cycle
+                settings_cycle_model "$key" "$config_file"
+                ;;
+            maxAgents|fps|autoCompactThreshold)
+                # Number input dialog
+                watch_dialog_init_number_input "$key" "$config_file"
+                DIALOG_MODE=11
+                ;;
+            externalDiffTool)
+                # Text input dialog (reuse ext diff tool dialog with modified behavior)
+                watch_dialog_init_string_input "$key" "$config_file"
+                DIALOG_MODE=12
+                ;;
+            permissions.manager|permissions.worker)
+                # Array editor dialog
+                watch_dialog_init_permissions_editor "$key" "$config_file"
+                DIALOG_MODE=13
+                ;;
+        esac
+    }
+
+    # Toggle a boolean config value
+    # Args: $1=key, $2=config_file
+    settings_toggle_boolean() {
+        local key=$1
+        local config_file=$2
+
+        # Create config file if needed
+        if [[ ! -f "$config_file" ]]; then
+            echo "{}" > "$config_file"
+        fi
+
+        # Get current value (default based on key)
+        local current_value=""
+        if json_has "$config_file" "$key"; then
+            current_value=$(json_get "$config_file" "$key" "")
+        fi
+
+        # Default values for known boolean keys
+        local default_value
+        case "$key" in
+            createPullRequests) default_value="false" ;;
+            allowAgentQuestions) default_value="true" ;;
+            noFastForward) default_value="false" ;;
+            *) default_value="false" ;;
+        esac
+
+        [[ -z "$current_value" || "$current_value" == "null" ]] && current_value="$default_value"
+
+        # Toggle
+        local new_value
+        [[ "$current_value" == "true" ]] && new_value="false" || new_value="true"
+
+        json_set "$config_file" "$key" ":$new_value"
+        load_config
+        _DIALOG_DIRTY=1
+    }
+
+    # Cycle through model options
+    # Args: $1=key, $2=config_file
+    settings_cycle_model() {
+        local key=$1
+        local config_file=$2
+
+        # Create config file if needed
+        if [[ ! -f "$config_file" ]]; then
+            echo "{}" > "$config_file"
+        fi
+
+        # Get current value
+        local current_value=""
+        if json_has "$config_file" "$key"; then
+            current_value=$(json_get "$config_file" "$key" "")
+        fi
+
+        # Cycle: (unset) -> sonnet -> opus -> haiku -> (unset)
+        local new_value
+        case "$current_value" in
+            sonnet) new_value="opus" ;;
+            opus) new_value="haiku" ;;
+            haiku) new_value="" ;;  # Clear/unset
+            *) new_value="sonnet" ;;
+        esac
+
+        if [[ -z "$new_value" ]]; then
+            json_delete "$config_file" "$key"
+        else
+            json_set "$config_file" "$key" "$new_value"
+        fi
+        load_config
+        _DIALOG_DIRTY=1
     }
 
     # Legacy aliases for compatibility
@@ -15213,6 +15909,790 @@ EOF
 
     # ==========================================================================
     # End Feedback Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # Number Input Dialog (DIALOG_MODE=11)
+    # ==========================================================================
+
+    watch_dialog_init_number_input() {
+        local key="$1"
+        local config_file="$2"
+
+        NUMBER_INPUT_KEY="$key"
+        NUMBER_INPUT_FILE="$config_file"
+        NUMBER_INPUT_FOCUS=0
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Load current value
+        NUMBER_INPUT_VALUE=""
+        if [[ -f "$config_file" ]] && json_has "$config_file" "$key"; then
+            NUMBER_INPUT_VALUE=$(json_get "$config_file" "$key" "")
+        fi
+    }
+
+    watch_dialog_render_number_input() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=6  # Return to settings dialog
+            _DIALOG_DIRTY=1
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local dialog_height=11
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title with key name
+        local title="Edit: $NUMBER_INPUT_KEY"
+        dialog_draw_line "$row" "$title"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Description based on key
+        local description=""
+        case "$NUMBER_INPUT_KEY" in
+            maxAgents) description="Maximum concurrent agents (1-100)" ;;
+            fps) description="Watch screen refresh rate (1-60)" ;;
+            autoCompactThreshold) description="Context % to trigger /compact (1-100)" ;;
+        esac
+        dialog_draw_line "$row" "$description"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Input field
+        local input_focused=$([[ $NUMBER_INPUT_FOCUS -eq 0 ]] && echo 1 || echo 0)
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local input_width=$((inner_width - 2))
+        local display_text="$NUMBER_INPUT_VALUE"
+        [[ $input_focused == "1" ]] && display_text="${display_text}_"
+        # Truncate if too long
+        [[ ${#display_text} -gt $input_width ]] && display_text="${display_text:0:$input_width}"
+        local input_pad=$((input_width - ${#display_text}))
+        [[ $input_pad -lt 0 ]] && input_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $input_focused == "1" ]]; then
+            printf '\e[7m%s%*s\e[0m' "$display_text" "$input_pad" ""
+        else
+            printf '%s%*s' "$display_text" "$input_pad" ""
+        fi
+        printf ' │'
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons: [Clear] [Cancel] [Save]
+        local clear_btn=$(dialog_format_button "Clear" "$([[ $NUMBER_INPUT_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $NUMBER_INPUT_FOCUS -eq 2 ]] && echo 1 || echo 0)")
+        local save_btn=$(dialog_format_button "Save" "$([[ $NUMBER_INPUT_FOCUS -eq 3 ]] && echo 1 || echo 0)")
+
+        local btn_visual_width=27
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s   %s   %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$clear_btn" "$cancel_btn" "$save_btn" "$right_pad" ""
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_number_input() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter - select button or submit input
+                case $NUMBER_INPUT_FOCUS in
+                    0)  # Input field - move to Save
+                        NUMBER_INPUT_FOCUS=3
+                        _DIALOG_DIRTY=1
+                        ;;
+                    1)  # Clear button
+                        NUMBER_INPUT_VALUE=""
+                        json_delete "$NUMBER_INPUT_FILE" "$NUMBER_INPUT_KEY"
+                        load_config
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                    2)  # Cancel button
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                    3)  # Save button
+                        # Validate and save
+                        if [[ -n "$NUMBER_INPUT_VALUE" && "$NUMBER_INPUT_VALUE" =~ ^[0-9]+$ ]]; then
+                            if [[ ! -f "$NUMBER_INPUT_FILE" ]]; then
+                                echo "{}" > "$NUMBER_INPUT_FILE"
+                            fi
+                            json_set "$NUMBER_INPUT_FILE" "$NUMBER_INPUT_KEY" ":$NUMBER_INPUT_VALUE"
+                            load_config
+                        fi
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                esac
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ $NUMBER_INPUT_FOCUS -eq 0 && -n "$NUMBER_INPUT_VALUE" ]]; then
+                    NUMBER_INPUT_VALUE="${NUMBER_INPUT_VALUE%?}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\e')  # Escape
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t')  # Tab
+                NUMBER_INPUT_FOCUS=$(( (NUMBER_INPUT_FOCUS + 1) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'B'|'C')  # Down/Right arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    NUMBER_INPUT_FOCUS=$(( (NUMBER_INPUT_FOCUS + 1) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    # Not an arrow key, treat as character
+                    if [[ $NUMBER_INPUT_FOCUS -eq 0 && "$key" =~ [0-9] ]]; then
+                        NUMBER_INPUT_VALUE="${NUMBER_INPUT_VALUE}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'A'|'D')  # Up/Left arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    NUMBER_INPUT_FOCUS=$(( (NUMBER_INPUT_FOCUS - 1 + 4) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            [0-9])  # Digit input
+                if [[ $NUMBER_INPUT_FOCUS -eq 0 ]]; then
+                    NUMBER_INPUT_VALUE="${NUMBER_INPUT_VALUE}${key}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            *)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=6
+                    _DIALOG_DIRTY=1
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Number Input Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # String Input Dialog (DIALOG_MODE=12)
+    # ==========================================================================
+
+    watch_dialog_init_string_input() {
+        local key="$1"
+        local config_file="$2"
+
+        STRING_INPUT_KEY="$key"
+        STRING_INPUT_FILE="$config_file"
+        STRING_INPUT_FOCUS=0
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Load current value
+        STRING_INPUT_VALUE=""
+        if [[ -f "$config_file" ]] && json_has "$config_file" "$key"; then
+            STRING_INPUT_VALUE=$(json_get "$config_file" "$key" "")
+        fi
+    }
+
+    watch_dialog_render_string_input() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=6
+            _DIALOG_DIRTY=1
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+        dialog_calc_position
+
+        local dialog_height=11
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        local title="Edit: $STRING_INPUT_KEY"
+        dialog_draw_line "$row" "$title"
+        ((row++))
+
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        local description=""
+        case "$STRING_INPUT_KEY" in
+            externalDiffTool) description="Command for 'o' key in diff view" ;;
+            *) description="Enter value" ;;
+        esac
+        dialog_draw_line "$row" "$description"
+        ((row++))
+
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Input field
+        local input_focused=$([[ $STRING_INPUT_FOCUS -eq 0 ]] && echo 1 || echo 0)
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local input_width=$((inner_width - 2))
+        local display_text="$STRING_INPUT_VALUE"
+        [[ $input_focused == "1" ]] && display_text="${display_text}_"
+        [[ ${#display_text} -gt $input_width ]] && display_text="${display_text:0:$input_width}"
+        local input_pad=$((input_width - ${#display_text}))
+        [[ $input_pad -lt 0 ]] && input_pad=0
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        if [[ $input_focused == "1" ]]; then
+            printf '\e[7m%s%*s\e[0m' "$display_text" "$input_pad" ""
+        else
+            printf '%s%*s' "$display_text" "$input_pad" ""
+        fi
+        printf ' │'
+        ((row++))
+
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons
+        local clear_btn=$(dialog_format_button "Clear" "$([[ $STRING_INPUT_FOCUS -eq 1 ]] && echo 1 || echo 0)")
+        local cancel_btn=$(dialog_format_button "Cancel" "$([[ $STRING_INPUT_FOCUS -eq 2 ]] && echo 1 || echo 0)")
+        local save_btn=$(dialog_format_button "Save" "$([[ $STRING_INPUT_FOCUS -eq 3 ]] && echo 1 || echo 0)")
+
+        local btn_visual_width=27
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s%s   %s   %s%*s │' "$row" "$_DIALOG_START_COL" "$left_pad" "" "$clear_btn" "$cancel_btn" "$save_btn" "$right_pad" ""
+        ((row++))
+
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_string_input() {
+        local key="$1"
+        case "$key" in
+            $'\x1e')  # Enter
+                case $STRING_INPUT_FOCUS in
+                    0)  # Input - move to Save
+                        STRING_INPUT_FOCUS=3
+                        _DIALOG_DIRTY=1
+                        ;;
+                    1)  # Clear
+                        STRING_INPUT_VALUE=""
+                        json_delete "$STRING_INPUT_FILE" "$STRING_INPUT_KEY"
+                        load_config
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                    2)  # Cancel
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                    3)  # Save
+                        if [[ ! -f "$STRING_INPUT_FILE" ]]; then
+                            echo "{}" > "$STRING_INPUT_FILE"
+                        fi
+                        if [[ -n "$STRING_INPUT_VALUE" ]]; then
+                            json_set "$STRING_INPUT_FILE" "$STRING_INPUT_KEY" "$STRING_INPUT_VALUE"
+                        else
+                            json_delete "$STRING_INPUT_FILE" "$STRING_INPUT_KEY"
+                        fi
+                        load_config
+                        DIALOG_MODE=6
+                        _DIALOG_DIRTY=1
+                        ;;
+                esac
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ $STRING_INPUT_FOCUS -eq 0 && -n "$STRING_INPUT_VALUE" ]]; then
+                    STRING_INPUT_VALUE="${STRING_INPUT_VALUE%?}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\e')
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t')
+                STRING_INPUT_FOCUS=$(( (STRING_INPUT_FOCUS + 1) % 4 ))
+                _DIALOG_DIRTY=1
+                ;;
+            'B'|'C')  # Down/Right
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    STRING_INPUT_FOCUS=$(( (STRING_INPUT_FOCUS + 1) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $STRING_INPUT_FOCUS -eq 0 ]]; then
+                        STRING_INPUT_VALUE="${STRING_INPUT_VALUE}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'A'|'D')  # Up/Left
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    STRING_INPUT_FOCUS=$(( (STRING_INPUT_FOCUS - 1 + 4) % 4 ))
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $STRING_INPUT_FOCUS -eq 0 ]]; then
+                        STRING_INPUT_VALUE="${STRING_INPUT_VALUE}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            *)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=6
+                    _DIALOG_DIRTY=1
+                elif [[ $STRING_INPUT_FOCUS -eq 0 ]]; then
+                    if [[ "$key" =~ [[:print:]] ]]; then
+                        STRING_INPUT_VALUE="${STRING_INPUT_VALUE}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End String Input Dialog
+    # ==========================================================================
+
+    # ==========================================================================
+    # Permissions Editor Dialog (DIALOG_MODE=13)
+    # ==========================================================================
+
+    watch_dialog_init_permissions_editor() {
+        local key="$1"
+        local config_file="$2"
+
+        PERMS_EDIT_KEY="$key"
+        PERMS_EDIT_FILE="$config_file"
+        PERMS_EDIT_TAB=0
+        PERMS_EDIT_SCROLL=0
+        PERMS_EDIT_FOCUS=0
+        PERMS_EDIT_INPUT=""
+        PERMS_EDIT_MODE=0
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Load current values
+        PERMS_EDIT_ALLOW=()
+        PERMS_EDIT_DENY=()
+
+        local allow_key="${key}.allow"
+        local deny_key="${key}.deny"
+
+        if [[ -f "$config_file" ]]; then
+            if json_has "$config_file" "$allow_key"; then
+                while IFS= read -r item; do
+                    [[ -n "$item" ]] && PERMS_EDIT_ALLOW+=("$item")
+                done < <(json_get_array "$config_file" "$allow_key")
+            fi
+            if json_has "$config_file" "$deny_key"; then
+                while IFS= read -r item; do
+                    [[ -n "$item" ]] && PERMS_EDIT_DENY+=("$item")
+                done < <(json_get_array "$config_file" "$deny_key")
+            fi
+        fi
+    }
+
+    watch_dialog_render_permissions_editor() {
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=6
+            _DIALOG_DIRTY=1
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+        dialog_calc_position
+
+        local dialog_height=18
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        local row=$start_row
+        local inner_width=$((DIALOG_WIDTH - 4))
+
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        local title="${PERMS_EDIT_KEY#permissions.}"
+        title="${title^} Permissions"
+        dialog_draw_line "$row" "$title"
+        ((row++))
+
+        # Tab bar: [ Allow ] [ Deny ]
+        local tab_allow tab_deny
+        if [[ $PERMS_EDIT_TAB -eq 0 ]]; then
+            tab_allow="\e[7m Allow \e[0m"
+            tab_deny=" Deny "
+        else
+            tab_allow=" Allow "
+            tab_deny="\e[7m Deny \e[0m"
+        fi
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        printf '  %b    %b' "$tab_allow" "$tab_deny"
+        local tabs_used=20
+        printf '%*s │' $((inner_width - tabs_used)) ""
+        ((row++))
+
+        dialog_draw_hline "$row" "├" "─" "┤"
+        ((row++))
+
+        # Get current list
+        local -a current_list
+        if [[ $PERMS_EDIT_TAB -eq 0 ]]; then
+            current_list=("${PERMS_EDIT_ALLOW[@]}")
+        else
+            current_list=("${PERMS_EDIT_DENY[@]}")
+        fi
+        local list_count=${#current_list[@]}
+
+        # Calculate visible items (8 lines for list)
+        local visible_rows=8
+        local i line_num
+
+        # Draw list items
+        for ((i=0; i<visible_rows; i++)); do
+            local idx=$((PERMS_EDIT_SCROLL + i))
+            if [[ $idx -lt $list_count ]]; then
+                local item="${current_list[$idx]}"
+                local focused=$([[ $PERMS_EDIT_MODE -eq 0 && $PERMS_EDIT_FOCUS -eq $idx ]] && echo 1 || echo 0)
+                # Truncate item if needed
+                local max_item_width=$((inner_width - 8))
+                [[ ${#item} -gt $max_item_width ]] && item="${item:0:$((max_item_width-2))}.."
+                local item_line="  $item"
+                local item_pad=$((inner_width - ${#item_line} - 6))
+                [[ $item_pad -lt 0 ]] && item_pad=0
+                printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+                if [[ $focused -eq 1 ]]; then
+                    printf '\e[7m%s%*s [Del]\e[0m' "$item_line" "$item_pad" ""
+                else
+                    printf '%s%*s [Del]' "$item_line" "$item_pad" ""
+                fi
+                printf ' │'
+            else
+                dialog_draw_line "$row" ""
+            fi
+            ((row++))
+        done
+
+        # Add input field
+        local input_focused=$([[ $PERMS_EDIT_MODE -eq 1 ]] && echo 1 || echo 0)
+        local add_btn_focused=$([[ $PERMS_EDIT_MODE -eq 0 && $PERMS_EDIT_FOCUS -eq $list_count ]] && echo 1 || echo 0)
+        local input_width=$((inner_width - 12))
+        local display_input="$PERMS_EDIT_INPUT"
+        [[ $input_focused == "1" ]] && display_input="${display_input}_"
+        [[ ${#display_input} -gt $input_width ]] && display_input="${display_input:0:$input_width}"
+        local input_pad=$((input_width - ${#display_input}))
+        [[ $input_pad -lt 0 ]] && input_pad=0
+        printf '\e[%d;%dH│ Add: ' "$row" "$_DIALOG_START_COL"
+        if [[ $input_focused == "1" ]]; then
+            printf '\e[7m%s%*s\e[0m' "$display_input" "$input_pad" ""
+        else
+            printf '%s%*s' "$display_input" "$input_pad" ""
+        fi
+        if [[ $add_btn_focused == "1" ]]; then
+            printf ' \e[7m[+]\e[0m │'
+        else
+            printf ' [+] │'
+        fi
+        ((row++))
+
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Done button
+        local done_focused=$([[ $PERMS_EDIT_MODE -eq 0 && $PERMS_EDIT_FOCUS -eq $((list_count + 1)) ]] && echo 1 || echo 0)
+        local btn_visual_width=6
+        local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
+        local right_pad=$((inner_width - btn_visual_width - left_pad))
+        printf '\e[%d;%dH│ %*s' "$row" "$_DIALOG_START_COL" "$left_pad" ""
+        if [[ $done_focused == "1" ]]; then
+            printf '\e[7m[Done]\e[0m'
+        else
+            printf '[Done]'
+        fi
+        printf '%*s │' "$right_pad" ""
+        ((row++))
+
+        dialog_draw_hline "$row" "└" "─" "┘"
+    }
+
+    watch_dialog_key_permissions_editor() {
+        local key="$1"
+
+        # Get current list and count
+        local -a current_list
+        if [[ $PERMS_EDIT_TAB -eq 0 ]]; then
+            current_list=("${PERMS_EDIT_ALLOW[@]}")
+        else
+            current_list=("${PERMS_EDIT_DENY[@]}")
+        fi
+        local list_count=${#current_list[@]}
+        local max_focus=$((list_count + 1))  # list items + Add + Done
+
+        case "$key" in
+            $'\x1e')  # Enter
+                if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                    # In input mode - add item and exit input mode
+                    if [[ -n "$PERMS_EDIT_INPUT" ]]; then
+                        perms_editor_add_item "$PERMS_EDIT_INPUT"
+                        PERMS_EDIT_INPUT=""
+                    fi
+                    PERMS_EDIT_MODE=0
+                    _DIALOG_DIRTY=1
+                else
+                    # In list mode
+                    if [[ $PERMS_EDIT_FOCUS -lt $list_count ]]; then
+                        # Delete item
+                        perms_editor_delete_item "$PERMS_EDIT_FOCUS"
+                        if [[ $PERMS_EDIT_FOCUS -gt 0 && $PERMS_EDIT_FOCUS -ge $list_count ]]; then
+                            PERMS_EDIT_FOCUS=$((PERMS_EDIT_FOCUS - 1))
+                        fi
+                    elif [[ $PERMS_EDIT_FOCUS -eq $list_count ]]; then
+                        # Add button - switch to input mode
+                        PERMS_EDIT_MODE=1
+                    else
+                        # Done button
+                        perms_editor_save
+                        DIALOG_MODE=6
+                    fi
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ $PERMS_EDIT_MODE -eq 1 && -n "$PERMS_EDIT_INPUT" ]]; then
+                    PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT%?}"
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            $'\e')
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            $'\t'|'j')  # Tab or j - next item
+                if [[ $PERMS_EDIT_MODE -eq 0 ]]; then
+                    PERMS_EDIT_FOCUS=$(( (PERMS_EDIT_FOCUS + 1) % (max_focus + 1) ))
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'k')  # k - previous item
+                if [[ $PERMS_EDIT_MODE -eq 0 ]]; then
+                    PERMS_EDIT_FOCUS=$(( (PERMS_EDIT_FOCUS - 1 + max_focus + 1) % (max_focus + 1) ))
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B')  # Down arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $PERMS_EDIT_MODE -eq 0 ]]; then
+                        PERMS_EDIT_FOCUS=$(( (PERMS_EDIT_FOCUS + 1) % (max_focus + 1) ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                        PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'A')  # Up arrow
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ $PERMS_EDIT_MODE -eq 0 ]]; then
+                        PERMS_EDIT_FOCUS=$(( (PERMS_EDIT_FOCUS - 1 + max_focus + 1) % (max_focus + 1) ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                        PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'C')  # Right arrow - switch to Deny tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    PERMS_EDIT_TAB=1
+                    PERMS_EDIT_FOCUS=0
+                    PERMS_EDIT_SCROLL=0
+                    PERMS_EDIT_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                        PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            'D')  # Left arrow - switch to Allow tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    PERMS_EDIT_TAB=0
+                    PERMS_EDIT_FOCUS=0
+                    PERMS_EDIT_SCROLL=0
+                    PERMS_EDIT_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                else
+                    if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                        PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                ;;
+            *)
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    if [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                        PERMS_EDIT_MODE=0
+                    else
+                        DIALOG_MODE=6
+                    fi
+                    _DIALOG_DIRTY=1
+                elif [[ $PERMS_EDIT_MODE -eq 1 ]]; then
+                    if [[ "$key" =~ [[:print:]] ]]; then
+                        PERMS_EDIT_INPUT="${PERMS_EDIT_INPUT}${key}"
+                        _DIALOG_DIRTY=1
+                    fi
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # Add item to current permissions list
+    perms_editor_add_item() {
+        local item="$1"
+        if [[ $PERMS_EDIT_TAB -eq 0 ]]; then
+            PERMS_EDIT_ALLOW+=("$item")
+        else
+            PERMS_EDIT_DENY+=("$item")
+        fi
+    }
+
+    # Delete item from current permissions list
+    perms_editor_delete_item() {
+        local idx=$1
+        if [[ $PERMS_EDIT_TAB -eq 0 ]]; then
+            local -a new_list=()
+            local i
+            for ((i=0; i<${#PERMS_EDIT_ALLOW[@]}; i++)); do
+                [[ $i -ne $idx ]] && new_list+=("${PERMS_EDIT_ALLOW[$i]}")
+            done
+            PERMS_EDIT_ALLOW=("${new_list[@]}")
+        else
+            local -a new_list=()
+            local i
+            for ((i=0; i<${#PERMS_EDIT_DENY[@]}; i++)); do
+                [[ $i -ne $idx ]] && new_list+=("${PERMS_EDIT_DENY[$i]}")
+            done
+            PERMS_EDIT_DENY=("${new_list[@]}")
+        fi
+    }
+
+    # Save permissions to config file
+    perms_editor_save() {
+        if [[ ! -f "$PERMS_EDIT_FILE" ]]; then
+            echo "{}" > "$PERMS_EDIT_FILE"
+        fi
+
+        local allow_key="${PERMS_EDIT_KEY}.allow"
+        local deny_key="${PERMS_EDIT_KEY}.deny"
+
+        # Build JSON arrays
+        local allow_json="["
+        local first=1
+        for item in "${PERMS_EDIT_ALLOW[@]}"; do
+            [[ $first -eq 0 ]] && allow_json+=","
+            allow_json+="\"$item\""
+            first=0
+        done
+        allow_json+="]"
+
+        local deny_json="["
+        first=1
+        for item in "${PERMS_EDIT_DENY[@]}"; do
+            [[ $first -eq 0 ]] && deny_json+=","
+            deny_json+="\"$item\""
+            first=0
+        done
+        deny_json+="]"
+
+        json_set "$PERMS_EDIT_FILE" "$allow_key" ":$allow_json"
+        json_set "$PERMS_EDIT_FILE" "$deny_key" ":$deny_json"
+        load_config
+    }
+
+    # ==========================================================================
+    # End Permissions Editor Dialog
     # ==========================================================================
 
     # Open external diff tool for an agent
@@ -16763,6 +18243,9 @@ EOF
                 8) watch_dialog_key_ext_diff_tool "$key" ;;
                 9) watch_dialog_key_cmd_jump "$key" ;;
                 10) watch_dialog_key_feedback "$key" ;;
+                11) watch_dialog_key_number_input "$key" ;;
+                12) watch_dialog_key_string_input "$key" ;;
+                13) watch_dialog_key_permissions_editor "$key" ;;
             esac
             return
         fi
@@ -17148,6 +18631,9 @@ EOF
                 8) watch_dialog_render_ext_diff_tool ;;
                 9) watch_dialog_render_cmd_jump ;;
                 10) watch_dialog_render_feedback ;;
+                11) watch_dialog_render_number_input ;;
+                12) watch_dialog_render_string_input ;;
+                13) watch_dialog_render_permissions_editor ;;
             esac
             set -e
         else
@@ -17823,6 +19309,14 @@ case "${1:-help}" in
     test-load-config)
         shift
         cmd_test_load_config "$@"
+        ;;
+    test-settings-load)
+        shift
+        cmd_test_settings_load "$@"
+        ;;
+    test-settings-scope-check)
+        shift
+        cmd_test_settings_scope_check "$@"
         ;;
     test-json-has)
         shift

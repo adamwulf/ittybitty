@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "manager": {
+      "allow": ["Read", "Write", "Edit", "Bash", "WebFetch"],
+      "deny": []
+    },
+    "worker": {
+      "allow": [],
+      "deny": ["Bash", "WebFetch"]
+    }
+  }
+}

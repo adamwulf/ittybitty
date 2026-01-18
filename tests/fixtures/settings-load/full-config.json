@@ -1,0 +1,20 @@
+{
+  "maxAgents": 20,
+  "model": "opus",
+  "fps": 30,
+  "createPullRequests": true,
+  "allowAgentQuestions": false,
+  "noFastForward": true,
+  "autoCompactThreshold": 80,
+  "externalDiffTool": "code --diff",
+  "permissions": {
+    "manager": {
+      "allow": ["Read", "Write", "Edit"],
+      "deny": ["WebFetch"]
+    },
+    "worker": {
+      "allow": ["Read"],
+      "deny": ["Bash", "Write"]
+    }
+  }
+}

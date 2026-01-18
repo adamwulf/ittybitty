@@ -1,0 +1,10 @@
+maxAgents:
+model: haiku
+fps:
+createPullRequests:
+allowAgentQuestions:
+noFastForward:
+autoCompactThreshold:
+externalDiffTool:
+permissions.manager:
+permissions.worker:

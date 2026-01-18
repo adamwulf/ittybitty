@@ -1,0 +1,10 @@
+maxAgents:
+model:
+fps:
+createPullRequests:
+allowAgentQuestions:
+noFastForward:
+autoCompactThreshold:
+externalDiffTool:
+permissions.manager: allow: 5, deny: 0
+permissions.worker: allow: 0, deny: 2

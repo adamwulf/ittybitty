@@ -1,0 +1,10 @@
+maxAgents: 20
+model: opus
+fps: 30
+createPullRequests: true
+allowAgentQuestions: false
+noFastForward: true
+autoCompactThreshold: 80
+externalDiffTool: code --diff
+permissions.manager: allow: 3, deny: 1
+permissions.worker: allow: 1, deny: 2
