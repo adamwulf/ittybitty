@@ -86,13 +86,34 @@ check_dependencies() {
 }
 
 # =============================================================================
-# JSON HELPERS - Pure bash/osascript alternatives to jq
-# These use macOS's built-in osascript with JavaScript for JSON parsing.
+# JSON ENGINE DETECTION
+# Prefer jq if available, fallback to osascript (macOS), fail if neither
+# =============================================================================
+
+JSON_ENGINE=""
+
+detect_json_engine() {
+    if command -v jq &>/dev/null; then
+        JSON_ENGINE="jq"
+    elif command -v osascript &>/dev/null; then
+        JSON_ENGINE="osascript"
+    else
+        echo "Error: No JSON parser available." >&2
+        echo "Please install jq: https://jqlang.github.io/jq/download/" >&2
+        exit 1
+    fi
+}
+
+# Call detection immediately
+detect_json_engine
+
+# =============================================================================
+# JSON HELPERS - Dual-engine support for jq and osascript
+# Uses jq when available, falls back to macOS's osascript with JavaScript.
 #
-# Why base64? Values are passed to JavaScript via string interpolation in the
-# osascript command. Special characters like quotes, newlines, $, *, and shell
-# metacharacters would break the JavaScript syntax or be interpreted by bash.
-# Base64 encoding makes all data safe for transport, then JavaScript decodes it.
+# Why base64? Values are passed via string interpolation. Special characters
+# like quotes, newlines, $, *, and shell metacharacters would break syntax.
+# Base64 encoding makes all data safe for transport, then decoded by the engine.
 # =============================================================================
 
 # Read a value from JSON file or string by keypath
@@ -104,7 +125,6 @@ json_get() {
     local keypath="$2"
     local default="${3:-}"
     local json_content
-    local json_b64
 
     if [[ "$file_or_dash" == "-" ]]; then
         json_content=$(cat)
@@ -115,10 +135,20 @@ json_get() {
         return 0
     fi
 
-    json_b64=$(echo -n "$json_content" | base64)
-
     local result
-    result=$(osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        # Convert dot-separated keypath to jq path: "a.b.c" -> ".a.b.c"
+        local jq_path
+        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        result=$(echo "$json_content" | jq -r "$jq_path // empty" 2>/dev/null) || true
+        # jq outputs "null" for missing keys with -r, handle that
+        if [[ "$result" == "null" ]]; then
+            result=""
+        fi
+    else
+        local json_b64
+        json_b64=$(echo -n "$json_content" | base64)
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -143,6 +173,7 @@ try {
     '';
 }
 " 2>/dev/null) || true
+    fi
 
     if [[ -z "$result" && -n "$default" ]]; then
         echo "$default"
@@ -158,7 +189,6 @@ json_get_array() {
     local file_or_dash="$1"
     local keypath="$2"
     local json_content
-    local json_b64
 
     if [[ "$file_or_dash" == "-" ]]; then
         json_content=$(cat)
@@ -168,9 +198,14 @@ json_get_array() {
         return 0
     fi
 
-    json_b64=$(echo -n "$json_content" | base64)
-
-    osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local jq_path
+        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        echo "$json_content" | jq -r "$jq_path // [] | .[]" 2>/dev/null || true
+    else
+        local json_b64
+        json_b64=$(echo -n "$json_content" | base64)
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -193,6 +228,7 @@ try {
     '';
 }
 " 2>/dev/null || true
+    fi
 }
 
 # Get length of a JSON array
@@ -201,7 +237,6 @@ json_array_length() {
     local file_or_dash="$1"
     local keypath="$2"
     local json_content
-    local json_b64
 
     if [[ "$file_or_dash" == "-" ]]; then
         json_content=$(cat)
@@ -212,9 +247,14 @@ json_array_length() {
         return 0
     fi
 
-    json_b64=$(echo -n "$json_content" | base64)
-
-    osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local jq_path
+        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        echo "$json_content" | jq -r "$jq_path // [] | length" 2>/dev/null || echo "0"
+    else
+        local json_b64
+        json_b64=$(echo -n "$json_content" | base64)
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -237,16 +277,20 @@ try {
     0;
 }
 " 2>/dev/null || echo "0"
+    fi
 }
 
 # Escape a string for safe JSON embedding
 # Usage: escaped=$(json_escape "string with \"quotes\" and special chars")
 json_escape() {
     local str="$1"
-    local str_b64
-    str_b64=$(echo -n "$str" | base64)
 
-    osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo -n "$str" | jq -Rs '.' 2>/dev/null
+    else
+        local str_b64
+        str_b64=$(echo -n "$str" | base64)
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$str_b64', 0),
@@ -254,6 +298,7 @@ var decoded = $.NSString.alloc.initWithDataEncoding(
 ).js;
 JSON.stringify(decoded);
 " 2>/dev/null
+    fi
 }
 
 # Create a JSON object from key-value pairs
@@ -300,11 +345,6 @@ json_set() {
     local keypath="$2"
     local value="$3"
 
-    local existing_b64=""
-    if [[ -f "$file" ]]; then
-        existing_b64=$(base64 < "$file")
-    fi
-
     local is_literal=false
     local actual_value="$value"
     if [[ "$value" == :* ]]; then
@@ -312,12 +352,34 @@ json_set() {
         actual_value="${value:1}"
     fi
 
-    local val_b64=""
-    if [[ "$is_literal" != true ]]; then
-        val_b64=$(echo -n "$actual_value" | base64)
-    fi
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing="{}"
+        if [[ -f "$file" ]]; then
+            existing=$(<"$file")
+        fi
+        # Convert dot-path to jq setpath format: "a.b.c" -> ["a","b","c"]
+        local jq_path_array
+        jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
+        local jq_value
+        if [[ "$is_literal" == true ]]; then
+            jq_value="$actual_value"
+        else
+            # Escape string value
+            jq_value=$(echo -n "$actual_value" | jq -Rs '.')
+        fi
+        echo "$existing" | jq "setpath($jq_path_array; $jq_value)" > "$file" 2>/dev/null
+    else
+        local existing_b64=""
+        if [[ -f "$file" ]]; then
+            existing_b64=$(base64 < "$file")
+        fi
 
-    osascript -l JavaScript -e "
+        local val_b64=""
+        if [[ "$is_literal" != true ]]; then
+            val_b64=$(echo -n "$actual_value" | base64)
+        fi
+
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var data = {};
@@ -356,6 +418,7 @@ obj[keys[keys.length - 1]] = value;
 
 JSON.stringify(data, null, 2);
 " > "$file" 2>/dev/null
+    fi
 }
 
 # Add a value to a JSON array (modifies file in place)
@@ -366,11 +429,6 @@ json_array_add() {
     local keypath="$2"
     local value="$3"
 
-    local existing_b64=""
-    if [[ -f "$file" ]]; then
-        existing_b64=$(base64 < "$file")
-    fi
-
     local is_literal="false"
     local actual_value="$value"
     if [[ "$value" == :* ]]; then
@@ -378,13 +436,44 @@ json_array_add() {
         actual_value="${value:1}"
     fi
 
-    # Always base64 encode the value - we'll handle literal vs string in JavaScript
-    local val_b64
-    val_b64=$(echo -n "$actual_value" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing="{}"
+        if [[ -f "$file" ]]; then
+            existing=$(<"$file")
+        fi
+        # Convert dot-path to jq path array
+        local jq_path_array
+        jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
+        local jq_value
+        if [[ "$is_literal" == "true" ]]; then
+            jq_value="$actual_value"
+        else
+            jq_value=$(echo -n "$actual_value" | jq -Rs '.')
+        fi
+        # Get existing array or create empty, add value if not present
+        local result
+        result=$(echo "$existing" | jq "
+            if getpath($jq_path_array) == null then setpath($jq_path_array; []) else . end |
+            if (getpath($jq_path_array) | index($jq_value)) == null then
+                setpath($jq_path_array; getpath($jq_path_array) + [$jq_value])
+            else . end
+        " 2>/dev/null) || true
+        if [[ -n "$result" ]]; then
+            echo "$result" > "$file"
+            return 0
+        fi
+        return 1
+    else
+        local existing_b64=""
+        if [[ -f "$file" ]]; then
+            existing_b64=$(base64 < "$file")
+        fi
 
-    local result
-    # Use subshell to capture result without triggering set -e exit
-    result=$(osascript -l JavaScript -e "
+        local val_b64
+        val_b64=$(echo -n "$actual_value" | base64)
+
+        local result
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var data = {};
@@ -407,17 +496,15 @@ var decodedValue = $.NSString.alloc.initWithDataEncoding(
 
 var value;
 if ('$is_literal' === 'true') {
-    // Parse as JSON literal (number, boolean, null, etc.)
     try {
         value = JSON.parse(decodedValue);
     } catch(e) {
-        value = decodedValue;  // Fall back to string if not valid JSON
+        value = decodedValue;
     }
 } else {
     value = decodedValue;
 }
 
-// Navigate/create nested path
 var keys = '$keypath'.split('.');
 var obj = data;
 for (var i = 0; i < keys.length - 1; i++) {
@@ -437,11 +524,12 @@ if (obj[lastKey].indexOf(value) === -1) {
 JSON.stringify(data, null, 2);
 " 2>/dev/null || true)
 
-    if [[ -n "$result" ]]; then
-        echo "$result" > "$file"
-        return 0
+        if [[ -n "$result" ]]; then
+            echo "$result" > "$file"
+            return 0
+        fi
+        return 1
     fi
-    return 1
 }
 
 # Remove a value from a JSON array (modifies file in place)
@@ -451,15 +539,31 @@ json_array_remove() {
     local keypath="$2"
     local value="$3"
 
-    local existing_b64=""
-    if [[ -f "$file" ]]; then
-        existing_b64=$(base64 < "$file")
-    fi
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        if [[ ! -f "$file" ]]; then
+            return 0
+        fi
+        local existing
+        existing=$(<"$file")
+        local jq_path_array
+        jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
+        local jq_value
+        jq_value=$(echo -n "$value" | jq -Rs '.')
+        echo "$existing" | jq "
+            if getpath($jq_path_array) | type == \"array\" then
+                setpath($jq_path_array; getpath($jq_path_array) | map(select(. != $jq_value)))
+            else . end
+        " > "$file" 2>/dev/null
+    else
+        local existing_b64=""
+        if [[ -f "$file" ]]; then
+            existing_b64=$(base64 < "$file")
+        fi
 
-    local val_b64
-    val_b64=$(echo -n "$value" | base64)
+        local val_b64
+        val_b64=$(echo -n "$value" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var data = {};
@@ -480,7 +584,6 @@ var valueToRemove = $.NSString.alloc.initWithDataEncoding(
     $.NSUTF8StringEncoding
 ).js;
 
-// Navigate to the array
 var keys = '$keypath'.split('.');
 var obj = data;
 for (var i = 0; i < keys.length - 1; i++) {
@@ -496,6 +599,7 @@ if (Array.isArray(obj[lastKey])) {
 
 JSON.stringify(data, null, 2);
 " > "$file" 2>/dev/null
+    fi
 }
 
 # Check if a value exists in a JSON array
@@ -505,7 +609,6 @@ json_array_contains() {
     local keypath="$2"
     local value="$3"
     local json_content
-    local json_b64
 
     if [[ "$file_or_dash" == "-" ]]; then
         json_content=$(cat)
@@ -515,12 +618,22 @@ json_array_contains() {
         return 1
     fi
 
-    json_b64=$(echo -n "$json_content" | base64)
-    local val_b64
-    val_b64=$(echo -n "$value" | base64)
-
     local result
-    result=$(osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local jq_path
+        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        local jq_value
+        jq_value=$(echo -n "$value" | jq -Rs '.')
+        result=$(echo "$json_content" | jq -r "
+            if ($jq_path // []) | index($jq_value) then \"true\" else \"false\" end
+        " 2>/dev/null) || result="false"
+    else
+        local json_b64
+        json_b64=$(echo -n "$json_content" | base64)
+        local val_b64
+        val_b64=$(echo -n "$value" | base64)
+
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -547,6 +660,7 @@ try {
     'false';
 }
 " 2>/dev/null)
+    fi
 
     [[ "$result" == "true" ]]
 }
@@ -561,10 +675,17 @@ json_delete() {
         return 0
     fi
 
-    local existing_b64
-    existing_b64=$(base64 < "$file")
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing
+        existing=$(<"$file")
+        local jq_path_array
+        jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
+        echo "$existing" | jq "delpaths([$jq_path_array])" > "$file" 2>/dev/null
+    else
+        local existing_b64
+        existing_b64=$(base64 < "$file")
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var existingJson = $.NSString.alloc.initWithDataEncoding(
@@ -578,12 +699,10 @@ try {
     data = {};
 }
 
-// Navigate to parent and delete
 var keys = '$keypath'.split('.');
 var obj = data;
 for (var i = 0; i < keys.length - 1; i++) {
     if (!(keys[i] in obj)) {
-        // Path doesn't exist, nothing to delete
         JSON.stringify(data, null, 2);
     }
     obj = obj[keys[i]];
@@ -592,6 +711,7 @@ delete obj[keys[keys.length - 1]];
 
 JSON.stringify(data, null, 2);
 " > "$file" 2>/dev/null
+    fi
 }
 
 # Build agent settings JSON (replaces complex jq pipeline in build_agent_settings)
@@ -606,25 +726,44 @@ build_settings_json() {
     # Mandatory permissions that are always added
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
     local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
-
-    # Build the PermissionRequest hook command - this logs and auto-denies
-    # Note: This still uses a simplified approach since we can't easily replicate jq's complex pipeline
     local hook_cmd="ib hook-permission-denied $agent_id"
 
-    local base_b64
-    base_b64=$(echo -n "$base_settings" | base64)
-    local ib_b64
-    ib_b64=$(echo -n "$ib_perms" | base64)
-    local blocked_b64
-    blocked_b64=$(echo -n "$blocked_tools" | base64)
-    local allow_b64
-    allow_b64=$(echo -n "$cfg_allow" | base64)
-    local deny_b64
-    deny_b64=$(echo -n "$cfg_deny" | base64)
-    local hook_b64
-    hook_b64=$(echo -n "$hook_cmd" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$base_settings" | jq --argjson ib_perms "$ib_perms" \
+            --argjson blocked "$blocked_tools" \
+            --argjson cfg_allow "$cfg_allow" \
+            --argjson cfg_deny "$cfg_deny" \
+            --arg hook_cmd "$hook_cmd" \
+            --arg agent_id "$agent_id" '
+            # Initialize permissions if not present
+            .permissions //= {} |
+            .permissions.allow //= [] |
+            .permissions.deny //= [] |
+            # Merge and deduplicate allow permissions
+            .permissions.allow = ((.permissions.allow + $ib_perms + $cfg_allow) | unique) |
+            # Merge and deduplicate deny permissions
+            .permissions.deny = ((.permissions.deny + $blocked + $cfg_deny) | unique) |
+            # Add hooks
+            .hooks //= {} |
+            .hooks.Stop = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-status \($agent_id)" }] }] |
+            .hooks.PermissionRequest = [{ matcher: "*", hooks: [{ type: "command", command: $hook_cmd }] }] |
+            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }]
+        ' 2>/dev/null
+    else
+        local base_b64
+        base_b64=$(echo -n "$base_settings" | base64)
+        local ib_b64
+        ib_b64=$(echo -n "$ib_perms" | base64)
+        local blocked_b64
+        blocked_b64=$(echo -n "$blocked_tools" | base64)
+        local allow_b64
+        allow_b64=$(echo -n "$cfg_allow" | base64)
+        local deny_b64
+        deny_b64=$(echo -n "$cfg_deny" | base64)
+        local hook_b64
+        hook_b64=$(echo -n "$hook_cmd" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 function decodeB64(b64) {
@@ -641,52 +780,40 @@ var cfgAllow = JSON.parse(decodeB64('$allow_b64'));
 var cfgDeny = JSON.parse(decodeB64('$deny_b64'));
 var hookCmd = decodeB64('$hook_b64');
 
-// Initialize permissions if not present
 if (!base.permissions) base.permissions = {};
 if (!Array.isArray(base.permissions.allow)) base.permissions.allow = [];
 if (!Array.isArray(base.permissions.deny)) base.permissions.deny = [];
 
-// Merge allow permissions and deduplicate
 var allAllow = base.permissions.allow.concat(ibPerms).concat(cfgAllow);
 base.permissions.allow = allAllow.filter(function(item, pos) {
     return allAllow.indexOf(item) === pos;
 });
 
-// Merge deny permissions and deduplicate
 var allDeny = base.permissions.deny.concat(blocked).concat(cfgDeny);
 base.permissions.deny = allDeny.filter(function(item, pos) {
     return allDeny.indexOf(item) === pos;
 });
 
-// Add hooks
 if (!base.hooks) base.hooks = {};
 
 base.hooks.Stop = [{
     matcher: '*',
-    hooks: [{
-        type: 'command',
-        command: 'ib hook-status $agent_id'
-    }]
+    hooks: [{ type: 'command', command: 'ib hook-status $agent_id' }]
 }];
 
 base.hooks.PermissionRequest = [{
     matcher: '*',
-    hooks: [{
-        type: 'command',
-        command: hookCmd
-    }]
+    hooks: [{ type: 'command', command: hookCmd }]
 }];
 
 base.hooks.PreToolUse = [{
     matcher: '*',
-    hooks: [{
-        type: 'command',
-        command: 'ib hook-check-path $agent_id'
-    }]
+    hooks: [{ type: 'command', command: 'ib hook-check-path $agent_id' }]
 }];
 
 JSON.stringify(base, null, 2);
 " 2>/dev/null
+    fi
 }
 
 # Filter questions by status and format output
@@ -699,10 +826,17 @@ json_filter_questions() {
         return 0
     fi
 
-    local json_b64
-    json_b64=$(base64 < "$file")
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local filter_expr=".questions // []"
+        if [[ "$filter_status" == "pending" ]]; then
+            filter_expr="$filter_expr | map(select(.status == \"pending\"))"
+        fi
+        jq -r "$filter_expr | .[] | \"[\\(.status)] \\(.id)\\n  From: \\(.agent)\\n  Time: \\(.timestamp)\\n  Question: \\(.question)\\n\"" "$file" 2>/dev/null || true
+    else
+        local json_b64
+        json_b64=$(base64 < "$file")
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -725,6 +859,7 @@ try {
     '';
 }
 " 2>/dev/null || true
+    fi
 }
 
 # Count questions by status
@@ -738,10 +873,17 @@ json_count_questions() {
         return 0
     fi
 
-    local json_b64
-    json_b64=$(base64 < "$file")
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local filter_expr=".questions // []"
+        if [[ "$filter_status" == "pending" ]]; then
+            filter_expr="$filter_expr | map(select(.status == \"pending\"))"
+        fi
+        jq -r "$filter_expr | length" "$file" 2>/dev/null || echo "0"
+    else
+        local json_b64
+        json_b64=$(base64 < "$file")
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 var decoded = $.NSString.alloc.initWithDataEncoding(
     $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
@@ -758,6 +900,7 @@ try {
     0;
 }
 " 2>/dev/null || echo "0"
+    fi
 }
 
 # Add a question to questions file
@@ -769,21 +912,34 @@ json_add_question() {
     local question="$4"
     local timestamp="$5"
 
-    local existing_b64=""
-    if [[ -f "$file" ]]; then
-        existing_b64=$(base64 < "$file")
-    fi
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing='{"questions":[]}'
+        if [[ -f "$file" ]]; then
+            existing=$(<"$file")
+        fi
+        echo "$existing" | jq --arg id "$id" \
+            --arg agent "$agent" \
+            --arg question "$question" \
+            --arg timestamp "$timestamp" '
+            .questions //= [] |
+            .questions += [{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: "pending"}]
+        ' > "$file" 2>/dev/null
+    else
+        local existing_b64=""
+        if [[ -f "$file" ]]; then
+            existing_b64=$(base64 < "$file")
+        fi
 
-    local id_b64
-    id_b64=$(echo -n "$id" | base64)
-    local agent_b64
-    agent_b64=$(echo -n "$agent" | base64)
-    local question_b64
-    question_b64=$(echo -n "$question" | base64)
-    local timestamp_b64
-    timestamp_b64=$(echo -n "$timestamp" | base64)
+        local id_b64
+        id_b64=$(echo -n "$id" | base64)
+        local agent_b64
+        agent_b64=$(echo -n "$agent" | base64)
+        local question_b64
+        question_b64=$(echo -n "$question" | base64)
+        local timestamp_b64
+        timestamp_b64=$(echo -n "$timestamp" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 function decodeB64(b64) {
@@ -814,6 +970,7 @@ data.questions.push({
 
 JSON.stringify(data, null, 2);
 " > "$file" 2>/dev/null
+    fi
 }
 
 # Acknowledge a question (update status)
@@ -827,14 +984,21 @@ json_acknowledge_question() {
         return 1
     fi
 
-    local existing_b64
-    existing_b64=$(base64 < "$file")
-    local id_b64
-    id_b64=$(echo -n "$question_id" | base64)
-    local ts_b64
-    ts_b64=$(echo -n "$timestamp" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing
+        existing=$(<"$file")
+        echo "$existing" | jq --arg qid "$question_id" --arg ts "$timestamp" '
+            .questions |= map(if .id == $qid then .status = "acknowledged" | .acknowledged_at = $ts else . end)
+        ' > "$file" 2>/dev/null
+    else
+        local existing_b64
+        existing_b64=$(base64 < "$file")
+        local id_b64
+        id_b64=$(echo -n "$question_id" | base64)
+        local ts_b64
+        ts_b64=$(echo -n "$timestamp" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 function decodeB64(b64) {
@@ -859,6 +1023,7 @@ if (data.questions) {
 
 JSON.stringify(data, null, 2);
 " > "$file" 2>/dev/null
+    fi
 }
 
 # Get agent ID from question
@@ -871,12 +1036,15 @@ json_get_question_agent() {
         return 0
     fi
 
-    local json_b64
-    json_b64=$(base64 < "$file")
-    local id_b64
-    id_b64=$(echo -n "$question_id" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        jq -r --arg qid "$question_id" '.questions // [] | map(select(.id == $qid)) | .[0].agent // empty' "$file" 2>/dev/null || true
+    else
+        local json_b64
+        json_b64=$(base64 < "$file")
+        local id_b64
+        id_b64=$(echo -n "$question_id" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 function decodeB64(b64) {
@@ -899,6 +1067,7 @@ if (data.questions) {
 }
 agent;
 " 2>/dev/null || true
+    fi
 }
 
 # Check if question exists
@@ -911,13 +1080,16 @@ json_question_exists() {
         return 1
     fi
 
-    local json_b64
-    json_b64=$(base64 < "$file")
-    local id_b64
-    id_b64=$(echo -n "$question_id" | base64)
-
     local result
-    result=$(osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(jq -r --arg qid "$question_id" '(.questions // [] | map(select(.id == $qid)) | length > 0) | if . then "true" else "false" end' "$file" 2>/dev/null) || result="false"
+    else
+        local json_b64
+        json_b64=$(base64 < "$file")
+        local id_b64
+        id_b64=$(echo -n "$question_id" | base64)
+
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 function decodeB64(b64) {
@@ -940,6 +1112,7 @@ if (data.questions) {
 }
 found ? 'true' : 'false';
 " 2>/dev/null)
+    fi
 
     [[ "$result" == "true" ]]
 }
@@ -954,10 +1127,21 @@ json_parse_usage_jsonl() {
         return 0
     fi
 
-    local content_b64
-    content_b64=$(base64 < "$file")
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        # Read file as JSONL, filter for usage entries, get last one
+        jq -Rs '
+            split("\n") | map(select(length > 0)) | map(try fromjson catch null) | map(select(. != null)) |
+            map(select(.isSidechain != true and .message.usage != null)) |
+            if length > 0 then
+                .[-1].message.usage |
+                "\(.input_tokens // 0) \(.cache_creation_input_tokens // 0) \(.cache_read_input_tokens // 0) \(.output_tokens // 0)"
+            else "" end
+        ' "$file" 2>/dev/null | tr -d '"' || true
+    else
+        local content_b64
+        content_b64=$(base64 < "$file")
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -987,6 +1171,7 @@ if (entries.length > 0) {
     '';
 }
 " 2>/dev/null || true
+    fi
 }
 
 # Format tool input for permission denied logging
@@ -998,10 +1183,13 @@ json_format_tool_input() {
         return 0
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$tool_input" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$tool_input" | jq -r 'to_entries | map("\(.key): \(.value)") | join(", ")' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$tool_input" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1020,6 +1208,7 @@ try {
     '';
 }
 " 2>/dev/null || true
+    fi
 }
 
 # Check if main-path hook is installed in settings JSON
@@ -1040,11 +1229,19 @@ json_has_main_path_hook() {
         return 1
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$json_content" | base64)
-
     local result
-    result=$(osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            if .hooks.PreToolUse then
+                [.hooks.PreToolUse[].hooks[]? | select(.command | contains("ib hooks main-path"))] | length > 0 |
+                if . then "true" else "false" end
+            else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1078,6 +1275,7 @@ try {
     'false';
 }
 " 2>/dev/null)
+    fi
 
     [[ "$result" == "true" ]]
 }
@@ -1092,10 +1290,17 @@ json_add_main_path_hook() {
         json_content="{}"
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$json_content" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.PreToolUse //= [] |
+            .hooks.PreToolUse += [{ matcher: "Bash", hooks: [{ type: "command", command: "ib hooks main-path" }] }]
+        ' 2>/dev/null
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1105,12 +1310,9 @@ var decoded = $.NSString.alloc.initWithDataEncoding(
 
 try {
     var obj = JSON.parse(decoded);
-
-    // Initialize hooks structure if needed
     if (!obj.hooks) obj.hooks = {};
     if (!obj.hooks.PreToolUse) obj.hooks.PreToolUse = [];
 
-    // Add our hook
     var newHook = {
         matcher: 'Bash',
         hooks: [{type: 'command', command: 'ib hooks main-path'}]
@@ -1122,6 +1324,7 @@ try {
     '{}';
 }
 " 2>/dev/null
+    fi
 }
 
 # Remove main-path hook from settings JSON
@@ -1135,10 +1338,19 @@ json_remove_main_path_hook() {
         return
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$json_content" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            if .hooks.PreToolUse then
+                .hooks.PreToolUse |= map(select(.hooks | all(.command | contains("ib hooks main-path") | not))) |
+                if .hooks.PreToolUse | length == 0 then del(.hooks.PreToolUse) else . end |
+                if .hooks | keys | length == 0 then del(.hooks) else . end
+            else . end
+        ' 2>/dev/null
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1150,16 +1362,13 @@ try {
     var obj = JSON.parse(decoded);
 
     if (obj.hooks && obj.hooks.PreToolUse && Array.isArray(obj.hooks.PreToolUse)) {
-        // Filter out entries that have our hook
         obj.hooks.PreToolUse = obj.hooks.PreToolUse.filter(function(entry) {
             if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
-            // Keep entry only if none of its hooks contain 'ib hooks main-path'
             return entry.hooks.every(function(hook) {
                 return !hook.command || hook.command.indexOf('ib hooks main-path') === -1;
             });
         });
 
-        // Clean up empty arrays/objects
         if (obj.hooks.PreToolUse.length === 0) {
             delete obj.hooks.PreToolUse;
         }
@@ -1173,6 +1382,7 @@ try {
     '{}';
 }
 " 2>/dev/null
+    fi
 }
 
 # Check if JSON object is empty (has no keys)
@@ -1185,11 +1395,14 @@ json_is_empty() {
         return 0
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$json_content" | base64)
-
     local result
-    result=$(osascript -l JavaScript -e "
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r 'if keys | length == 0 then "true" else "false" end' 2>/dev/null) || result="true"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1204,6 +1417,7 @@ try {
     'true';
 }
 " 2>/dev/null)
+    fi
 
     [[ "$result" == "true" ]]
 }
@@ -1219,10 +1433,13 @@ json_pretty() {
         return
     fi
 
-    local input_b64
-    input_b64=$(echo -n "$json_content" | base64)
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '.' 2>/dev/null || echo "{}"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
 
-    osascript -l JavaScript -e "
+        osascript -l JavaScript -e "
 ObjC.import('Foundation');
 
 var decoded = $.NSString.alloc.initWithDataEncoding(
@@ -1237,6 +1454,7 @@ try {
     '{}';
 }
 " 2>/dev/null
+    fi
 }
 
 # =============================================================================
@@ -9443,6 +9661,139 @@ EOF
 }
 
 # =============================================================================
+# JSON TEST COMMANDS
+# These allow testing JSON functions with specific engine (via JSON_ENGINE env var)
+# =============================================================================
+
+# Test json_get function
+# Usage: JSON_ENGINE=jq ib test-json-get file.json keypath [default]
+cmd_test_json_get() {
+    local file="$1"
+    local keypath="$2"
+    local default="${3:-}"
+
+    if [[ -z "$file" || -z "$keypath" ]]; then
+        echo "Usage: ib test-json-get file keypath [default]" >&2
+        exit 1
+    fi
+
+    json_get "$file" "$keypath" "$default"
+}
+
+# Test json_get_array function
+# Usage: JSON_ENGINE=jq ib test-json-get-array file.json keypath
+cmd_test_json_get_array() {
+    local file="$1"
+    local keypath="$2"
+
+    if [[ -z "$file" || -z "$keypath" ]]; then
+        echo "Usage: ib test-json-get-array file keypath" >&2
+        exit 1
+    fi
+
+    json_get_array "$file" "$keypath"
+}
+
+# Test json_array_length function
+# Usage: JSON_ENGINE=jq ib test-json-array-length file.json keypath
+cmd_test_json_array_length() {
+    local file="$1"
+    local keypath="$2"
+
+    if [[ -z "$file" || -z "$keypath" ]]; then
+        echo "Usage: ib test-json-array-length file keypath" >&2
+        exit 1
+    fi
+
+    json_array_length "$file" "$keypath"
+}
+
+# Test json_escape function
+# Usage: JSON_ENGINE=jq ib test-json-escape "string to escape"
+cmd_test_json_escape() {
+    local str="$1"
+
+    if [[ -z "$str" ]]; then
+        echo "Usage: ib test-json-escape 'string'" >&2
+        exit 1
+    fi
+
+    json_escape "$str"
+}
+
+# Test json_pretty function
+# Usage: JSON_ENGINE=jq ib test-json-pretty '{"a":1}'
+cmd_test_json_pretty() {
+    local json="$1"
+
+    if [[ -z "$json" ]]; then
+        echo "Usage: ib test-json-pretty 'json_string'" >&2
+        exit 1
+    fi
+
+    json_pretty "$json"
+}
+
+# Test json_set function (creates temp file, outputs result)
+# Usage: JSON_ENGINE=jq ib test-json-set '{"a":1}' keypath value
+cmd_test_json_set() {
+    local initial_json="$1"
+    local keypath="$2"
+    local value="$3"
+
+    if [[ -z "$initial_json" || -z "$keypath" ]]; then
+        echo "Usage: ib test-json-set 'initial_json' keypath value" >&2
+        exit 1
+    fi
+
+    local temp_file
+    temp_file=$(mktemp)
+    echo "$initial_json" > "$temp_file"
+    json_set "$temp_file" "$keypath" "$value"
+    cat "$temp_file"
+    rm -f "$temp_file"
+}
+
+# Test json_array_add function
+# Usage: JSON_ENGINE=jq ib test-json-array-add '{"items":[]}' keypath value
+cmd_test_json_array_add() {
+    local initial_json="$1"
+    local keypath="$2"
+    local value="$3"
+
+    if [[ -z "$initial_json" || -z "$keypath" ]]; then
+        echo "Usage: ib test-json-array-add 'initial_json' keypath value" >&2
+        exit 1
+    fi
+
+    local temp_file
+    temp_file=$(mktemp)
+    echo "$initial_json" > "$temp_file"
+    json_array_add "$temp_file" "$keypath" "$value"
+    cat "$temp_file"
+    rm -f "$temp_file"
+}
+
+# Test json_array_contains function
+# Usage: JSON_ENGINE=jq ib test-json-array-contains '{"items":["a"]}' keypath value
+cmd_test_json_array_contains() {
+    local json="$1"
+    local keypath="$2"
+    local value="$3"
+
+    if [[ -z "$json" || -z "$keypath" || -z "$value" ]]; then
+        echo "Usage: ib test-json-array-contains 'json' keypath value" >&2
+        exit 1
+    fi
+
+    if json_array_contains - "$keypath" "$value" <<< "$json"; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks main-path
 # =============================================================================
 
@@ -17028,6 +17379,38 @@ case "${1:-help}" in
     test-enforce-access)
         shift
         cmd_test_enforce_access "$@"
+        ;;
+    test-json-get)
+        shift
+        cmd_test_json_get "$@"
+        ;;
+    test-json-get-array)
+        shift
+        cmd_test_json_get_array "$@"
+        ;;
+    test-json-array-length)
+        shift
+        cmd_test_json_array_length "$@"
+        ;;
+    test-json-escape)
+        shift
+        cmd_test_json_escape "$@"
+        ;;
+    test-json-pretty)
+        shift
+        cmd_test_json_pretty "$@"
+        ;;
+    test-json-set)
+        shift
+        cmd_test_json_set "$@"
+        ;;
+    test-json-array-add)
+        shift
+        cmd_test_json_array_add "$@"
+        ;;
+    test-json-array-contains)
+        shift
+        cmd_test_json_array_contains "$@"
         ;;
     test-agent-worktree)
         # Test if a path matches the agent worktree pattern
