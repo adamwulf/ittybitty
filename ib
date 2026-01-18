@@ -143,6 +143,39 @@ detect_json_engine
 # Base64 encoding makes all data safe for transport, then decoded by the engine.
 # =============================================================================
 
+# Convert dot-separated keypath to jq path
+# Handles numeric indices: "0.id" -> ".[0].id", "items.0.name" -> ".items[0].name"
+# String keys: "config.settings" -> ".config.settings"
+keypath_to_jq() {
+    local keypath="$1"
+    local jq_path=""
+    local remaining="$keypath"
+    local part
+
+    while [[ -n "$remaining" ]]; do
+        if [[ "$remaining" == *"."* ]]; then
+            part="${remaining%%.*}"
+            remaining="${remaining#*.}"
+        else
+            part="$remaining"
+            remaining=""
+        fi
+
+        if [[ "$part" =~ ^[0-9]+$ ]]; then
+            jq_path+="[$part]"
+        else
+            jq_path+=".$part"
+        fi
+    done
+
+    # jq needs leading . for root array access
+    if [[ "$jq_path" =~ ^\[ ]]; then
+        jq_path=".$jq_path"
+    fi
+
+    echo "$jq_path"
+}
+
 # Read a value from JSON file or string by keypath
 # Usage: json_get "file.json" "config.settings.debug"
 # Usage: json_get - "keypath" <<< "$json_string"
@@ -166,7 +199,7 @@ json_get() {
     if [[ "$JSON_ENGINE" == "jq" ]]; then
         # Convert dot-separated keypath to jq path: "a.b.c" -> ".a.b.c"
         local jq_path
-        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        jq_path=$(keypath_to_jq "$keypath")
         result=$(echo "$json_content" | jq -r "$jq_path // empty" 2>/dev/null) || true
         # jq outputs "null" for missing keys with -r, handle that
         if [[ "$result" == "null" ]]; then
@@ -227,7 +260,7 @@ json_get_array() {
 
     if [[ "$JSON_ENGINE" == "jq" ]]; then
         local jq_path
-        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        jq_path=$(keypath_to_jq "$keypath")
         echo "$json_content" | jq -r "$jq_path // [] | .[]" 2>/dev/null || true
     else
         local json_b64
@@ -331,7 +364,7 @@ json_array_length() {
 
     if [[ "$JSON_ENGINE" == "jq" ]]; then
         local jq_path
-        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        jq_path=$(keypath_to_jq "$keypath")
         echo "$json_content" | jq -r "$jq_path // [] | length" 2>/dev/null || echo "0"
     else
         local json_b64
@@ -703,7 +736,7 @@ json_array_contains() {
     local result
     if [[ "$JSON_ENGINE" == "jq" ]]; then
         local jq_path
-        jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
+        jq_path=$(keypath_to_jq "$keypath")
         local jq_value
         jq_value=$(echo -n "$value" | jq -Rs '.' 2>/dev/null || true)
         result=$(echo "$json_content" | jq -r "
