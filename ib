@@ -18235,7 +18235,7 @@ try {
 
             # Pane header with box-drawing characters dim but titles white
             local left_title="(no agent)"
-            local right_title="AGENT LOG"
+            local right_title="${RIGHT_PANE_NAMES[$RIGHT_PANE_MODE]}"
             local left_pad_count=$((left_pane_width - 3 - ${#left_title} - 1))
             local right_pad_count=$((right_pane_width - 3 - ${#right_title} - 1))
             [[ $left_pad_count -lt 0 ]] && left_pad_count=0
