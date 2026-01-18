@@ -16658,7 +16658,7 @@ EOF
     ) &
     local session_monitor_pid=$!
 
-    # Start background update checker (checks for new releases every 5 minutes)
+    # Start background update checker (checks for new releases once per hour)
     local update_cache_file=$(mktemp)
     UPDATE_CHECK_FILE="$update_cache_file"  # Global for reading cached version
     (
@@ -16666,8 +16666,8 @@ EOF
         # Initial fetch on startup
         fetch_latest_version "$cache_file"
         while true; do
-            # Check every 5 minutes
-            sleep 300
+            # Check once per hour
+            sleep 3600
             fetch_latest_version "$cache_file"
         done
     ) &
