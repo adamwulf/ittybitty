@@ -1298,6 +1298,149 @@ try {
 # END JSON HELPERS
 # =============================================================================
 
+# =============================================================================
+# VERSION CHECKING HELPERS
+# =============================================================================
+
+# Compare two semver versions (major.minor.patch format)
+# Returns: 0 if v1 > v2, 1 if v1 < v2, 2 if v1 == v2
+# Usage: compare_versions "0.2.0" "0.1.5"
+compare_versions() {
+    local v1="$1"
+    local v2="$2"
+
+    # Strip leading 'v' if present
+    v1="${v1#v}"
+    v2="${v2#v}"
+
+    # Split into components
+    local v1_major v1_minor v1_patch
+    local v2_major v2_minor v2_patch
+
+    IFS='.' read -r v1_major v1_minor v1_patch <<< "$v1"
+    IFS='.' read -r v2_major v2_minor v2_patch <<< "$v2"
+
+    # Default to 0 if missing
+    v1_major=${v1_major:-0}
+    v1_minor=${v1_minor:-0}
+    v1_patch=${v1_patch:-0}
+    v2_major=${v2_major:-0}
+    v2_minor=${v2_minor:-0}
+    v2_patch=${v2_patch:-0}
+
+    # Compare major
+    if [[ $v1_major -gt $v2_major ]]; then
+        return 0
+    elif [[ $v1_major -lt $v2_major ]]; then
+        return 1
+    fi
+
+    # Compare minor
+    if [[ $v1_minor -gt $v2_minor ]]; then
+        return 0
+    elif [[ $v1_minor -lt $v2_minor ]]; then
+        return 1
+    fi
+
+    # Compare patch
+    if [[ $v1_patch -gt $v2_patch ]]; then
+        return 0
+    elif [[ $v1_patch -lt $v2_patch ]]; then
+        return 1
+    fi
+
+    # Equal
+    return 2
+}
+
+# Fetch latest release version from GitHub
+# Writes version to cache file, runs in background
+# Usage: fetch_latest_version "$cache_file" &
+fetch_latest_version() {
+    local cache_file="$1"
+    local api_url="https://api.github.com/repos/adamwulf/ittybitty/releases/latest"
+
+    # Fetch latest release info (with timeout)
+    local response
+    response=$(curl -s --max-time 10 "$api_url" 2>/dev/null) || return 1
+
+    if [[ -z "$response" ]]; then
+        return 1
+    fi
+
+    # Extract tag_name from response using json_get
+    local tag_name
+    tag_name=$(json_get - "tag_name" <<< "$response")
+
+    if [[ -z "$tag_name" || "$tag_name" == "null" ]]; then
+        return 1
+    fi
+
+    # Strip leading 'v' if present for consistency
+    local version="${tag_name#v}"
+
+    # Write to cache file (atomic write)
+    printf '%s' "$version" > "${cache_file}.tmp" && mv "${cache_file}.tmp" "$cache_file" 2>/dev/null
+}
+
+# Check if an update is available and update global variables
+# Reads from cache file and compares with VERSION
+# Sets: UPDATE_LATEST_VERSION, UPDATE_AVAILABLE
+check_update_from_cache() {
+    local cache_file="$1"
+
+    if [[ -z "$cache_file" || ! -f "$cache_file" ]]; then
+        return 0
+    fi
+
+    local latest_version
+    latest_version=$(<"$cache_file") 2>/dev/null || return 0
+
+    if [[ -z "$latest_version" ]]; then
+        return 0
+    fi
+
+    UPDATE_LATEST_VERSION="$latest_version"
+
+    # Check if latest > current (return 0 means latest is newer)
+    if compare_versions "$latest_version" "$VERSION"; then
+        UPDATE_AVAILABLE=1
+    else
+        UPDATE_AVAILABLE=0
+    fi
+}
+
+# Test command for version comparison
+# Usage: ib test-compare-versions "v1" "v2"
+# Output: "newer" if v1 > v2, "older" if v1 < v2, "equal" if v1 == v2
+cmd_test_compare_versions() {
+    local v1="$1"
+    local v2="$2"
+
+    if [[ -z "$v1" || -z "$v2" ]]; then
+        echo "Usage: ib test-compare-versions <version1> <version2>" >&2
+        exit 1
+    fi
+
+    # Capture return value without triggering set -e exit
+    local result
+    if compare_versions "$v1" "$v2"; then
+        result=0
+    else
+        result=$?
+    fi
+
+    case $result in
+        0) echo "newer" ;;
+        1) echo "older" ;;
+        2) echo "equal" ;;
+    esac
+}
+
+# =============================================================================
+# END VERSION CHECKING HELPERS
+# =============================================================================
+
 # Archive an agent's output before cleanup
 # Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json
 archive_agent_output() {
@@ -3680,6 +3823,12 @@ STATUS_CACHE_LINES=()            # Cached status lines for display
 STATUS_CACHE_FILE=""             # Path to cache file (set in cmd_watch)
 STATUS_BG_PID=""                 # PID of background collector process
 STATUS_CACHE_LOADED=0            # 0=not loaded yet (show loading), 1=loaded
+
+# Update check cache (background check for new releases)
+UPDATE_CHECK_FILE=""             # Path to cache file containing latest version
+UPDATE_CHECK_BG_PID=""           # PID of background checker process
+UPDATE_LATEST_VERSION=""         # Latest version from GitHub (e.g., "0.2.0")
+UPDATE_AVAILABLE=0               # 1 if UPDATE_LATEST_VERSION > VERSION
 
 # =============================================================================
 # Debug Timing Infrastructure (global for use by any function)
@@ -14842,14 +14991,30 @@ EOF
         fi
         # Use cached time string from build_agent_data_file
         local current_time="$CACHED_TIME_STR"
-        # Build sponsor link with OSC 8 hyperlink (clickable in modern terminals)
-        # Format: \e]8;;URL\e\\TEXT\e]8;;\e\\ (using \a as terminator for compatibility)
-        local sponsor_link=$'\e]8;;https://github.com/sponsors/adamwulf\a'"♡ sponsor"$'\e]8;;\a'
-        local sponsor_visible_len=9  # "♡ sponsor" = 9 visible chars
+
+        # Check for updates from cache (non-blocking read)
+        check_update_from_cache "$UPDATE_CHECK_FILE"
+
+        # Build link: update notification (red) if available, otherwise sponsor link
+        local link_text link_visible_len
+        if [[ $UPDATE_AVAILABLE -eq 1 && -n "$UPDATE_LATEST_VERSION" ]]; then
+            # Update available - show red clickable link to releases page
+            local releases_url="https://github.com/adamwulf/ittybitty/releases"
+            local update_text="update: v$UPDATE_LATEST_VERSION"
+            # OSC 8 hyperlink with red color: \e[31m for red, \e[0m to reset
+            link_text=$'\e[31m\e]8;;'"$releases_url"$'\a'"$update_text"$'\e]8;;\a\e[0m'
+            link_visible_len=${#update_text}  # "update: vX.Y.Z"
+        else
+            # No update - show sponsor link with OSC 8 hyperlink (clickable in modern terminals)
+            # Format: \e]8;;URL\e\\TEXT\e]8;;\e\\ (using \a as terminator for compatibility)
+            link_text=$'\e]8;;https://github.com/sponsors/adamwulf\a'"♡ sponsor"$'\e]8;;\a'
+            link_visible_len=9  # "♡ sponsor" = 9 visible chars
+        fi
+
         local version_str="v$VERSION"
-        printf -v right_info "fps:%2d  %s  %s  %s" "$fps" "$sponsor_link" "$current_time" "$version_str"
-        # Visible length: "fps:XX  " (8) + sponsor (9) + "  " (2) + time (8) + "  " (2) + version (len)
-        local right_info_visible_len=$((8 + sponsor_visible_len + 2 + 8 + 2 + ${#version_str}))
+        printf -v right_info "fps:%2d  %s  %s  %s" "$fps" "$link_text" "$current_time" "$version_str"
+        # Visible length: "fps:XX  " (8) + link (variable) + "  " (2) + time (8) + "  " (2) + version (len)
+        local right_info_visible_len=$((8 + link_visible_len + 2 + 8 + 2 + ${#version_str}))
         local padding=$((TERM_COLS - action_text_visible_len - right_info_visible_len))
         printf "%s%*s%s%s" "$action_text" "$padding" "" "$right_info" "$COLOR_RESET"
     }
@@ -16493,11 +16658,27 @@ EOF
     ) &
     local session_monitor_pid=$!
 
+    # Start background update checker (checks for new releases every 5 minutes)
+    local update_cache_file=$(mktemp)
+    UPDATE_CHECK_FILE="$update_cache_file"  # Global for reading cached version
+    (
+        local cache_file="$update_cache_file"
+        # Initial fetch on startup
+        fetch_latest_version "$cache_file"
+        while true; do
+            # Check every 5 minutes
+            sleep 300
+            fetch_latest_version "$cache_file"
+        done
+    ) &
+    local update_checker_pid=$!
+
     # Cleanup reader and session monitor on exit
     watch_cleanup_reader() {
         [[ -n "$reader_pid" ]] && kill $reader_pid 2>/dev/null
         kill $session_monitor_pid 2>/dev/null
-        rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file" "$errors_file"
+        kill $update_checker_pid 2>/dev/null
+        rm -f "$keyfile" "$sessionfile" "$log_width_file" "$heartbeat_file" "$errors_file" "$update_cache_file"
         rm -rf "$tmux_cache_dir" "$log_cache_dir"
         SESSIONS_FILE=""
         TMUX_CACHE_DIR=""
@@ -16505,6 +16686,7 @@ EOF
         LOG_WIDTH_FILE=""
         HEARTBEAT_FILE=""
         ERRORS_FILE=""
+        UPDATE_CHECK_FILE=""
     }
     trap 'watch_cleanup_reader; watch_cleanup' EXIT
     trap 'exit 0' INT  # Ensure Ctrl+C triggers EXIT trap
@@ -17208,6 +17390,10 @@ case "${1:-help}" in
     test-format-age)
         shift
         cmd_test_format_age "$@"
+        ;;
+    test-compare-versions)
+        shift
+        cmd_test_compare_versions "$@"
         ;;
     test-tool-allowed)
         shift
