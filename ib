@@ -87,12 +87,37 @@ check_dependencies() {
 
 # =============================================================================
 # JSON ENGINE DETECTION
-# Prefer jq if available, fallback to osascript (macOS), fail if neither
+# =============================================================================
+#
+# This script supports two JSON processing engines for cross-platform compatibility:
+#
+#   jq (preferred)
+#     - Standard command-line JSON processor, fast and widely used
+#     - Available on all platforms via package managers (brew, apt, etc.)
+#     - Used when available for better performance and reliability
+#
+#   osascript (macOS fallback)
+#     - Uses macOS's built-in JavaScript for Automation (JXA)
+#     - Ships pre-installed on all Macs - zero dependencies required
+#     - Only available on macOS (osascript doesn't exist on Linux)
+#
+# Platform behavior:
+#   - Linux: jq is REQUIRED (osascript doesn't exist)
+#   - macOS: jq is OPTIONAL (osascript used if jq not installed)
+#
+# This enables cross-platform support without forcing macOS users to install jq,
+# while still allowing Linux users to run the script by installing jq.
+#
 # =============================================================================
 
 JSON_ENGINE=""
 
 detect_json_engine() {
+    # Allow override via environment variable (for testing)
+    if [[ -n "$JSON_ENGINE" ]]; then
+        return 0
+    fi
+
     if command -v jq &>/dev/null; then
         JSON_ENGINE="jq"
     elif command -v osascript &>/dev/null; then
@@ -109,7 +134,9 @@ detect_json_engine
 
 # =============================================================================
 # JSON HELPERS - Dual-engine support for jq and osascript
-# Uses jq when available, falls back to macOS's osascript with JavaScript.
+# =============================================================================
+# Each function checks JSON_ENGINE and runs the appropriate implementation.
+# jq version is typically a one-liner; osascript uses JavaScript via base64.
 #
 # Why base64? Values are passed via string interpolation. Special characters
 # like quotes, newlines, $, *, and shell metacharacters would break syntax.
@@ -286,7 +313,7 @@ json_escape() {
     local str="$1"
 
     if [[ "$JSON_ENGINE" == "jq" ]]; then
-        echo -n "$str" | jq -Rs '.' 2>/dev/null
+        echo -n "$str" | jq -Rs '.' 2>/dev/null || true
     else
         local str_b64
         str_b64=$(echo -n "$str" | base64)
@@ -365,9 +392,9 @@ json_set() {
             jq_value="$actual_value"
         else
             # Escape string value
-            jq_value=$(echo -n "$actual_value" | jq -Rs '.')
+            jq_value=$(echo -n "$actual_value" | jq -Rs '.' 2>/dev/null || true)
         fi
-        echo "$existing" | jq "setpath($jq_path_array; $jq_value)" > "$file" 2>/dev/null
+        echo "$existing" | jq "setpath($jq_path_array; $jq_value)" > "$file" 2>/dev/null || true
     else
         local existing_b64=""
         if [[ -f "$file" ]]; then
@@ -680,7 +707,7 @@ json_delete() {
         existing=$(<"$file")
         local jq_path_array
         jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
-        echo "$existing" | jq "delpaths([$jq_path_array])" > "$file" 2>/dev/null
+        echo "$existing" | jq "delpaths([$jq_path_array])" > "$file" 2>/dev/null || true
     else
         local existing_b64
         existing_b64=$(base64 < "$file")
