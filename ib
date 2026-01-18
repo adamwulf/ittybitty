@@ -3325,6 +3325,8 @@ parse_state() {
     # These patterns appear when Claude hits usage limits:
     # - "Claude usage limit reached. Your limit will reset at 3pm"
     # - "Error: 429 {"type":"error","error":{"type":"rate_limit_error"..."
+    # - "You've hit your limit · resets 1am (America/Chicago)"
+    # - "/upgrade to increase your usage limit."
     # Use case-insensitive matching for "usage limit" phrases
     if [[ "$last_lines" == *"rate_limit_error"* ]]; then
         echo "rate_limited"
@@ -3335,7 +3337,9 @@ parse_state() {
     old_nocasematch=$(shopt -p nocasematch 2>/dev/null || true)
     shopt -s nocasematch
     if [[ "$last_lines" == *"usage limit reached"* ]] || \
-       [[ "$last_lines" == *"limit will reset at"* ]]; then
+       [[ "$last_lines" == *"limit will reset at"* ]] || \
+       [[ "$last_lines" == *"hit your limit"* ]] || \
+       [[ "$last_lines" == *"/upgrade to increase your usage limit"* ]]; then
         eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
         echo "rate_limited"
         return
@@ -7458,6 +7462,16 @@ cmd_hooks_agent_status() {
     if [[ -f "$AGENT_DIR/meta.json" ]]; then
         manager=$(read_meta_field "$AGENT_DIR/meta.json" "manager" "")
         [[ "$manager" == "null" ]] && manager=""
+    fi
+
+    if [[ "$state" == "rate_limited" ]]; then
+        # Agent is rate limited - don't send any nudges as they will be rejected
+        # and trigger another Stop hook, creating an infinite loop.
+        # The watchdog handles rate_limited agents (bypass_rate_limit).
+        log_agent "$ID" "[hook] State is rate_limited, skipping nudge to avoid loop" --quiet
+        update_claude_status
+        echo "$state"
+        return
     fi
 
     if [[ "$state" == "unknown" || "$state" == "running" ]]; then
