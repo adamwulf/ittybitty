@@ -11743,7 +11743,10 @@ EOF
     local TARGET_FPS="${CONFIG_FPS:-10}"
     local TARGET_FRAME_MS=$((1000 / TARGET_FPS))
     local LAST_FRAME_MS=0
-    local SLEEP_ADJUST_MS=$((TARGET_FRAME_MS * 6 / 10))  # Start at 60% of target frame time
+    # Rolling average of last 3 render times (O(1) with 3 globals, no array)
+    local RENDER_TIME_1=0
+    local RENDER_TIME_2=0
+    local RENDER_TIME_3=0
 
     # Escape sequence tracking for normal mode (arrow keys)
     local _WATCH_ESC_PENDING=0  # 0=none, 1=got ESC, 2=got ESC+[
@@ -18669,10 +18672,13 @@ try {
             fi
         fi
 
-        # Record render time (before sleep) for debug mode
+        # Measure render time (before sleep)
+        local render_end_ms=$(get_ms)
+        local render_time=$((render_end_ms - frame_start_ms))
+
+        # Record for debug mode
         if [[ $DEBUG_MODE -eq 1 ]]; then
-            local render_end_ms=$(get_ms)
-            _debug_timing_record "total_frame" $((render_end_ms - frame_start_ms))
+            _debug_timing_record "total_frame" "$render_time"
             DEBUG_FRAME_COUNT=$((DEBUG_FRAME_COUNT + 1))
 
             # Show progress every 100 frames
@@ -18687,22 +18693,30 @@ try {
             fi
         fi
 
-        # Sleep using adaptive sleep time (skip in debug mode and if negative)
-        if [[ $DEBUG_MODE -eq 0 && $SLEEP_ADJUST_MS -gt 0 ]]; then
-            sleep $(awk "BEGIN {printf \"%.3f\", $SLEEP_ADJUST_MS / 1000}")
+        # Update rolling average of render times (rotate: 3←2, 2←1, 1←new)
+        # On first frame (RENDER_TIME_1 == 0), initialize all three to first render time
+        if [[ $RENDER_TIME_1 -eq 0 ]]; then
+            RENDER_TIME_1=$render_time
+            RENDER_TIME_2=$render_time
+            RENDER_TIME_3=$render_time
+        else
+            RENDER_TIME_3=$RENDER_TIME_2
+            RENDER_TIME_2=$RENDER_TIME_1
+            RENDER_TIME_1=$render_time
         fi
 
-        # Calculate total frame time including sleep
-        local frame_end_ms=$(get_ms)
-        LAST_FRAME_MS=$((frame_end_ms - frame_start_ms))
+        # Calculate average render time and sleep needed to hit target FPS
+        local avg_render_time=$(( (RENDER_TIME_1 + RENDER_TIME_2 + RENDER_TIME_3) / 3 ))
+        local sleep_needed=$((TARGET_FRAME_MS - avg_render_time))
 
-        # Feedback loop: adjust sleep based on whether we hit target
-        # If frame was too slow (>100ms), reduce sleep
-        # If frame was too fast (<100ms), increase sleep
-        # Use 0.3 gain factor for gradual adjustment
-        local frame_error=$((LAST_FRAME_MS - TARGET_FRAME_MS))
-        local adjustment=$((frame_error * 3 / 10))  # 30% of error
-        SLEEP_ADJUST_MS=$((SLEEP_ADJUST_MS - adjustment))  # Subtract to correct
+        # Sleep if needed (skip in debug mode)
+        if [[ $DEBUG_MODE -eq 0 && $sleep_needed -gt 0 ]]; then
+            sleep $(awk "BEGIN {printf \"%.3f\", $sleep_needed / 1000}")
+        fi
+
+        # Calculate total frame time including sleep (for FPS display)
+        local frame_end_ms_final=$(get_ms)
+        LAST_FRAME_MS=$((frame_end_ms_final - frame_start_ms))
 
         # Collect and clear accumulated keys
         local keys_to_process=""
