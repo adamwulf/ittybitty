@@ -11770,7 +11770,7 @@ EOF
     local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=config file, 5=ext diff, 6=Close
 
     # Settings dialog tabs (expanded setup dialog)
-    local SETTINGS_TAB=0              # 0=Setup, 1=User Settings, 2=Project Settings
+    local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
     local SETTINGS_FOCUS_USER=0       # Focus index for user settings tab
     local SETTINGS_FOCUS_PROJECT=0    # Focus index for project settings tab
     # Config keys for settings tabs (8 scalar + 2 permission groups = 10 items + 1 Close button)
@@ -13692,21 +13692,21 @@ EOF
             tab_setup=" Setup "
         fi
         if [[ $SETTINGS_TAB -eq 1 ]]; then
-            tab_user="\e[7m User Settings \e[0m"
-        else
-            tab_user=" User Settings "
-        fi
-        if [[ $SETTINGS_TAB -eq 2 ]]; then
             tab_project="\e[7m Project Settings \e[0m"
         else
             tab_project=" Project Settings "
         fi
-        # Visual width of tabs: 7 + 15 + 18 + 4 gaps = 44, center it
+        if [[ $SETTINGS_TAB -eq 2 ]]; then
+            tab_user="\e[7m User Settings \e[0m"
+        else
+            tab_user=" User Settings "
+        fi
+        # Visual width of tabs: 7 + 18 + 15 + 4 gaps = 44, center it
         local tabs_visual_width=44
         local tabs_left_pad=$(( (inner_width - tabs_visual_width) / 2 ))
         local tabs_right_pad=$((inner_width - tabs_visual_width - tabs_left_pad))
         printf '\e[%d;%dH│ %*s' "$row" "$_DIALOG_START_COL" "$tabs_left_pad" ""
-        printf '%b  %b  %b' "$tab_setup" "$tab_user" "$tab_project"
+        printf '%b  %b  %b' "$tab_setup" "$tab_project" "$tab_user"
         printf '%*s │' "$tabs_right_pad" ""
         ((row++))
 
@@ -13719,11 +13719,11 @@ EOF
             0)  # Setup tab
                 settings_render_setup_tab "$row"
                 ;;
-            1)  # User Settings tab
-                settings_render_config_tab "$row" "user"
-                ;;
-            2)  # Project Settings tab
+            1)  # Project Settings tab
                 settings_render_config_tab "$row" "project"
+                ;;
+            2)  # User Settings tab
+                settings_render_config_tab "$row" "user"
                 ;;
         esac
     }
@@ -14213,8 +14213,8 @@ try {
         local current_focus item_count
         case $SETTINGS_TAB in
             0) current_focus=$SETUP_FOCUS; item_count=7 ;;
-            1) current_focus=$SETTINGS_FOCUS_USER; item_count=$SETTINGS_ITEMS_COUNT ;;
-            2) current_focus=$SETTINGS_FOCUS_PROJECT; item_count=$SETTINGS_ITEMS_COUNT ;;
+            1) current_focus=$SETTINGS_FOCUS_PROJECT; item_count=$SETTINGS_ITEMS_COUNT ;;
+            2) current_focus=$SETTINGS_FOCUS_USER; item_count=$SETTINGS_ITEMS_COUNT ;;
         esac
 
         case "$key" in
@@ -14280,9 +14280,9 @@ try {
                                 ;;
                         esac
                         ;;
-                    1|2)  # User/Project Settings tabs
+                    1|2)  # Project/User Settings tabs
                         local scope
-                        [[ $SETTINGS_TAB -eq 1 ]] && scope="user" || scope="project"
+                        [[ $SETTINGS_TAB -eq 1 ]] && scope="project" || scope="user"
                         settings_handle_config_action "$current_focus" "$scope"
                         ;;
                 esac
@@ -14350,11 +14350,11 @@ try {
                 ;;
             1)
                 item_count=$SETTINGS_ITEMS_COUNT
-                SETTINGS_FOCUS_USER=$(( (SETTINGS_FOCUS_USER + direction + item_count) % item_count ))
+                SETTINGS_FOCUS_PROJECT=$(( (SETTINGS_FOCUS_PROJECT + direction + item_count) % item_count ))
                 ;;
             2)
                 item_count=$SETTINGS_ITEMS_COUNT
-                SETTINGS_FOCUS_PROJECT=$(( (SETTINGS_FOCUS_PROJECT + direction + item_count) % item_count ))
+                SETTINGS_FOCUS_USER=$(( (SETTINGS_FOCUS_USER + direction + item_count) % item_count ))
                 ;;
         esac
         _DIALOG_DIRTY=1
