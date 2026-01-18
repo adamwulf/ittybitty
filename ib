@@ -18675,6 +18675,8 @@ try {
         # Measure render time (before sleep)
         local render_end_ms=$(get_ms)
         local render_time=$((render_end_ms - frame_start_ms))
+        # Ensure at least 1ms to prevent rolling average reinitialization on 0ms frames
+        if [[ $render_time -lt 1 ]]; then render_time=1; fi
 
         # Record for debug mode
         if [[ $DEBUG_MODE -eq 1 ]]; then
