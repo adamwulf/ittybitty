@@ -8208,6 +8208,87 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-json-has
+# =============================================================================
+
+# Test json_has() function - checks if a key exists in JSON
+# Usage: ib test-json-has <file> <key>
+# Returns: "true" or "false"
+cmd_test_json_has() {
+    local file="$1"
+    local key="$2"
+
+    if [[ -z "$file" || -z "$key" ]]; then
+        echo "Usage: ib test-json-has <file> <key>" >&2
+        exit 1
+    fi
+
+    if json_has "$file" "$key"; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# =============================================================================
+# COMMAND: test-config-priority
+# =============================================================================
+
+# Test config priority logic with explicit user and project file paths
+# Usage: ib test-config-priority <user_file> <project_file> <key>
+# Returns: the value and source (e.g., "opus (project)" or "sonnet (user)" or "10 (default)")
+cmd_test_config_priority() {
+    local user_file="$1"
+    local project_file="$2"
+    local key="$3"
+
+    if [[ -z "$key" ]]; then
+        echo "Usage: ib test-config-priority <user_file> <project_file> <key>" >&2
+        exit 1
+    fi
+
+    # Define defaults for known keys
+    local default_value=""
+    case "$key" in
+        maxAgents) default_value="10" ;;
+        model) default_value="" ;;
+        fps) default_value="10" ;;
+        createPullRequests) default_value="false" ;;
+        allowAgentQuestions) default_value="true" ;;
+        noFastForward) default_value="false" ;;
+        autoCompactThreshold) default_value="" ;;
+        externalDiffTool) default_value="" ;;
+        permissions.manager.allow) default_value="[]" ;;
+        permissions.manager.deny) default_value="[]" ;;
+        permissions.worker.allow) default_value="[]" ;;
+        permissions.worker.deny) default_value="[]" ;;
+    esac
+
+    local value=""
+    local source="default"
+
+    # Check project config first (highest priority)
+    if [[ -f "$project_file" ]] && json_has "$project_file" "$key"; then
+        value=$(json_get "$project_file" "$key" "$default_value")
+        source="project"
+    # Then check user config
+    elif [[ -f "$user_file" ]] && json_has "$user_file" "$key"; then
+        value=$(json_get "$user_file" "$key" "$default_value")
+        source="user"
+    else
+        value="$default_value"
+        source="default"
+    fi
+
+    # Handle empty values
+    if [[ -z "$value" ]]; then
+        echo "(unset) ($source)"
+    else
+        echo "$value ($source)"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-load-prompts
 # =============================================================================
 
@@ -17105,6 +17186,14 @@ case "${1:-help}" in
     test-load-config)
         shift
         cmd_test_load_config "$@"
+        ;;
+    test-json-has)
+        shift
+        cmd_test_json_has "$@"
+        ;;
+    test-config-priority)
+        shift
+        cmd_test_config_priority "$@"
         ;;
     test-load-prompts)
         shift
