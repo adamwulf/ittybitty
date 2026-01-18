@@ -580,7 +580,7 @@ json_array_remove() {
             if getpath($jq_path_array) | type == \"array\" then
                 setpath($jq_path_array; getpath($jq_path_array) | map(select(. != $jq_value)))
             else . end
-        " > "$file" 2>/dev/null
+        " > "$file" 2>/dev/null || true
     else
         local existing_b64=""
         if [[ -f "$file" ]]; then
@@ -775,7 +775,7 @@ build_settings_json() {
             .hooks.Stop = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-status \($agent_id)" }] }] |
             .hooks.PermissionRequest = [{ matcher: "*", hooks: [{ type: "command", command: $hook_cmd }] }] |
             .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }]
-        ' 2>/dev/null
+        ' 2>/dev/null || true
     else
         local base_b64
         base_b64=$(echo -n "$base_settings" | base64)
@@ -950,7 +950,7 @@ json_add_question() {
             --arg timestamp "$timestamp" '
             .questions //= [] |
             .questions += [{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: "pending"}]
-        ' > "$file" 2>/dev/null
+        ' > "$file" 2>/dev/null || true
     else
         local existing_b64=""
         if [[ -f "$file" ]]; then
@@ -1016,7 +1016,7 @@ json_acknowledge_question() {
         existing=$(<"$file")
         echo "$existing" | jq --arg qid "$question_id" --arg ts "$timestamp" '
             .questions |= map(if .id == $qid then .status = "acknowledged" | .acknowledged_at = $ts else . end)
-        ' > "$file" 2>/dev/null
+        ' > "$file" 2>/dev/null || true
     else
         local existing_b64
         existing_b64=$(base64 < "$file")
@@ -1322,7 +1322,7 @@ json_add_main_path_hook() {
             .hooks //= {} |
             .hooks.PreToolUse //= [] |
             .hooks.PreToolUse += [{ matcher: "Bash", hooks: [{ type: "command", command: "ib hooks main-path" }] }]
-        ' 2>/dev/null
+        ' 2>/dev/null || true
     else
         local input_b64
         input_b64=$(echo -n "$json_content" | base64)
@@ -1372,7 +1372,7 @@ json_remove_main_path_hook() {
                 if .hooks.PreToolUse | length == 0 then del(.hooks.PreToolUse) else . end |
                 if .hooks | keys | length == 0 then del(.hooks) else . end
             else . end
-        ' 2>/dev/null
+        ' 2>/dev/null || true
     else
         local input_b64
         input_b64=$(echo -n "$json_content" | base64)
