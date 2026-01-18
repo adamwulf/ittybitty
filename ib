@@ -6748,6 +6748,100 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: pause
+# =============================================================================
+
+cmd_pause() {
+    local ID=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib pause <id>
+
+Pause a running agent session.
+
+This stops the agent's Claude process and tmux session while preserving:
+- Agent directory and configuration
+- meta.json (with session_id for resume)
+- Git worktree and branch
+- agent.log history
+
+Use 'ib resume <id>' to continue the agent's work later.
+
+Arguments:
+  id              Agent identifier
+
+Examples:
+  ib pause task-a1b2
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib pause <id>" >&2
+        exit 1
+    fi
+
+    # Require git repo
+    require_git_repo
+
+    # Resolve partial ID
+    ID=$(resolve_agent_id "$ID") || exit 1
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Check agent state - must NOT be stopped
+    local state=$(get_state "$ID")
+    if [[ "$state" == "stopped" ]]; then
+        echo "Error: agent '$ID' is already stopped" >&2
+        exit 1
+    fi
+
+    local TMUX_SESSION=$(session_name "$ID")
+
+    # Kill the Claude process gracefully
+    if kill_agent_process "$ID"; then
+        log_agent "$ID" "Terminated Claude process"
+    fi
+
+    # Kill the tmux session
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION"
+        log_agent "$ID" "Killed tmux session"
+    fi
+
+    # Log the pause action
+    log_agent "$ID" "Agent paused"
+
+    echo "Agent paused. Use 'ib resume $ID' to continue."
+}
+
+# =============================================================================
 # COMMAND: resume
 # =============================================================================
 
@@ -6934,6 +7028,13 @@ EOF
     # Log and print the resume
     log_agent "$ID" "Agent resumed"
     echo "Use 'ib look $ID' to view output"
+
+    # Send nudge prompt to get the agent to continue working
+    local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
+    tmux send-keys -t "$TMUX_SESSION" "$prompt"
+    sleep 0.1
+    tmux send-keys -t "$TMUX_SESSION" Enter
+    log_agent "$ID" "Sent resume nudge"
 }
 
 # =============================================================================
@@ -19367,6 +19468,10 @@ case "${1:-help}" in
     resume)
         shift
         cmd_resume "$@"
+        ;;
+    pause)
+        shift
+        cmd_pause "$@"
         ;;
     hooks)
         shift
