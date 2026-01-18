@@ -475,7 +475,7 @@ json_array_add() {
         if [[ "$is_literal" == "true" ]]; then
             jq_value="$actual_value"
         else
-            jq_value=$(echo -n "$actual_value" | jq -Rs '.')
+            jq_value=$(echo -n "$actual_value" | jq -Rs '.' 2>/dev/null || true)
         fi
         # Get existing array or create empty, add value if not present
         local result
@@ -575,7 +575,7 @@ json_array_remove() {
         local jq_path_array
         jq_path_array=$(echo "$keypath" | sed 's/\./","/g; s/^/["/; s/$/"]/')
         local jq_value
-        jq_value=$(echo -n "$value" | jq -Rs '.')
+        jq_value=$(echo -n "$value" | jq -Rs '.' 2>/dev/null || true)
         echo "$existing" | jq "
             if getpath($jq_path_array) | type == \"array\" then
                 setpath($jq_path_array; getpath($jq_path_array) | map(select(. != $jq_value)))
@@ -650,7 +650,7 @@ json_array_contains() {
         local jq_path
         jq_path=$(echo "$keypath" | sed 's/\././g; s/^/./')
         local jq_value
-        jq_value=$(echo -n "$value" | jq -Rs '.')
+        jq_value=$(echo -n "$value" | jq -Rs '.' 2>/dev/null || true)
         result=$(echo "$json_content" | jq -r "
             if ($jq_path // []) | index($jq_value) then \"true\" else \"false\" end
         " 2>/dev/null) || result="false"
