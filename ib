@@ -5651,12 +5651,17 @@ EOF
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
 
+    # Load config for max agents setting
+    load_config
+
     # Check if agents directory exists (should exist after ensure_ittybitty_dirs, but may be empty)
     if [[ ! -d "$AGENTS_DIR" ]]; then
         if [[ "$JSON_OUTPUT" == true ]]; then
             echo "[]"
         else
             echo "No agents found."
+            echo ""
+            echo "0 agents ($CONFIG_MAX_AGENTS max)"
         fi
         exit 0
     fi
@@ -5791,8 +5796,14 @@ EOF
 
     if [[ "$JSON_OUTPUT" == true ]]; then
         echo "[$(IFS=,; echo "${agents[*]}")]"
-    elif [[ "$found_any" != true ]]; then
-        echo "No agents found."
+    else
+        if [[ "$found_any" != true ]]; then
+            echo "No agents found."
+        fi
+        # Always show count summary for non-JSON output
+        local agent_count=$(count_agents)
+        echo ""
+        echo "$agent_count agents ($CONFIG_MAX_AGENTS max)"
     fi
 }
 
@@ -11548,9 +11559,14 @@ EOF
     # Ensure .ittybitty directory structure exists
     ensure_ittybitty_dirs
 
+    # Load config for max agents setting
+    load_config
+
     # Check if agents directory exists (should exist after ensure_ittybitty_dirs, but may be empty)
     if [[ ! -d "$AGENTS_DIR" ]]; then
         echo "No agents found."
+        echo ""
+        echo "0 agents ($CONFIG_MAX_AGENTS max)"
         exit 0
     fi
 
@@ -11563,6 +11579,8 @@ EOF
 
     if [[ ! -s "$tmpfile" ]]; then
         echo "No agents found."
+        echo ""
+        echo "0 agents ($CONFIG_MAX_AGENTS max)"
         exit 0
     fi
 
@@ -11577,6 +11595,11 @@ EOF
     for line in "${_FORMATTED_TREE_LINES[@]}"; do
         echo "$line"
     done
+
+    # Show count summary
+    local agent_count=$(count_agents)
+    echo ""
+    echo "$agent_count agents ($CONFIG_MAX_AGENTS max)"
 }
 
 # =============================================================================
