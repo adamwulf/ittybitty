@@ -1504,6 +1504,218 @@ try {
     fi
 }
 
+# Check if status injection hooks are installed in settings JSON
+# Checks for UserPromptSubmit and PostToolUse hooks with inject-status
+# Usage: json_has_status_hooks "settings_json_or_file"
+# Returns: 0 if both hooks found, 1 if not found
+json_has_status_hooks() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            def has_inject_status_hook(hook_array):
+                if hook_array then
+                    [hook_array[].hooks[]? | select(.command | contains("ib hooks inject-status"))] | length > 0
+                else false end;
+
+            (has_inject_status_hook(.hooks.UserPromptSubmit) and has_inject_status_hook(.hooks.PostToolUse)) |
+            if . then "true" else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+function hasInjectStatusHook(hookArray) {
+    if (!hookArray || !Array.isArray(hookArray)) return false;
+    for (var i = 0; i < hookArray.length; i++) {
+        var entry = hookArray[i];
+        if (entry.hooks && Array.isArray(entry.hooks)) {
+            for (var j = 0; j < entry.hooks.length; j++) {
+                var hook = entry.hooks[j];
+                if (hook.command && hook.command.indexOf('ib hooks inject-status') !== -1) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks) {
+        'false';
+    } else {
+        var hasUserPrompt = hasInjectStatusHook(hooks.UserPromptSubmit);
+        var hasPostTool = hasInjectStatusHook(hooks.PostToolUse);
+        (hasUserPrompt && hasPostTool) ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+    fi
+
+    [[ "$result" == "true" ]]
+}
+
+# Add status injection hooks to settings JSON
+# Adds UserPromptSubmit and PostToolUse hooks for inject-status
+# Usage: json_add_status_hooks "settings_json"
+# Outputs: modified JSON with status hooks added
+json_add_status_hooks() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.UserPromptSubmit //= [] |
+            .hooks.PostToolUse //= [] |
+            .hooks.UserPromptSubmit += [{ hooks: [{ type: "command", command: "ib hooks inject-status --full --visible" }] }] |
+            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible" }] }]
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.UserPromptSubmit) obj.hooks.UserPromptSubmit = [];
+    if (!obj.hooks.PostToolUse) obj.hooks.PostToolUse = [];
+
+    var userPromptHook = {
+        hooks: [{type: 'command', command: 'ib hooks inject-status --full --visible'}]
+    };
+    var postToolHook = {
+        matcher: 'Bash|Task',
+        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible'}]
+    };
+
+    obj.hooks.UserPromptSubmit.push(userPromptHook);
+    obj.hooks.PostToolUse.push(postToolHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Remove status injection hooks from settings JSON
+# Removes UserPromptSubmit and PostToolUse hooks with inject-status
+# Usage: json_remove_status_hooks "settings_json"
+# Outputs: modified JSON with status hooks removed
+json_remove_status_hooks() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            # Remove inject-status hooks from UserPromptSubmit
+            if .hooks.UserPromptSubmit then
+                .hooks.UserPromptSubmit |= map(select(.hooks | all(.command | contains("ib hooks inject-status") | not))) |
+                if .hooks.UserPromptSubmit | length == 0 then del(.hooks.UserPromptSubmit) else . end
+            else . end |
+            # Remove inject-status hooks from PostToolUse
+            if .hooks.PostToolUse then
+                .hooks.PostToolUse |= map(select(.hooks | all(.command | contains("ib hooks inject-status") | not))) |
+                if .hooks.PostToolUse | length == 0 then del(.hooks.PostToolUse) else . end
+            else . end |
+            # Clean up empty hooks object
+            if .hooks | keys | length == 0 then del(.hooks) else . end
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+function removeInjectStatusHooks(hookArray) {
+    if (!hookArray || !Array.isArray(hookArray)) return [];
+    return hookArray.filter(function(entry) {
+        if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+        // Keep entries where no hook has inject-status in command
+        return entry.hooks.every(function(hook) {
+            return !hook.command || hook.command.indexOf('ib hooks inject-status') === -1;
+        });
+    });
+}
+
+try {
+    var obj = JSON.parse(decoded);
+    if (obj.hooks) {
+        if (obj.hooks.UserPromptSubmit) {
+            obj.hooks.UserPromptSubmit = removeInjectStatusHooks(obj.hooks.UserPromptSubmit);
+            if (obj.hooks.UserPromptSubmit.length === 0) {
+                delete obj.hooks.UserPromptSubmit;
+            }
+        }
+        if (obj.hooks.PostToolUse) {
+            obj.hooks.PostToolUse = removeInjectStatusHooks(obj.hooks.PostToolUse);
+            if (obj.hooks.PostToolUse.length === 0) {
+                delete obj.hooks.PostToolUse;
+            }
+        }
+        // Clean up empty hooks object
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
 # Check if JSON object is empty (has no keys)
 # Usage: json_is_empty "json_string"
 # Returns: 0 if empty, 1 if has keys
@@ -7465,9 +7677,14 @@ cmd_hooks() {
 Usage: ib hooks <subcommand> [options]
 
 Subcommands:
-  status       Check if main repo hooks are installed
-  install      Install PreToolUse hook to main repo
-  uninstall    Remove hook from main repo
+  status       Check if main repo hooks are installed (returns: installed, partial, not-installed)
+  install      Install hooks to main repo (path isolation + status injection)
+  uninstall    Remove all ib hooks from main repo
+
+The 'install' command adds:
+  - PreToolUse hook: blocks cd into agent worktrees
+  - UserPromptSubmit hook: injects full status at conversation start
+  - PostToolUse hook: injects status updates after Bash/Task tools
 
 Status injection hooks:
   inject-status       Output agent status for Claude Code hook injection
@@ -10567,9 +10784,23 @@ cmd_hooks_status() {
         exit 0
     fi
 
-    # Check if our hook exists in the file using json_has_main_path_hook helper
+    # Check if both hook types are installed
+    local has_main_path=false
+    local has_status=false
+
     if json_has_main_path_hook "$SETTINGS_FILE"; then
+        has_main_path=true
+    fi
+
+    if json_has_status_hooks "$SETTINGS_FILE"; then
+        has_status=true
+    fi
+
+    # Return installed only if both are present
+    if [[ "$has_main_path" == "true" && "$has_status" == "true" ]]; then
         echo "installed"
+    elif [[ "$has_main_path" == "true" || "$has_status" == "true" ]]; then
+        echo "partial"
     else
         echo "not-installed"
     fi
@@ -10579,7 +10810,7 @@ cmd_hooks_status() {
 # COMMAND: hooks install
 # =============================================================================
 
-# Install PreToolUse hook to main repo
+# Install hooks to main repo (PreToolUse for path isolation, UserPromptSubmit/PostToolUse for status)
 cmd_hooks_install() {
     local SETTINGS_FILE=".claude/settings.local.json"
     local CLAUDE_DIR=".claude"
@@ -10595,25 +10826,45 @@ cmd_hooks_install() {
         settings=$(<"$SETTINGS_FILE")
     fi
 
-    # Check if hook already exists using json_has_main_path_hook helper
-    if json_has_main_path_hook "$settings"; then
-        echo "Hook already installed"
+    local installed_main_path=false
+    local installed_status=false
+
+    # Add main-path hook if not present
+    if ! json_has_main_path_hook "$settings"; then
+        settings=$(json_add_main_path_hook "$settings")
+        installed_main_path=true
+    fi
+
+    # Add status hooks if not present
+    if ! json_has_status_hooks "$settings"; then
+        settings=$(json_add_status_hooks "$settings")
+        installed_status=true
+    fi
+
+    # Check if anything was installed
+    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" ]]; then
+        echo "Hooks already installed"
         exit 0
     fi
 
-    # Add the hook to settings using json_add_main_path_hook helper
-    settings=$(json_add_main_path_hook "$settings")
-
     # Write settings
     echo "$settings" > "$SETTINGS_FILE"
-    echo "Hook installed to $SETTINGS_FILE"
+
+    # Report what was installed
+    if [[ "$installed_main_path" == "true" && "$installed_status" == "true" ]]; then
+        echo "Hooks installed to $SETTINGS_FILE"
+    elif [[ "$installed_main_path" == "true" ]]; then
+        echo "Main-path hook installed to $SETTINGS_FILE"
+    else
+        echo "Status hooks installed to $SETTINGS_FILE"
+    fi
 }
 
 # =============================================================================
 # COMMAND: hooks uninstall
 # =============================================================================
 
-# Remove hook from main repo
+# Remove hooks from main repo (both main-path and status hooks)
 cmd_hooks_uninstall() {
     local SETTINGS_FILE=".claude/settings.local.json"
 
@@ -10625,16 +10876,17 @@ cmd_hooks_uninstall() {
     local settings
     settings=$(<"$SETTINGS_FILE")
 
-    # Remove our hook using json_remove_main_path_hook helper
+    # Remove both hook types
     settings=$(json_remove_main_path_hook "$settings")
+    settings=$(json_remove_status_hooks "$settings")
 
     # Write settings (or delete file if empty)
     if json_is_empty "$settings"; then
         rm -f "$SETTINGS_FILE"
-        echo "Hook uninstalled, removed empty settings file"
+        echo "Hooks uninstalled, removed empty settings file"
     else
         echo "$settings" > "$SETTINGS_FILE"
-        echo "Hook uninstalled from $SETTINGS_FILE"
+        echo "Hooks uninstalled from $SETTINGS_FILE"
     fi
 }
 
@@ -12048,7 +12300,7 @@ EOF
 
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
-    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (PreToolUse hook)
+    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection)
     local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
@@ -14041,7 +14293,7 @@ EOF
         ((row++))
 
         # Description for safety hooks
-        dialog_draw_line "$row" "  Prevent cd into agent worktrees"
+        dialog_draw_line "$row" "  Block cd into worktrees + inject agent status"
         ((row++))
 
         # Blank line
