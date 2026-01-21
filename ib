@@ -2432,7 +2432,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD, CONFIG_HOOKS_INJECT_STATUS, CONFIG_HOOKS_STATUS_VISIBLE
 # Helper to get config value with user -> project precedence
 # Usage: _config_get "key.path" "default" ["user_file"] ["project_file"]
 # Returns value from project if key exists there, else user if key exists there, else default
@@ -2472,6 +2472,8 @@ load_config() {
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_NO_FF="false"
+    CONFIG_HOOKS_INJECT_STATUS="true"
+    CONFIG_HOOKS_STATUS_VISIBLE="true"
 
     local user_file="$HOME/.ittybitty.json"
     local project_file=".ittybitty.json"
@@ -2515,6 +2517,12 @@ load_config() {
 
     # Read noFastForward setting (defaults to false, allowing fast-forward merges)
     CONFIG_NO_FF=$(_config_get "noFastForward" "false" "$user_file" "$project_file")
+
+    # Read hooks.injectStatus setting (defaults to true, enables status injection via hooks)
+    CONFIG_HOOKS_INJECT_STATUS=$(_config_get "hooks.injectStatus" "true" "$user_file" "$project_file")
+
+    # Read hooks.statusVisible setting (defaults to true, shows status in systemMessage)
+    CONFIG_HOOKS_STATUS_VISIBLE=$(_config_get "hooks.statusVisible" "true" "$user_file" "$project_file")
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -10943,13 +10951,20 @@ Modes:
   if-changed - Compares current status hash against cache, outputs only if different
   brief      - Outputs short summary like "2 running, 1 waiting"
 
+Configuration (.ittybitty.json):
+  hooks.injectStatus     Enable/disable status injection (default: true)
+  hooks.statusVisible    Show systemMessage to user (default: true)
+
+  If hooks.injectStatus is false, outputs nothing.
+  If hooks.statusVisible is false, --visible flag is ignored.
+
 Output format (JSON):
   {
     "hookSpecificOutput": {
       "hookEventName": "<event>",
       "additionalContext": "<ittybitty-status>...</ittybitty-status>"
     },
-    "systemMessage": "[ib] ..."  // Only if --visible
+    "systemMessage": "[ib] ..."  // Only if --visible and hooks.statusVisible=true
   }
 
 If no agents exist, outputs nothing (empty stdout, exit 0).
@@ -10967,6 +10982,15 @@ EOF
                 ;;
         esac
     done
+
+    # Load config to check hook settings
+    load_config
+
+    # Check if status injection is disabled via config
+    if [[ "$CONFIG_HOOKS_INJECT_STATUS" == "false" ]]; then
+        # Status injection disabled - output nothing
+        exit 0
+    fi
 
     # Check if agents directory exists and has agents
     if [[ ! -d "$AGENTS_DIR" ]]; then
@@ -11077,8 +11101,11 @@ EOF
     esac
 
     # Output JSON using Python for proper escaping
+    # Visible requires both --visible flag AND config hooks.statusVisible=true
     local visible_flag="false"
-    [[ "$VISIBLE" == "true" ]] && visible_flag="true"
+    if [[ "$VISIBLE" == "true" && "$CONFIG_HOOKS_STATUS_VISIBLE" != "false" ]]; then
+        visible_flag="true"
+    fi
 
     python3 -c '
 import sys
@@ -19511,6 +19538,8 @@ cmd_config() {
                 "noFastForward|false|Always create merge commits"
                 "autoCompactThreshold||Context % to trigger /compact (1-100)"
                 "externalDiffTool||External diff tool command"
+                "hooks.injectStatus|true|Enable status injection via hooks"
+                "hooks.statusVisible|true|Show agent status in user messages"
                 "permissions.manager.allow|[]|Tools allowed for manager agents"
                 "permissions.manager.deny|[]|Tools denied for manager agents"
                 "permissions.worker.allow|[]|Tools allowed for worker agents"
