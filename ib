@@ -7448,6 +7448,9 @@ cmd_hooks() {
         main-path)
             cmd_hooks_main_path "$@"
             ;;
+        inject-status)
+            cmd_hooks_inject_status "$@"
+            ;;
         status)
             cmd_hooks_status "$@"
             ;;
@@ -7465,6 +7468,9 @@ Subcommands:
   status       Check if main repo hooks are installed
   install      Install PreToolUse hook to main repo
   uninstall    Remove hook from main repo
+
+Status injection hooks:
+  inject-status       Output agent status for Claude Code hook injection
 
 Agent hooks (internal, used by spawned agents):
   agent-status <id>   Stop hook - nudges agent, notifies managers
@@ -10630,6 +10636,219 @@ cmd_hooks_uninstall() {
         echo "$settings" > "$SETTINGS_FILE"
         echo "Hook uninstalled from $SETTINGS_FILE"
     fi
+}
+
+# =============================================================================
+# COMMAND: hooks inject-status
+# =============================================================================
+
+# Output agent status for Claude Code hook injection
+# Used by UserPromptSubmit and PostToolUse hooks to inject status into context
+cmd_hooks_inject_status() {
+    local MODE="full"           # full, if-changed, brief
+    local VISIBLE=false         # Whether to include systemMessage
+    local HOOK_EVENT="UserPromptSubmit"  # Hook event name for JSON output
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --full)
+                MODE="full"
+                shift
+                ;;
+            --if-changed)
+                MODE="if-changed"
+                shift
+                ;;
+            --brief)
+                MODE="brief"
+                shift
+                ;;
+            --visible)
+                VISIBLE=true
+                shift
+                ;;
+            --event)
+                HOOK_EVENT="$2"
+                shift 2
+                ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib hooks inject-status [options]
+
+Output agent status for Claude Code hook injection.
+
+Options:
+  --full         Output full agent tree (default)
+  --if-changed   Only output if status changed since last call
+  --brief        Output one-liner summary only
+  --visible      Include systemMessage for user visibility
+  --event NAME   Hook event name (default: UserPromptSubmit)
+  -h, --help     Show this help
+
+Modes:
+  full       - Outputs complete agent tree with status/age/prompt
+  if-changed - Compares current status hash against cache, outputs only if different
+  brief      - Outputs short summary like "2 running, 1 waiting"
+
+Output format (JSON):
+  {
+    "hookSpecificOutput": {
+      "hookEventName": "<event>",
+      "additionalContext": "<ittybitty-status>...</ittybitty-status>"
+    },
+    "systemMessage": "[ib] ..."  // Only if --visible
+  }
+
+If no agents exist, outputs nothing (empty stdout, exit 0).
+
+Examples:
+  ib hooks inject-status --full --visible --event UserPromptSubmit
+  ib hooks inject-status --if-changed --event PostToolUse
+  ib hooks inject-status --brief
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Error: Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Check if agents directory exists and has agents
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        # No agents directory - output nothing
+        exit 0
+    fi
+
+    # Count agents
+    local agent_count=0
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] && agent_count=$((agent_count + 1))
+    done
+
+    if [[ $agent_count -eq 0 ]]; then
+        # No agents - output nothing
+        exit 0
+    fi
+
+    # Generate status content
+    local status_content=""
+    local brief_summary=""
+
+    # Generate brief summary (used for --brief mode and systemMessage)
+    # Count agents by state
+    local running=0 waiting=0 complete=0 stopped=0 creating=0 other=0
+    local pending_questions=0
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] || continue
+        local id="${agent_dir%/}"; id="${id##*/}"
+        local state=$(get_state "$id")
+        case "$state" in
+            running|compacting) running=$((running + 1)) ;;
+            waiting) waiting=$((waiting + 1)) ;;
+            complete) complete=$((complete + 1)) ;;
+            stopped) stopped=$((stopped + 1)) ;;
+            creating) creating=$((creating + 1)) ;;
+            *) other=$((other + 1)) ;;
+        esac
+    done
+
+    # Count pending questions
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    if [[ -f "$questions_file" ]]; then
+        pending_questions=$(json_count_questions "$questions_file" "pending")
+        [[ -z "$pending_questions" ]] && pending_questions=0
+    fi
+
+    # Build brief summary
+    local parts=()
+    [[ $running -gt 0 ]] && parts+=("$running running")
+    [[ $waiting -gt 0 ]] && parts+=("$waiting waiting")
+    [[ $complete -gt 0 ]] && parts+=("$complete complete")
+    [[ $stopped -gt 0 ]] && parts+=("$stopped stopped")
+    [[ $creating -gt 0 ]] && parts+=("$creating creating")
+
+    # Join parts with ", "
+    local IFS=", "
+    brief_summary="${parts[*]}"
+
+    # Add question count if any
+    if [[ $pending_questions -gt 0 ]]; then
+        if [[ $pending_questions -eq 1 ]]; then
+            brief_summary="$brief_summary (1 question pending)"
+        else
+            brief_summary="$brief_summary ($pending_questions questions pending)"
+        fi
+    fi
+
+    # Generate content based on mode
+    case "$MODE" in
+        full)
+            status_content=$(generate_status_block)
+            local questions_content=$(generate_questions_block)
+            if [[ -n "$questions_content" ]]; then
+                status_content="$status_content"$'\n'"$questions_content"
+            fi
+            ;;
+        brief)
+            status_content="Agents: $brief_summary"
+            ;;
+        if-changed)
+            # Generate full content for hash comparison
+            status_content=$(generate_status_block)
+            local questions_content=$(generate_questions_block)
+            if [[ -n "$questions_content" ]]; then
+                status_content="$status_content"$'\n'"$questions_content"
+            fi
+
+            # Compare hash with cached version
+            local cache_file="/tmp/ib-status-hash-${REPO_ID}"
+            local current_hash=$(echo -n "$status_content" | openssl dgst -sha256 | cut -d' ' -f2)
+
+            if [[ -f "$cache_file" ]]; then
+                local cached_hash=$(cat "$cache_file")
+                if [[ "$current_hash" == "$cached_hash" ]]; then
+                    # No change - output nothing
+                    exit 0
+                fi
+            fi
+
+            # Update cache
+            echo "$current_hash" > "$cache_file"
+
+            # For if-changed mode, output brief summary
+            status_content="Agents: $brief_summary"
+            ;;
+    esac
+
+    # Output JSON using Python for proper escaping
+    local visible_flag="false"
+    [[ "$VISIBLE" == "true" ]] && visible_flag="true"
+
+    python3 -c '
+import sys
+import json
+
+hook_event = sys.argv[1]
+context = sys.argv[2]
+visible = sys.argv[3] == "true"
+brief = sys.argv[4] if len(sys.argv) > 4 else ""
+
+output = {
+    "hookSpecificOutput": {
+        "hookEventName": hook_event,
+        "additionalContext": f"<ittybitty-status>\n{context}\n</ittybitty-status>"
+    }
+}
+
+if visible and brief:
+    output["systemMessage"] = f"[ib] Agents: {brief}"
+
+print(json.dumps(output, indent=2))
+' "$HOOK_EVENT" "$status_content" "$visible_flag" "$brief_summary"
 }
 
 # =============================================================================
