@@ -11,3 +11,7 @@ tests/fixtures/test-*.sh
 # Orphaned fixture files (wrong naming convention, superseded by rate_limited-*.txt)
 tests/fixtures/ratelimited-*.txt
 tests/fixtures/unknown-empty-*.txt
+
+# Accidental duplicates (correct files are in inject-status-filter/)
+tests/fixtures/filter-questions/inject-*.json
+tests/fixtures/filter-questions/skip-*.json
