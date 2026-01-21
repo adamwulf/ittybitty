@@ -1598,7 +1598,7 @@ json_add_status_hooks() {
             .hooks.UserPromptSubmit //= [] |
             .hooks.PostToolUse //= [] |
             .hooks.UserPromptSubmit += [{ hooks: [{ type: "command", command: "ib hooks inject-status --full --visible" }] }] |
-            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible --event PostToolUse" }] }]
+            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible" }] }]
         ' 2>/dev/null || true
     else
         local input_b64
@@ -1623,7 +1623,7 @@ try {
     };
     var postToolHook = {
         matcher: 'Bash|Task',
-        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible --event PostToolUse'}]
+        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible'}]
     };
 
     obj.hooks.UserPromptSubmit.push(userPromptHook);
@@ -10986,7 +10986,18 @@ cmd_hooks_uninstall() {
 cmd_hooks_inject_status() {
     local MODE="full"           # full, if-changed, brief
     local VISIBLE=false         # Whether to include systemMessage
-    local HOOK_EVENT="UserPromptSubmit"  # Hook event name for JSON output
+
+    # Read stdin JSON from Claude Code hook and extract hook_event_name
+    local stdin_json=""
+    local HOOK_EVENT="UserPromptSubmit"  # Default fallback
+    if [[ ! -t 0 ]]; then
+        stdin_json=$(cat)
+        if [[ -n "$stdin_json" ]]; then
+            local extracted_event
+            extracted_event=$(echo "$stdin_json" | json_get "-" "hook_event_name" "")
+            [[ -n "$extracted_event" ]] && HOOK_EVENT="$extracted_event"
+        fi
+    fi
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -11007,10 +11018,6 @@ cmd_hooks_inject_status() {
                 VISIBLE=true
                 shift
                 ;;
-            --event)
-                HOOK_EVENT="$2"
-                shift 2
-                ;;
             -h|--help)
                 cat <<EOF
 Usage: ib hooks inject-status [options]
@@ -11022,8 +11029,9 @@ Options:
   --if-changed   Only output if status changed since last call
   --brief        Output one-liner summary only
   --visible      Include systemMessage for user visibility
-  --event NAME   Hook event name (default: UserPromptSubmit)
   -h, --help     Show this help
+
+The hook_event_name is automatically read from stdin JSON provided by Claude Code.
 
 Modes:
   full       - Outputs complete agent tree with status/age/prompt
@@ -11049,8 +11057,8 @@ Output format (JSON):
 If no agents exist, outputs nothing (empty stdout, exit 0).
 
 Examples:
-  ib hooks inject-status --full --visible --event UserPromptSubmit
-  ib hooks inject-status --if-changed --event PostToolUse
+  ib hooks inject-status --full --visible
+  ib hooks inject-status --if-changed
   ib hooks inject-status --brief
 EOF
                 exit 0
