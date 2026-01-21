@@ -75,12 +75,12 @@ The setup dialog lets you configure:
 
 | Option | Purpose |
 |--------|---------|
-| **Safety hooks** | Prevents your main Claude from `cd`-ing into agent worktrees. Stop Claude from getting confused about its whereabouts. |
+| **Safety hooks** | Prevents `cd` into agent worktrees + injects agent status into your conversations. Keeps Claude informed and prevents confusion. |
 | **ib instructions** | Adds `<ittybitty>` block to CLAUDE.md so Claude knows how to use `ib` |
 | **.gitignore** | Adds `.ittybitty/` to your .gitignore |
 | **Config file** | Creates `.ittybitty.json` for `ib config` settings |
 
-Toggle options with Space or Enter. The first four options should be enabled for full functionality.
+Toggle options with Space or Enter. All options should be enabled for full functionality.
 
 ## Your First Agent
 
@@ -193,15 +193,24 @@ Once you've run the setup dialog (`ib watch` → `h`), Claude will know how to s
 
 Claude will tell you to run `ib watch` in another terminal to monitor progress. Agents work in the background while your conversation continues.
 
-Agents can ask questions that appear in your Claude conversation (via the STATUS.md import). When you see a question:
+### Real-time Status Updates
+
+When safety hooks are enabled, Claude receives real-time agent status updates via hooks:
+
+- **At conversation start**: Full agent tree with status, age, and prompt
+- **After Bash/Task tools**: Updated status if agents have changed state
+
+This means Claude always knows the current state of your agents without you having to ask. A brief status summary appears in the conversation when agents change state.
+
+### Agent Questions
+
+Agents can ask questions that appear in your Claude conversation. When you see a question:
 
 ```bash
 ib questions               # List pending questions
 ib acknowledge <q-id>      # Mark question as handled
 ib send <agent-id> "answer"  # Send your response
 ```
-
-This is done by auto-importing the running agent's status and messages into the `CLAUDE.md` with an `@./ittybitty/STATUS.md` import. This does let Claude see status and messages, but it also _only_ updates at the start of a new conversation.
 
 You can always ask Claude to check on agents, and it will `ib list` to see their status, and can check on them and message them if needed.
 
@@ -246,6 +255,8 @@ ib config --global list                     # Show user config only
 | `noFastForward` | false | Always create merge commits with `--no-ff` |
 | `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
+| `hooks.injectStatus` | true | Enable status injection via hooks |
+| `hooks.statusVisible` | true | Show status updates in user messages |
 | `permissions.manager.allow` | [] | Additional tools to allow for manager agents |
 | `permissions.manager.deny` | [] | Tools to deny for manager agents |
 | `permissions.worker.allow` | [] | Additional tools to allow for worker agents |

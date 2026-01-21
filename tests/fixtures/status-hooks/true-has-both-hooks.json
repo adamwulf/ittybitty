@@ -1,0 +1,28 @@
+{
+  "operation": "has",
+  "input": {
+    "hooks": {
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "ib hooks inject-status --full --visible"
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Bash|Task",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "ib hooks inject-status --if-changed --visible"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

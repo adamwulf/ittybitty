@@ -400,6 +400,26 @@ try {
 }
 
 # Escape a string for safe JSON embedding
+# Escape a string for use in JSON (pure bash, no external dependencies)
+# Handles: backslashes, quotes, newlines, tabs, carriage returns
+# Usage: escaped=$(json_escape_string "string with \"quotes\" and newlines")
+# Note: This returns the escaped content WITHOUT surrounding quotes
+json_escape_string() {
+    local str="$1"
+    # Escape backslashes first (order matters!)
+    str="${str//\\/\\\\}"
+    # Escape quotes
+    str="${str//\"/\\\"}"
+    # Escape control characters using printf for literal characters
+    local newline=$'\n'
+    local tab=$'\t'
+    local cr=$'\r'
+    str="${str//$newline/\\n}"
+    str="${str//$tab/\\t}"
+    str="${str//$cr/\\r}"
+    printf '%s' "$str"
+}
+
 # Usage: escaped=$(json_escape "string with \"quotes\" and special chars")
 json_escape() {
     local str="$1"
@@ -1504,6 +1524,218 @@ try {
     fi
 }
 
+# Check if status injection hooks are installed in settings JSON
+# Checks for UserPromptSubmit and PostToolUse hooks with inject-status
+# Usage: json_has_status_hooks "settings_json_or_file"
+# Returns: 0 if both hooks found, 1 if not found
+json_has_status_hooks() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            def has_inject_status_hook(hook_array):
+                if hook_array then
+                    [hook_array[].hooks[]? | select(.command | contains("ib hooks inject-status"))] | length > 0
+                else false end;
+
+            (has_inject_status_hook(.hooks.UserPromptSubmit) and has_inject_status_hook(.hooks.PostToolUse)) |
+            if . then "true" else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+function hasInjectStatusHook(hookArray) {
+    if (!hookArray || !Array.isArray(hookArray)) return false;
+    for (var i = 0; i < hookArray.length; i++) {
+        var entry = hookArray[i];
+        if (entry.hooks && Array.isArray(entry.hooks)) {
+            for (var j = 0; j < entry.hooks.length; j++) {
+                var hook = entry.hooks[j];
+                if (hook.command && hook.command.indexOf('ib hooks inject-status') !== -1) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks) {
+        'false';
+    } else {
+        var hasUserPrompt = hasInjectStatusHook(hooks.UserPromptSubmit);
+        var hasPostTool = hasInjectStatusHook(hooks.PostToolUse);
+        (hasUserPrompt && hasPostTool) ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+    fi
+
+    [[ "$result" == "true" ]]
+}
+
+# Add status injection hooks to settings JSON
+# Adds UserPromptSubmit and PostToolUse hooks for inject-status
+# Usage: json_add_status_hooks "settings_json"
+# Outputs: modified JSON with status hooks added
+json_add_status_hooks() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.UserPromptSubmit //= [] |
+            .hooks.PostToolUse //= [] |
+            .hooks.UserPromptSubmit += [{ hooks: [{ type: "command", command: "ib hooks inject-status --full --visible" }] }] |
+            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible" }] }]
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.UserPromptSubmit) obj.hooks.UserPromptSubmit = [];
+    if (!obj.hooks.PostToolUse) obj.hooks.PostToolUse = [];
+
+    var userPromptHook = {
+        hooks: [{type: 'command', command: 'ib hooks inject-status --full --visible'}]
+    };
+    var postToolHook = {
+        matcher: 'Bash|Task',
+        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible'}]
+    };
+
+    obj.hooks.UserPromptSubmit.push(userPromptHook);
+    obj.hooks.PostToolUse.push(postToolHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Remove status injection hooks from settings JSON
+# Removes UserPromptSubmit and PostToolUse hooks with inject-status
+# Usage: json_remove_status_hooks "settings_json"
+# Outputs: modified JSON with status hooks removed
+json_remove_status_hooks() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            # Remove inject-status hooks from UserPromptSubmit
+            if .hooks.UserPromptSubmit then
+                .hooks.UserPromptSubmit |= map(select(.hooks | all(.command | contains("ib hooks inject-status") | not))) |
+                if .hooks.UserPromptSubmit | length == 0 then del(.hooks.UserPromptSubmit) else . end
+            else . end |
+            # Remove inject-status hooks from PostToolUse
+            if .hooks.PostToolUse then
+                .hooks.PostToolUse |= map(select(.hooks | all(.command | contains("ib hooks inject-status") | not))) |
+                if .hooks.PostToolUse | length == 0 then del(.hooks.PostToolUse) else . end
+            else . end |
+            # Clean up empty hooks object
+            if .hooks | keys | length == 0 then del(.hooks) else . end
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+function removeInjectStatusHooks(hookArray) {
+    if (!hookArray || !Array.isArray(hookArray)) return [];
+    return hookArray.filter(function(entry) {
+        if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+        // Keep entries where no hook has inject-status in command
+        return entry.hooks.every(function(hook) {
+            return !hook.command || hook.command.indexOf('ib hooks inject-status') === -1;
+        });
+    });
+}
+
+try {
+    var obj = JSON.parse(decoded);
+    if (obj.hooks) {
+        if (obj.hooks.UserPromptSubmit) {
+            obj.hooks.UserPromptSubmit = removeInjectStatusHooks(obj.hooks.UserPromptSubmit);
+            if (obj.hooks.UserPromptSubmit.length === 0) {
+                delete obj.hooks.UserPromptSubmit;
+            }
+        }
+        if (obj.hooks.PostToolUse) {
+            obj.hooks.PostToolUse = removeInjectStatusHooks(obj.hooks.PostToolUse);
+            if (obj.hooks.PostToolUse.length === 0) {
+                delete obj.hooks.PostToolUse;
+            }
+        }
+        // Clean up empty hooks object
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
 # Check if JSON object is empty (has no keys)
 # Usage: json_is_empty "json_string"
 # Returns: 0 if empty, 1 if has keys
@@ -2220,7 +2452,7 @@ scan_and_kill_orphans() {
 }
 
 # Load config from .ittybitty.json if it exists
-# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD
+# Sets global variables: CONFIG_MANAGER_ALLOW, CONFIG_MANAGER_DENY, CONFIG_WORKER_ALLOW, CONFIG_WORKER_DENY, CONFIG_CREATE_PRS, CONFIG_MAX_AGENTS, CONFIG_MODEL, CONFIG_FPS, CONFIG_ALLOW_AGENT_QUESTIONS, CONFIG_EXTERNAL_DIFF_TOOL, CONFIG_AUTO_COMPACT_THRESHOLD, CONFIG_HOOKS_INJECT_STATUS, CONFIG_HOOKS_STATUS_VISIBLE
 # Helper to get config value with user -> project precedence
 # Usage: _config_get "key.path" "default" ["user_file"] ["project_file"]
 # Returns value from project if key exists there, else user if key exists there, else default
@@ -2260,6 +2492,8 @@ load_config() {
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_NO_FF="false"
+    CONFIG_HOOKS_INJECT_STATUS="true"
+    CONFIG_HOOKS_STATUS_VISIBLE="true"
 
     local user_file="$HOME/.ittybitty.json"
     local project_file=".ittybitty.json"
@@ -2303,6 +2537,12 @@ load_config() {
 
     # Read noFastForward setting (defaults to false, allowing fast-forward merges)
     CONFIG_NO_FF=$(_config_get "noFastForward" "false" "$user_file" "$project_file")
+
+    # Read hooks.injectStatus setting (defaults to true, enables status injection via hooks)
+    CONFIG_HOOKS_INJECT_STATUS=$(_config_get "hooks.injectStatus" "true" "$user_file" "$project_file")
+
+    # Read hooks.statusVisible setting (defaults to true, shows status in systemMessage)
+    CONFIG_HOOKS_STATUS_VISIBLE=$(_config_get "hooks.statusVisible" "true" "$user_file" "$project_file")
 }
 
 # Load custom prompts from .ittybitty/prompts/ directory
@@ -3773,7 +4013,7 @@ bypass_rate_limit() {
 }
 
 # =============================================================================
-# CLAUDE.md STATUS HELPERS
+# STATUS BLOCK HELPERS
 # =============================================================================
 
 # Generate status block content showing agent tree with status/age/prompt
@@ -4019,7 +4259,7 @@ generate_status_block() {
     rm -f "$tmpfile"
 }
 
-# Generate pending questions block for STATUS.md
+# Generate pending questions block for status output
 # Returns: formatted questions block or empty if no pending questions
 generate_questions_block() {
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
@@ -4045,24 +4285,6 @@ generate_questions_block() {
 
     # Format each pending question
     json_filter_questions "$questions_file" "pending"
-}
-
-# Update .ittybitty/STATUS.md with current agent status
-# This is called from lifecycle events to keep the status current
-# CLAUDE.md references this file via @.ittybitty/STATUS.md
-update_claude_status() {
-    local status_file="$ROOT_REPO_PATH/.ittybitty/STATUS.md"
-
-    # Ensure .ittybitty directory exists
-    mkdir -p "$ROOT_REPO_PATH/.ittybitty"
-
-    # Generate status content with wrapper tags
-    {
-        echo "<ittybitty-status>"
-        generate_status_block
-        generate_questions_block
-        echo "</ittybitty-status>"
-    } > "$status_file"
 }
 
 # =============================================================================
@@ -5132,26 +5354,6 @@ EOF
         exit 1
     fi
 
-    # Warn if root-level manager and CLAUDE.md doesn't have STATUS.md integration
-    # This warning helps users understand that 'ib ask' won't work without the integration
-    if [[ -z "$MANAGER" && "$WORKER_MODE" != true ]]; then
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            # Check for either <ittybitty-status> block or @.ittybitty/STATUS.md import
-            if ! grep -q '<ittybitty-status>' "$claude_md" && ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-                echo "Warning: CLAUDE.md does not import .ittybitty/STATUS.md" >&2
-                echo "The 'ib ask' feature requires this to show agent questions to the primary Claude." >&2
-                echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
-                echo "" >&2
-            fi
-        else
-            echo "Warning: No CLAUDE.md found in repository root" >&2
-            echo "The 'ib ask' feature requires CLAUDE.md to import .ittybitty/STATUS.md" >&2
-            echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
-            echo "" >&2
-        fi
-    fi
-
     # Generate agent ID
     local ID
     if [[ -n "$NAME" ]]; then
@@ -5656,12 +5858,7 @@ EOF
     if [[ "$YOLO_MODE" != true ]]; then
         (
             auto_accept_workspace_trust "$TMUX_SESSION"
-            # Update status after initialization completes
-            update_claude_status
         ) &
-    else
-        # For yolo mode, just update status immediately
-        update_claude_status
     fi
 
     # Auto-spawn watchdog if agent has a manager
@@ -6513,9 +6710,6 @@ EOF
     teardown_agent "$ID" "" "Agent killed"
     echo "Closed agent: $ID"
 
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
-
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -7333,9 +7527,6 @@ EOF
 
     echo "Closed agent: $ID"
 
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
-
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -7497,6 +7688,9 @@ cmd_hooks() {
         main-path)
             cmd_hooks_main_path "$@"
             ;;
+        inject-status)
+            cmd_hooks_inject_status "$@"
+            ;;
         status)
             cmd_hooks_status "$@"
             ;;
@@ -7511,9 +7705,17 @@ cmd_hooks() {
 Usage: ib hooks <subcommand> [options]
 
 Subcommands:
-  status       Check if main repo hooks are installed
-  install      Install PreToolUse hook to main repo
-  uninstall    Remove hook from main repo
+  status       Check if main repo hooks are installed (returns: installed, partial, not-installed)
+  install      Install hooks to main repo (path isolation + status injection)
+  uninstall    Remove all ib hooks from main repo
+
+The 'install' command adds:
+  - PreToolUse hook: blocks cd into agent worktrees
+  - UserPromptSubmit hook: injects full status at conversation start
+  - PostToolUse hook: injects status updates after Bash/Task tools
+
+Status injection hooks:
+  inject-status       Output agent status for Claude Code hook injection
 
 Agent hooks (internal, used by spawned agents):
   agent-status <id>   Stop hook - nudges agent, notifies managers
@@ -7570,7 +7772,6 @@ cmd_hooks_agent_status() {
         # and trigger another Stop hook, creating an infinite loop.
         # The watchdog handles rate_limited agents (bypass_rate_limit).
         log_agent "$ID" "[hook] State is rate_limited, skipping nudge to avoid loop" --quiet
-        update_claude_status
         echo "$state"
         return
     fi
@@ -7598,7 +7799,6 @@ cmd_hooks_agent_status() {
                 sleep 0.1
                 tmux send-keys -t "$TMUX_SESSION" Enter
                 # Don't proceed with other checks - let agent commit first
-                update_claude_status
                 echo "$state"
                 return
             fi
@@ -7638,9 +7838,6 @@ cmd_hooks_agent_status() {
         # Stop hook only fires when Claude is actually idle)
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
-
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
 
     # Always print the state for debugging
     echo "$state"
@@ -8383,6 +8580,85 @@ cmd_test_validate_meta() {
 
     echo "valid"
     exit 0
+}
+
+# =============================================================================
+# COMMAND: test-status-hooks
+# =============================================================================
+
+# Test status hooks JSON helper functions
+# Input: JSON file with operation and input
+# Operations: has, add, remove
+# Output: result of the operation
+cmd_test_status_hooks() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        cat <<EOF
+Usage: ib test-status-hooks <fixture.json>
+
+Test the status hooks JSON helper functions.
+
+Fixture JSON format:
+  {
+    "operation": "has|add|remove",
+    "input": { ... settings JSON ... }
+  }
+
+Operations:
+  has    - Test json_has_status_hooks, outputs "true" or "false"
+  add    - Test json_add_status_hooks, outputs "valid" if result has hooks
+  remove - Test json_remove_status_hooks, outputs "valid" if result has no hooks
+
+Examples:
+  ib test-status-hooks tests/fixtures/status-hooks/true-has-both-hooks.json
+  ib test-status-hooks tests/fixtures/status-hooks/false-has-empty.json
+EOF
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    local operation
+    local input_json
+    operation=$(json_get "$fixture_file" "operation" "")
+    input_json=$(json_get "$fixture_file" "input" "{}")
+
+    case "$operation" in
+        has)
+            if json_has_status_hooks "$input_json"; then
+                echo "true"
+            else
+                echo "false"
+            fi
+            ;;
+        add)
+            local result
+            result=$(json_add_status_hooks "$input_json")
+            if json_has_status_hooks "$result"; then
+                echo "valid"
+            else
+                echo "invalid"
+            fi
+            ;;
+        remove)
+            local result
+            result=$(json_remove_status_hooks "$input_json")
+            if json_has_status_hooks "$result"; then
+                echo "invalid"
+            else
+                echo "valid"
+            fi
+            ;;
+        *)
+            echo "Error: unknown operation: $operation" >&2
+            echo "Supported operations: has, add, remove" >&2
+            exit 1
+            ;;
+    esac
 }
 
 # =============================================================================
@@ -9983,22 +10259,11 @@ check_claude_md_has_ittybitty_block() {
     return 1
 }
 
-# Pure function to check if CLAUDE.md content contains @.ittybitty/STATUS.md import
-# Returns: 1 if import found, 0 if not
-# Args: $1=content
-check_claude_md_has_status_import() {
-    local content="$1"
-    if echo "$content" | grep -q '@\.ittybitty/STATUS\.md' 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
 # Test setup check functions with fixture files
 # This is for testing only - blocked from running inside agents
 # Fixture JSON format:
 # {
-#   "check_type": "gitignore" | "ittybitty_block" | "status_import",
+#   "check_type": "gitignore" | "ittybitty_block",
 #   "content": "the content to check"
 # }
 cmd_test_setup_check() {
@@ -10025,14 +10290,13 @@ Options:
 
 Input JSON format:
 {
-  "check_type": "gitignore" | "ittybitty_block" | "status_import",
+  "check_type": "gitignore" | "ittybitty_block",
   "content": "the file content to check"
 }
 
 Check types:
   gitignore        - Check if .ittybitty is in .gitignore content
   ittybitty_block  - Check if <ittybitty>...</ittybitty> is in CLAUDE.md
-  status_import    - Check if @.ittybitty/STATUS.md is in CLAUDE.md
 
 Examples:
   echo '{"check_type": "gitignore", "content": ".ittybitty/"}' | ib test-setup-check
@@ -10094,14 +10358,9 @@ EOF
                 result=1
             fi
             ;;
-        status_import)
-            if check_claude_md_has_status_import "$content"; then
-                result=1
-            fi
-            ;;
         *)
             echo "Error: unknown check_type: $check_type" >&2
-            echo "Valid types: gitignore, ittybitty_block, status_import" >&2
+            echo "Valid types: gitignore, ittybitty_block" >&2
             exit 1
             ;;
     esac
@@ -10632,9 +10891,23 @@ cmd_hooks_status() {
         exit 0
     fi
 
-    # Check if our hook exists in the file using json_has_main_path_hook helper
+    # Check if both hook types are installed
+    local has_main_path=false
+    local has_status=false
+
     if json_has_main_path_hook "$SETTINGS_FILE"; then
+        has_main_path=true
+    fi
+
+    if json_has_status_hooks "$SETTINGS_FILE"; then
+        has_status=true
+    fi
+
+    # Return installed only if both are present
+    if [[ "$has_main_path" == "true" && "$has_status" == "true" ]]; then
         echo "installed"
+    elif [[ "$has_main_path" == "true" || "$has_status" == "true" ]]; then
+        echo "partial"
     else
         echo "not-installed"
     fi
@@ -10644,7 +10917,7 @@ cmd_hooks_status() {
 # COMMAND: hooks install
 # =============================================================================
 
-# Install PreToolUse hook to main repo
+# Install hooks to main repo (PreToolUse for path isolation, UserPromptSubmit/PostToolUse for status)
 cmd_hooks_install() {
     local SETTINGS_FILE=".claude/settings.local.json"
     local CLAUDE_DIR=".claude"
@@ -10660,25 +10933,45 @@ cmd_hooks_install() {
         settings=$(<"$SETTINGS_FILE")
     fi
 
-    # Check if hook already exists using json_has_main_path_hook helper
-    if json_has_main_path_hook "$settings"; then
-        echo "Hook already installed"
+    local installed_main_path=false
+    local installed_status=false
+
+    # Add main-path hook if not present
+    if ! json_has_main_path_hook "$settings"; then
+        settings=$(json_add_main_path_hook "$settings")
+        installed_main_path=true
+    fi
+
+    # Add status hooks if not present
+    if ! json_has_status_hooks "$settings"; then
+        settings=$(json_add_status_hooks "$settings")
+        installed_status=true
+    fi
+
+    # Check if anything was installed
+    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" ]]; then
+        echo "Hooks already installed"
         exit 0
     fi
 
-    # Add the hook to settings using json_add_main_path_hook helper
-    settings=$(json_add_main_path_hook "$settings")
-
     # Write settings
     echo "$settings" > "$SETTINGS_FILE"
-    echo "Hook installed to $SETTINGS_FILE"
+
+    # Report what was installed
+    if [[ "$installed_main_path" == "true" && "$installed_status" == "true" ]]; then
+        echo "Hooks installed to $SETTINGS_FILE"
+    elif [[ "$installed_main_path" == "true" ]]; then
+        echo "Main-path hook installed to $SETTINGS_FILE"
+    else
+        echo "Status hooks installed to $SETTINGS_FILE"
+    fi
 }
 
 # =============================================================================
 # COMMAND: hooks uninstall
 # =============================================================================
 
-# Remove hook from main repo
+# Remove hooks from main repo (both main-path and status hooks)
 cmd_hooks_uninstall() {
     local SETTINGS_FILE=".claude/settings.local.json"
 
@@ -10690,17 +10983,269 @@ cmd_hooks_uninstall() {
     local settings
     settings=$(<"$SETTINGS_FILE")
 
-    # Remove our hook using json_remove_main_path_hook helper
+    # Remove both hook types
     settings=$(json_remove_main_path_hook "$settings")
+    settings=$(json_remove_status_hooks "$settings")
 
     # Write settings (or delete file if empty)
     if json_is_empty "$settings"; then
         rm -f "$SETTINGS_FILE"
-        echo "Hook uninstalled, removed empty settings file"
+        echo "Hooks uninstalled, removed empty settings file"
     else
         echo "$settings" > "$SETTINGS_FILE"
-        echo "Hook uninstalled from $SETTINGS_FILE"
+        echo "Hooks uninstalled from $SETTINGS_FILE"
     fi
+}
+
+# =============================================================================
+# COMMAND: hooks inject-status
+# =============================================================================
+
+# Output agent status for Claude Code hook injection
+# Used by UserPromptSubmit and PostToolUse hooks to inject status into context
+cmd_hooks_inject_status() {
+    local MODE="full"           # full, if-changed, brief
+    local VISIBLE=false         # Whether to include systemMessage
+
+    # Read stdin JSON from Claude Code hook and extract hook_event_name
+    local stdin_json=""
+    local HOOK_EVENT="UserPromptSubmit"  # Default fallback
+    if [[ ! -t 0 ]]; then
+        stdin_json=$(cat)
+        if [[ -n "$stdin_json" ]]; then
+            local extracted_event
+            extracted_event=$(echo "$stdin_json" | json_get "-" "hook_event_name" "")
+            if [[ -n "$extracted_event" ]]; then
+                HOOK_EVENT="$extracted_event"
+            fi
+        fi
+    fi
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --full)
+                MODE="full"
+                shift
+                ;;
+            --if-changed)
+                MODE="if-changed"
+                shift
+                ;;
+            --brief)
+                MODE="brief"
+                shift
+                ;;
+            --visible)
+                VISIBLE=true
+                shift
+                ;;
+            -h|--help)
+                cat <<EOF
+Usage: ib hooks inject-status [options]
+
+Output agent status for Claude Code hook injection.
+
+Options:
+  --full         Output full agent tree (default)
+  --if-changed   Only output if status changed since last call
+  --brief        Output one-liner summary only
+  --visible      Include systemMessage for user visibility
+  -h, --help     Show this help
+
+The hook_event_name is automatically read from stdin JSON provided by Claude Code.
+
+Modes:
+  full       - Outputs complete agent tree with status/age/prompt
+  if-changed - Compares current status hash against cache, outputs only if different
+  brief      - Outputs short summary like "2 running, 1 waiting"
+
+Configuration (.ittybitty.json):
+  hooks.injectStatus     Enable/disable status injection (default: true)
+  hooks.statusVisible    Show systemMessage to user (default: true)
+
+  If hooks.injectStatus is false, outputs nothing.
+  If hooks.statusVisible is false, --visible flag is ignored.
+
+Output format (JSON):
+  {
+    "hookSpecificOutput": {
+      "hookEventName": "<event>",
+      "additionalContext": "<ittybitty-status>...</ittybitty-status>"
+    },
+    "systemMessage": "[ib] ..."  // Only if --visible and hooks.statusVisible=true
+  }
+
+If no agents exist, outputs nothing (empty stdout, exit 0).
+
+Examples:
+  ib hooks inject-status --full --visible
+  ib hooks inject-status --if-changed
+  ib hooks inject-status --brief
+EOF
+                exit 0
+                ;;
+            *)
+                echo "Error: Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    # Load config to check hook settings
+    load_config
+
+    # Check if status injection is disabled via config
+    if [[ "$CONFIG_HOOKS_INJECT_STATUS" == "false" ]]; then
+        # Status injection disabled - output nothing
+        exit 0
+    fi
+
+    # Check if agents directory exists and has agents
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        # No agents directory - output nothing
+        exit 0
+    fi
+
+    # Count agents
+    local agent_count=0
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        if [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]]; then
+            agent_count=$((agent_count + 1))
+        fi
+    done
+
+    if [[ $agent_count -eq 0 ]]; then
+        # No agents - output nothing
+        exit 0
+    fi
+
+    # Generate status content
+    local status_content=""
+    local brief_summary=""
+
+    # Generate brief summary (used for --brief mode and systemMessage)
+    # Count agents by state
+    local running=0 waiting=0 complete=0 stopped=0 creating=0 other=0
+    local pending_questions=0
+
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] || continue
+        local id="${agent_dir%/}"; id="${id##*/}"
+        local state=$(get_state "$id")
+        case "$state" in
+            running|compacting) running=$((running + 1)) ;;
+            waiting) waiting=$((waiting + 1)) ;;
+            complete) complete=$((complete + 1)) ;;
+            stopped) stopped=$((stopped + 1)) ;;
+            creating) creating=$((creating + 1)) ;;
+            *) other=$((other + 1)) ;;
+        esac
+    done
+
+    # Count pending questions
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    if [[ -f "$questions_file" ]]; then
+        pending_questions=$(json_count_questions "$questions_file" "pending")
+        if [[ -z "$pending_questions" ]]; then
+            pending_questions=0
+        fi
+    fi
+
+    # Build brief summary
+    local parts=()
+    if [[ $running -gt 0 ]]; then
+        parts+=("$running running")
+    fi
+    if [[ $waiting -gt 0 ]]; then
+        parts+=("$waiting waiting")
+    fi
+    if [[ $complete -gt 0 ]]; then
+        parts+=("$complete complete")
+    fi
+    if [[ $stopped -gt 0 ]]; then
+        parts+=("$stopped stopped")
+    fi
+    if [[ $creating -gt 0 ]]; then
+        parts+=("$creating creating")
+    fi
+
+    # Join parts with ", "
+    local IFS=", "
+    brief_summary="${parts[*]}"
+
+    # Add question count if any
+    if [[ $pending_questions -gt 0 ]]; then
+        if [[ $pending_questions -eq 1 ]]; then
+            brief_summary="$brief_summary (1 question pending)"
+        else
+            brief_summary="$brief_summary ($pending_questions questions pending)"
+        fi
+    fi
+
+    # Generate content based on mode
+    case "$MODE" in
+        full)
+            status_content=$(generate_status_block)
+            local questions_content=$(generate_questions_block)
+            if [[ -n "$questions_content" ]]; then
+                status_content="$status_content"$'\n'"$questions_content"
+            fi
+            ;;
+        brief)
+            status_content="Agents: $brief_summary"
+            ;;
+        if-changed)
+            # Generate full content for hash comparison
+            status_content=$(generate_status_block)
+            local questions_content=$(generate_questions_block)
+            if [[ -n "$questions_content" ]]; then
+                status_content="$status_content"$'\n'"$questions_content"
+            fi
+
+            # Compare hash with cached version
+            local cache_file="/tmp/ib-status-hash-${REPO_ID}"
+            local current_hash=$(echo -n "$status_content" | openssl dgst -sha256 | cut -d' ' -f2)
+
+            if [[ -f "$cache_file" ]]; then
+                local cached_hash=$(cat "$cache_file")
+                if [[ "$current_hash" == "$cached_hash" ]]; then
+                    # No change - output nothing
+                    exit 0
+                fi
+            fi
+
+            # Update cache
+            echo "$current_hash" > "$cache_file"
+
+            # For if-changed mode, output brief summary
+            status_content="Agents: $brief_summary"
+            ;;
+    esac
+
+    # Output JSON using pure bash
+    # Visible requires both --visible flag AND config hooks.statusVisible=true
+    local visible_flag="false"
+    if [[ "$VISIBLE" == "true" && "$CONFIG_HOOKS_STATUS_VISIBLE" != "false" ]]; then
+        visible_flag="true"
+    fi
+
+    # Escape content for JSON
+    local escaped_context
+    escaped_context=$(json_escape_string "$status_content")
+    local escaped_brief
+    escaped_brief=$(json_escape_string "$brief_summary")
+
+    # Output JSON
+    printf '{\n'
+    printf '  "hookSpecificOutput": {\n'
+    printf '    "hookEventName": "%s",\n' "$HOOK_EVENT"
+    printf '    "additionalContext": "<ittybitty-status>\\n%s\\n</ittybitty-status>"\n' "$escaped_context"
+    printf '  }'
+    if [[ "$visible_flag" == "true" && -n "$escaped_brief" ]]; then
+        printf ',\n  "systemMessage": "[ib] Agents: %s"' "$escaped_brief"
+    fi
+    printf '\n}\n'
 }
 
 # =============================================================================
@@ -10737,7 +11282,7 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
 
-**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically (STATUS.md import doesn't update mid-conversation).
+**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically.
 
 ### Agent States
 
@@ -10748,8 +11293,6 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `waiting` | Idle, may need input |
 | `complete` | Signaled done |
 | `stopped` | Session ended |
-
-@.ittybitty/STATUS.md
 
 </ittybitty>
 ITTYBITTY_CONTENT
@@ -10821,68 +11364,6 @@ cmd_setup_ib_instructions_uninstall() {
     rm -f "${tmpfile}.bak"
 
     echo "ib instructions removed from $claude_md"
-}
-
-# =============================================================================
-# COMMAND: setup status-import install
-# =============================================================================
-
-# Install @.ittybitty/STATUS.md import inside <ittybitty> block
-cmd_setup_status_import_install() {
-    local claude_md="CLAUDE.md"
-
-    # Check if <ittybitty> block exists (match standalone tags only)
-    if [[ ! -f "$claude_md" ]] || ! grep -q '^<ittybitty>$' "$claude_md"; then
-        echo "Error: ib instructions must be installed first"
-        return 1
-    fi
-
-    # Check if already installed
-    if grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-        echo "Status import already installed in $claude_md"
-        return 0
-    fi
-
-    # Insert @.ittybitty/STATUS.md right before </ittybitty>
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    awk '
-        /^<\/ittybitty>$/ {
-            print ""
-            print "@.ittybitty/STATUS.md"
-            print ""
-        }
-        { print }
-    ' "$claude_md" > "$tmpfile"
-
-    mv "$tmpfile" "$claude_md"
-    echo "Status import added to $claude_md"
-}
-
-# Uninstall @.ittybitty/STATUS.md import from CLAUDE.md
-cmd_setup_status_import_uninstall() {
-    local claude_md="CLAUDE.md"
-
-    if [[ ! -f "$claude_md" ]]; then
-        echo "No CLAUDE.md file found"
-        return 0
-    fi
-
-    # Check if installed
-    if ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-        echo "Status import not found in $claude_md"
-        return 0
-    fi
-
-    # Remove the @.ittybitty/STATUS.md line
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    grep -v '@\.ittybitty/STATUS\.md' "$claude_md" > "$tmpfile"
-
-    mv "$tmpfile" "$claude_md"
-    echo "Status import removed from $claude_md"
 }
 
 # =============================================================================
@@ -11083,8 +11564,8 @@ Only top-level manager agents (agents with no manager) can ask the user
 questions directly. Workers and sub-managers must ask their manager, who
 can then decide whether to escalate to the user.
 
-Questions are stored in .ittybitty/user-questions.json and appear in the
-STATUS.md file that the user-level Claude sees via @import.
+Questions are stored in .ittybitty/user-questions.json and are injected
+into the user-level Claude's conversation via hooks.
 
 The user-level Claude should use 'ib acknowledge <question-id>' to mark
 a question as handled, then 'ib send <agent-id> "answer"' to respond.
@@ -11201,9 +11682,6 @@ EOF
     # Log the question
     log_agent "$AGENT_ID" "Asked user question ($question_id): $QUESTION"
 
-    # Update STATUS.md so user-level Claude sees the question
-    update_claude_status
-
     echo "Question submitted (ID: $question_id)"
     echo "The user-level Claude will see this in their next interaction."
 }
@@ -11289,9 +11767,6 @@ EOF
     # Mark as acknowledged using json_acknowledge_question helper
     local iso_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     json_acknowledge_question "$questions_file" "$QUESTION_ID" "$iso_timestamp"
-
-    # Update STATUS.md
-    update_claude_status
 
     echo "Question acknowledged."
     echo "To respond to the agent, use:"
@@ -11697,11 +12172,6 @@ cmd_watchdog() {
                 ;;
         esac
 
-        # Update .ittybitty/STATUS.md on state change
-        if [[ "$state" != "$prev_state" ]]; then
-            update_claude_status
-        fi
-
         prev_state="$state"
         sleep 5
     done
@@ -11975,12 +12445,11 @@ EOF
 
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
-    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (PreToolUse hook)
+    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection)
     local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
-    local SETUP_STATUS_IMPORT=0       # @.ittybitty/STATUS.md inside <ittybitty> block
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
-    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=config file, 5=ext diff, 6=Close
+    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=gitignore, 3=config file, 4=ext diff, 5=Close
 
     # Settings dialog tabs (expanded setup dialog)
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
@@ -11992,7 +12461,6 @@ EOF
 
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
-    local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
 
     # Feedback dialog state
     local FEEDBACK_FOCUS=0  # 0=Yes, 1=Okay, 2=No, 3=Later
@@ -12065,25 +12533,6 @@ EOF
         fi
     }
 
-    # Check if @.ittybitty/STATUS.md import exists inside <ittybitty> block
-    watch_check_status_import() {
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            local content
-            content=$(cat "$claude_md")
-            if check_claude_md_has_status_import "$content"; then
-                SETUP_STATUS_IMPORT=1
-                STATUS_MD_INTEGRATED=1  # Legacy
-            else
-                SETUP_STATUS_IMPORT=2
-                STATUS_MD_INTEGRATED=2  # Legacy
-            fi
-        else
-            SETUP_STATUS_IMPORT=2
-            STATUS_MD_INTEGRATED=2  # Legacy
-        fi
-    }
-
     # Check if .ittybitty is in .gitignore
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
@@ -12114,7 +12563,6 @@ EOF
     watch_check_all_setup() {
         watch_check_hooks_status
         watch_check_ib_instructions
-        watch_check_status_import
         watch_check_gitignore
         watch_check_config_file
     }
@@ -12147,9 +12595,6 @@ EOF
 
     # Fetch usage on startup
     watch_refresh_usage
-
-    # Refresh CLAUDE.md status on watch startup
-    update_claude_status
 
     # Add an error to the errors file (can be called from subshells)
     # Args: $1=errors_file, $2=title, $3=message
@@ -13993,7 +14438,7 @@ EOF
         ((row++))
 
         # Description for safety hooks
-        dialog_draw_line "$row" "  Prevent cd into agent worktrees"
+        dialog_draw_line "$row" "  Block cd into worktrees + inject agent status"
         ((row++))
 
         # Blank line
@@ -14012,30 +14457,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 3: Agent status (disabled if ib instructions not installed)
-        local item3_disabled=0
-        local item3_note=""
-        if [[ $SETUP_IB_INSTRUCTIONS -ne 1 ]]; then
-            item3_disabled=1
-            item3_note="  (requires ib instructions)"
-        fi
-        dialog_draw_checkbox "$row" "$SETUP_STATUS_IMPORT" "Agent status" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$item3_disabled"
-        ((row++))
-
-        # Description/note for agent status
-        if [[ -n "$item3_note" ]]; then
-            dialog_draw_line "$row" "$item3_note"
-        else
-            dialog_draw_line "$row" "  Add @.ittybitty/STATUS.md import"
-        fi
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Option 4: Gitignore
-        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)"
+        # Option 3: Gitignore
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -14046,8 +14469,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 5: Config file (shows checkmark when exists, can't be removed)
-        local config_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Option 4: Config file (shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local config_checkbox config_disabled=0
         if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
             config_checkbox="[+]"
@@ -14083,8 +14506,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 6: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
+        # Option 5: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -14115,7 +14538,7 @@ EOF
         ((row++))
 
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 6 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -14449,28 +14872,14 @@ try {
                                 ;;
                             1)  # ib instructions
                                 if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    # Uninstalling ib instructions also removes status import
-                                    cmd_setup_status_import_uninstall >/dev/null 2>&1
                                     cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
                                 else
                                     cmd_setup_ib_instructions_install >/dev/null 2>&1
                                 fi
                                 watch_check_ib_instructions
-                                watch_check_status_import
                                 _DIALOG_DIRTY=1
                                 ;;
-                            2)  # Agent status (only if ib instructions installed)
-                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    if [[ $SETUP_STATUS_IMPORT -eq 1 ]]; then
-                                        cmd_setup_status_import_uninstall >/dev/null 2>&1
-                                    else
-                                        cmd_setup_status_import_install >/dev/null 2>&1
-                                    fi
-                                    watch_check_status_import
-                                    _DIALOG_DIRTY=1
-                                fi
-                                ;;
-                            3)  # Gitignore
+                            2)  # Gitignore
                                 if [[ $SETUP_GITIGNORE -eq 1 ]]; then
                                     cmd_setup_gitignore_uninstall >/dev/null 2>&1
                                 else
@@ -14479,7 +14888,7 @@ try {
                                 watch_check_gitignore
                                 _DIALOG_DIRTY=1
                                 ;;
-                            4)  # Config file (only create, not remove)
+                            3)  # Config file (only create, not remove)
                                 if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
                                     cmd_setup_config_file_install >/dev/null 2>&1
                                     watch_check_config_file
@@ -14487,11 +14896,11 @@ try {
                                 fi
                                 # If file already exists, do nothing (can't remove via UI)
                                 ;;
-                            5)  # External diff tool - open input dialog
+                            4)  # External diff tool - open input dialog
                                 watch_dialog_init_ext_diff_tool
                                 DIALOG_MODE=8
                                 ;;
-                            6)  # Close button
+                            5)  # Close button
                                 DIALOG_MODE=0
                                 ;;
                         esac
@@ -17073,7 +17482,7 @@ try {
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
             action_text_visible_len=${#action_text}
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
-            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
+            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
                 action_text="$action_text    ${COLOR_YELLOW}h: setup${COLOR_RESET}${COLOR_DIM}"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
@@ -19247,6 +19656,8 @@ cmd_config() {
                 "noFastForward|false|Always create merge commits"
                 "autoCompactThreshold||Context % to trigger /compact (1-100)"
                 "externalDiffTool||External diff tool command"
+                "hooks.injectStatus|true|Enable status injection via hooks"
+                "hooks.statusVisible|true|Show agent status in user messages"
                 "permissions.manager.allow|[]|Tools allowed for manager agents"
                 "permissions.manager.deny|[]|Tools denied for manager agents"
                 "permissions.worker.allow|[]|Tools allowed for worker agents"
@@ -19503,6 +19914,10 @@ case "${1:-help}" in
         shift
         cmd_test_validate_meta "$@"
         ;;
+    test-status-hooks)
+        shift
+        cmd_test_status_hooks "$@"
+        ;;
     test-format-age)
         shift
         cmd_test_format_age "$@"
@@ -19673,11 +20088,6 @@ case "${1:-help}" in
     config)
         shift
         cmd_config "$@"
-        ;;
-    refresh-status)
-        # Undocumented: refresh the <ittybitty-status> block in CLAUDE.md
-        shift
-        update_claude_status
         ;;
     help|--help|-h)
         SHOW_UNDOCUMENTED=false

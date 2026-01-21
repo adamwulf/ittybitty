@@ -1,0 +1,18 @@
+{
+  "operation": "has",
+  "input": {
+    "hooks": {
+      "PostToolUse": [
+        {
+          "matcher": "Bash|Task",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "ib hooks inject-status --if-changed --visible"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

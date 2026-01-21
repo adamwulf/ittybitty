@@ -967,7 +967,7 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
 
-**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically (STATUS.md import doesn't update mid-conversation).
+**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically.
 
 ### Agent States
 
@@ -978,7 +978,5 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `waiting` | Idle, may need input |
 | `complete` | Signaled done |
 | `stopped` | Session ended |
-
-@.ittybitty/STATUS.md
 
 </ittybitty>
