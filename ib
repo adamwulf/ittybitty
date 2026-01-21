@@ -3773,7 +3773,7 @@ bypass_rate_limit() {
 }
 
 # =============================================================================
-# CLAUDE.md STATUS HELPERS
+# STATUS BLOCK HELPERS
 # =============================================================================
 
 # Generate status block content showing agent tree with status/age/prompt
@@ -4019,7 +4019,7 @@ generate_status_block() {
     rm -f "$tmpfile"
 }
 
-# Generate pending questions block for STATUS.md
+# Generate pending questions block for status output
 # Returns: formatted questions block or empty if no pending questions
 generate_questions_block() {
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
@@ -4045,24 +4045,6 @@ generate_questions_block() {
 
     # Format each pending question
     json_filter_questions "$questions_file" "pending"
-}
-
-# Update .ittybitty/STATUS.md with current agent status
-# This is called from lifecycle events to keep the status current
-# CLAUDE.md references this file via @.ittybitty/STATUS.md
-update_claude_status() {
-    local status_file="$ROOT_REPO_PATH/.ittybitty/STATUS.md"
-
-    # Ensure .ittybitty directory exists
-    mkdir -p "$ROOT_REPO_PATH/.ittybitty"
-
-    # Generate status content with wrapper tags
-    {
-        echo "<ittybitty-status>"
-        generate_status_block
-        generate_questions_block
-        echo "</ittybitty-status>"
-    } > "$status_file"
 }
 
 # =============================================================================
@@ -5132,26 +5114,6 @@ EOF
         exit 1
     fi
 
-    # Warn if root-level manager and CLAUDE.md doesn't have STATUS.md integration
-    # This warning helps users understand that 'ib ask' won't work without the integration
-    if [[ -z "$MANAGER" && "$WORKER_MODE" != true ]]; then
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            # Check for either <ittybitty-status> block or @.ittybitty/STATUS.md import
-            if ! grep -q '<ittybitty-status>' "$claude_md" && ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-                echo "Warning: CLAUDE.md does not import .ittybitty/STATUS.md" >&2
-                echo "The 'ib ask' feature requires this to show agent questions to the primary Claude." >&2
-                echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
-                echo "" >&2
-            fi
-        else
-            echo "Warning: No CLAUDE.md found in repository root" >&2
-            echo "The 'ib ask' feature requires CLAUDE.md to import .ittybitty/STATUS.md" >&2
-            echo "Run 'ib watch' and press 'h' to open the setup dialog." >&2
-            echo "" >&2
-        fi
-    fi
-
     # Generate agent ID
     local ID
     if [[ -n "$NAME" ]]; then
@@ -5656,12 +5618,7 @@ EOF
     if [[ "$YOLO_MODE" != true ]]; then
         (
             auto_accept_workspace_trust "$TMUX_SESSION"
-            # Update status after initialization completes
-            update_claude_status
         ) &
-    else
-        # For yolo mode, just update status immediately
-        update_claude_status
     fi
 
     # Auto-spawn watchdog if agent has a manager
@@ -6513,9 +6470,6 @@ EOF
     teardown_agent "$ID" "" "Agent killed"
     echo "Closed agent: $ID"
 
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
-
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -7333,9 +7287,6 @@ EOF
 
     echo "Closed agent: $ID"
 
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
-
     # Scan for any orphaned Claude processes after cleanup
     scan_and_kill_orphans
 }
@@ -7570,7 +7521,6 @@ cmd_hooks_agent_status() {
         # and trigger another Stop hook, creating an infinite loop.
         # The watchdog handles rate_limited agents (bypass_rate_limit).
         log_agent "$ID" "[hook] State is rate_limited, skipping nudge to avoid loop" --quiet
-        update_claude_status
         echo "$state"
         return
     fi
@@ -7598,7 +7548,6 @@ cmd_hooks_agent_status() {
                 sleep 0.1
                 tmux send-keys -t "$TMUX_SESSION" Enter
                 # Don't proceed with other checks - let agent commit first
-                update_claude_status
                 echo "$state"
                 return
             fi
@@ -7638,9 +7587,6 @@ cmd_hooks_agent_status() {
         # Stop hook only fires when Claude is actually idle)
         log_agent "$ID" "[hook] State is $state, no action needed" --quiet
     fi
-
-    # Update .ittybitty/STATUS.md for CLAUDE.md status display
-    update_claude_status
 
     # Always print the state for debugging
     echo "$state"
@@ -9983,22 +9929,11 @@ check_claude_md_has_ittybitty_block() {
     return 1
 }
 
-# Pure function to check if CLAUDE.md content contains @.ittybitty/STATUS.md import
-# Returns: 1 if import found, 0 if not
-# Args: $1=content
-check_claude_md_has_status_import() {
-    local content="$1"
-    if echo "$content" | grep -q '@\.ittybitty/STATUS\.md' 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
 # Test setup check functions with fixture files
 # This is for testing only - blocked from running inside agents
 # Fixture JSON format:
 # {
-#   "check_type": "gitignore" | "ittybitty_block" | "status_import",
+#   "check_type": "gitignore" | "ittybitty_block",
 #   "content": "the content to check"
 # }
 cmd_test_setup_check() {
@@ -10025,14 +9960,13 @@ Options:
 
 Input JSON format:
 {
-  "check_type": "gitignore" | "ittybitty_block" | "status_import",
+  "check_type": "gitignore" | "ittybitty_block",
   "content": "the file content to check"
 }
 
 Check types:
   gitignore        - Check if .ittybitty is in .gitignore content
   ittybitty_block  - Check if <ittybitty>...</ittybitty> is in CLAUDE.md
-  status_import    - Check if @.ittybitty/STATUS.md is in CLAUDE.md
 
 Examples:
   echo '{"check_type": "gitignore", "content": ".ittybitty/"}' | ib test-setup-check
@@ -10094,14 +10028,9 @@ EOF
                 result=1
             fi
             ;;
-        status_import)
-            if check_claude_md_has_status_import "$content"; then
-                result=1
-            fi
-            ;;
         *)
             echo "Error: unknown check_type: $check_type" >&2
-            echo "Valid types: gitignore, ittybitty_block, status_import" >&2
+            echo "Valid types: gitignore, ittybitty_block" >&2
             exit 1
             ;;
     esac
@@ -10737,7 +10666,7 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
 
-**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically (STATUS.md import doesn't update mid-conversation).
+**Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically.
 
 ### Agent States
 
@@ -10748,8 +10677,6 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `waiting` | Idle, may need input |
 | `complete` | Signaled done |
 | `stopped` | Session ended |
-
-@.ittybitty/STATUS.md
 
 </ittybitty>
 ITTYBITTY_CONTENT
@@ -10821,68 +10748,6 @@ cmd_setup_ib_instructions_uninstall() {
     rm -f "${tmpfile}.bak"
 
     echo "ib instructions removed from $claude_md"
-}
-
-# =============================================================================
-# COMMAND: setup status-import install
-# =============================================================================
-
-# Install @.ittybitty/STATUS.md import inside <ittybitty> block
-cmd_setup_status_import_install() {
-    local claude_md="CLAUDE.md"
-
-    # Check if <ittybitty> block exists (match standalone tags only)
-    if [[ ! -f "$claude_md" ]] || ! grep -q '^<ittybitty>$' "$claude_md"; then
-        echo "Error: ib instructions must be installed first"
-        return 1
-    fi
-
-    # Check if already installed
-    if grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-        echo "Status import already installed in $claude_md"
-        return 0
-    fi
-
-    # Insert @.ittybitty/STATUS.md right before </ittybitty>
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    awk '
-        /^<\/ittybitty>$/ {
-            print ""
-            print "@.ittybitty/STATUS.md"
-            print ""
-        }
-        { print }
-    ' "$claude_md" > "$tmpfile"
-
-    mv "$tmpfile" "$claude_md"
-    echo "Status import added to $claude_md"
-}
-
-# Uninstall @.ittybitty/STATUS.md import from CLAUDE.md
-cmd_setup_status_import_uninstall() {
-    local claude_md="CLAUDE.md"
-
-    if [[ ! -f "$claude_md" ]]; then
-        echo "No CLAUDE.md file found"
-        return 0
-    fi
-
-    # Check if installed
-    if ! grep -q '@\.ittybitty/STATUS\.md' "$claude_md"; then
-        echo "Status import not found in $claude_md"
-        return 0
-    fi
-
-    # Remove the @.ittybitty/STATUS.md line
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    grep -v '@\.ittybitty/STATUS\.md' "$claude_md" > "$tmpfile"
-
-    mv "$tmpfile" "$claude_md"
-    echo "Status import removed from $claude_md"
 }
 
 # =============================================================================
@@ -11083,8 +10948,8 @@ Only top-level manager agents (agents with no manager) can ask the user
 questions directly. Workers and sub-managers must ask their manager, who
 can then decide whether to escalate to the user.
 
-Questions are stored in .ittybitty/user-questions.json and appear in the
-STATUS.md file that the user-level Claude sees via @import.
+Questions are stored in .ittybitty/user-questions.json and are injected
+into the user-level Claude's conversation via hooks.
 
 The user-level Claude should use 'ib acknowledge <question-id>' to mark
 a question as handled, then 'ib send <agent-id> "answer"' to respond.
@@ -11201,9 +11066,6 @@ EOF
     # Log the question
     log_agent "$AGENT_ID" "Asked user question ($question_id): $QUESTION"
 
-    # Update STATUS.md so user-level Claude sees the question
-    update_claude_status
-
     echo "Question submitted (ID: $question_id)"
     echo "The user-level Claude will see this in their next interaction."
 }
@@ -11289,9 +11151,6 @@ EOF
     # Mark as acknowledged using json_acknowledge_question helper
     local iso_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     json_acknowledge_question "$questions_file" "$QUESTION_ID" "$iso_timestamp"
-
-    # Update STATUS.md
-    update_claude_status
 
     echo "Question acknowledged."
     echo "To respond to the agent, use:"
@@ -11697,11 +11556,6 @@ cmd_watchdog() {
                 ;;
         esac
 
-        # Update .ittybitty/STATUS.md on state change
-        if [[ "$state" != "$prev_state" ]]; then
-            update_claude_status
-        fi
-
         prev_state="$state"
         sleep 5
     done
@@ -11977,10 +11831,9 @@ EOF
     # Each: 0=unknown, 1=installed, 2=not installed
     local SETUP_HOOKS_INSTALLED=0     # Safety hooks (PreToolUse hook)
     local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
-    local SETUP_STATUS_IMPORT=0       # @.ittybitty/STATUS.md inside <ittybitty> block
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
-    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=status import, 3=gitignore, 4=config file, 5=ext diff, 6=Close
+    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=gitignore, 3=config file, 4=ext diff, 5=Close
 
     # Settings dialog tabs (expanded setup dialog)
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
@@ -11992,7 +11845,6 @@ EOF
 
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
-    local STATUS_MD_INTEGRATED=0  # 0=unknown, 1=integrated, 2=not integrated
 
     # Feedback dialog state
     local FEEDBACK_FOCUS=0  # 0=Yes, 1=Okay, 2=No, 3=Later
@@ -12065,25 +11917,6 @@ EOF
         fi
     }
 
-    # Check if @.ittybitty/STATUS.md import exists inside <ittybitty> block
-    watch_check_status_import() {
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            local content
-            content=$(cat "$claude_md")
-            if check_claude_md_has_status_import "$content"; then
-                SETUP_STATUS_IMPORT=1
-                STATUS_MD_INTEGRATED=1  # Legacy
-            else
-                SETUP_STATUS_IMPORT=2
-                STATUS_MD_INTEGRATED=2  # Legacy
-            fi
-        else
-            SETUP_STATUS_IMPORT=2
-            STATUS_MD_INTEGRATED=2  # Legacy
-        fi
-    }
-
     # Check if .ittybitty is in .gitignore
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
@@ -12114,7 +11947,6 @@ EOF
     watch_check_all_setup() {
         watch_check_hooks_status
         watch_check_ib_instructions
-        watch_check_status_import
         watch_check_gitignore
         watch_check_config_file
     }
@@ -12147,9 +11979,6 @@ EOF
 
     # Fetch usage on startup
     watch_refresh_usage
-
-    # Refresh CLAUDE.md status on watch startup
-    update_claude_status
 
     # Add an error to the errors file (can be called from subshells)
     # Args: $1=errors_file, $2=title, $3=message
@@ -14012,30 +13841,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 3: Agent status (disabled if ib instructions not installed)
-        local item3_disabled=0
-        local item3_note=""
-        if [[ $SETUP_IB_INSTRUCTIONS -ne 1 ]]; then
-            item3_disabled=1
-            item3_note="  (requires ib instructions)"
-        fi
-        dialog_draw_checkbox "$row" "$SETUP_STATUS_IMPORT" "Agent status" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)" "$item3_disabled"
-        ((row++))
-
-        # Description/note for agent status
-        if [[ -n "$item3_note" ]]; then
-            dialog_draw_line "$row" "$item3_note"
-        else
-            dialog_draw_line "$row" "  Add @.ittybitty/STATUS.md import"
-        fi
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Option 4: Gitignore
-        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)"
+        # Option 3: Gitignore
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -14046,8 +13853,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 5: Config file (shows checkmark when exists, can't be removed)
-        local config_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Option 4: Config file (shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local config_checkbox config_disabled=0
         if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
             config_checkbox="[+]"
@@ -14083,8 +13890,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 6: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
+        # Option 5: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -14115,7 +13922,7 @@ EOF
         ((row++))
 
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 6 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -14449,28 +14256,14 @@ try {
                                 ;;
                             1)  # ib instructions
                                 if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    # Uninstalling ib instructions also removes status import
-                                    cmd_setup_status_import_uninstall >/dev/null 2>&1
                                     cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
                                 else
                                     cmd_setup_ib_instructions_install >/dev/null 2>&1
                                 fi
                                 watch_check_ib_instructions
-                                watch_check_status_import
                                 _DIALOG_DIRTY=1
                                 ;;
-                            2)  # Agent status (only if ib instructions installed)
-                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    if [[ $SETUP_STATUS_IMPORT -eq 1 ]]; then
-                                        cmd_setup_status_import_uninstall >/dev/null 2>&1
-                                    else
-                                        cmd_setup_status_import_install >/dev/null 2>&1
-                                    fi
-                                    watch_check_status_import
-                                    _DIALOG_DIRTY=1
-                                fi
-                                ;;
-                            3)  # Gitignore
+                            2)  # Gitignore
                                 if [[ $SETUP_GITIGNORE -eq 1 ]]; then
                                     cmd_setup_gitignore_uninstall >/dev/null 2>&1
                                 else
@@ -14479,7 +14272,7 @@ try {
                                 watch_check_gitignore
                                 _DIALOG_DIRTY=1
                                 ;;
-                            4)  # Config file (only create, not remove)
+                            3)  # Config file (only create, not remove)
                                 if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
                                     cmd_setup_config_file_install >/dev/null 2>&1
                                     watch_check_config_file
@@ -14487,11 +14280,11 @@ try {
                                 fi
                                 # If file already exists, do nothing (can't remove via UI)
                                 ;;
-                            5)  # External diff tool - open input dialog
+                            4)  # External diff tool - open input dialog
                                 watch_dialog_init_ext_diff_tool
                                 DIALOG_MODE=8
                                 ;;
-                            6)  # Close button
+                            5)  # Close button
                                 DIALOG_MODE=0
                                 ;;
                         esac
@@ -17073,7 +16866,7 @@ try {
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
             action_text_visible_len=${#action_text}
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
-            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_STATUS_IMPORT -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
+            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
                 action_text="$action_text    ${COLOR_YELLOW}h: setup${COLOR_RESET}${COLOR_DIM}"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
@@ -19673,11 +19466,6 @@ case "${1:-help}" in
     config)
         shift
         cmd_config "$@"
-        ;;
-    refresh-status)
-        # Undocumented: refresh the <ittybitty-status> block in CLAUDE.md
-        shift
-        update_claude_status
         ;;
     help|--help|-h)
         SHOW_UNDOCUMENTED=false
