@@ -18,7 +18,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "ib hooks inject-status --if-changed --visible"
+              "command": "ib hooks inject-status --if-changed --visible --event PostToolUse"
             }
           ]
         }

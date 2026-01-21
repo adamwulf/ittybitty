@@ -1598,7 +1598,7 @@ json_add_status_hooks() {
             .hooks.UserPromptSubmit //= [] |
             .hooks.PostToolUse //= [] |
             .hooks.UserPromptSubmit += [{ hooks: [{ type: "command", command: "ib hooks inject-status --full --visible" }] }] |
-            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible" }] }]
+            .hooks.PostToolUse += [{ matcher: "Bash|Task", hooks: [{ type: "command", command: "ib hooks inject-status --if-changed --visible --event PostToolUse" }] }]
         ' 2>/dev/null || true
     else
         local input_b64
@@ -1623,7 +1623,7 @@ try {
     };
     var postToolHook = {
         matcher: 'Bash|Task',
-        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible'}]
+        hooks: [{type: 'command', command: 'ib hooks inject-status --if-changed --visible --event PostToolUse'}]
     };
 
     obj.hooks.UserPromptSubmit.push(userPromptHook);
