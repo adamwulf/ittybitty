@@ -1,0 +1,25 @@
+{
+  "questions": [
+    {
+      "id": "q-abc123",
+      "agent": "worker-1",
+      "timestamp": "2026-01-15T10:30:00Z",
+      "question": "Should I use TypeScript or JavaScript?",
+      "status": "pending"
+    },
+    {
+      "id": "q-def456",
+      "agent": "worker-2",
+      "timestamp": "2026-01-15T11:00:00Z",
+      "question": "What database should I use?",
+      "status": "pending"
+    },
+    {
+      "id": "q-ghi789",
+      "agent": "manager-main",
+      "timestamp": "2026-01-15T11:30:00Z",
+      "question": "Should I split this into multiple workers?",
+      "status": "pending"
+    }
+  ]
+}

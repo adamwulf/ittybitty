@@ -12716,11 +12716,11 @@ EOF
     local AGENT_COUNT=0
     local TREE_SCROLL=0  # Which line of tree to start display from
     local SCROLL_OFFSET=0  # Shared scroll offset for both panes (0 = bottom/autoscroll)
-    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors, 5=diff, 6=status
-    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF" "STATUS")
+    local RIGHT_PANE_MODE=0  # 0=agent log, 1=initial prompt, 2=denials, 3=tree, 4=errors, 5=diff, 6=status, 7=questions
+    local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF" "STATUS" "QUESTIONS")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback, 11=number_input, 12=string_input, 13=perms_edit, 14=answer
     local DIALOG_WIDTH=60  # Fixed dialog width (increased from 50 for settings tabs)
 
     # Frame rate control
@@ -12816,11 +12816,26 @@ EOF
     local PERMS_EDIT_INPUT=""          # Text in "Add" input field
     local PERMS_EDIT_MODE=0            # 0=list, 1=input focused
 
+    # Answer question dialog state (DIALOG_MODE=14)
+    local ANSWER_QUESTION_ID=""        # ID of question being answered
+    local ANSWER_AGENT_ID=""           # Agent that asked the question
+    local ANSWER_QUESTION_TEXT=""      # The question text (for display)
+    local ANSWER_TEXT=""               # User's response text
+    local ANSWER_FOCUS=0               # 0=text, 1=Cancel, 2=Send
+
     # Errors cache for async agent creation failures
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
     local -a ERRORS_CACHE=()
     local ERRORS_UNREAD_COUNT=0  # Count of unread errors
     local ERRORS_TOTAL_COUNT=0   # Total count of errors (for skip logic)
+
+    # Questions cache for pending agent questions
+    # Each entry: "ID|AGENT|TIMESTAMP|QUESTION"
+    local -a QUESTIONS_CACHE=()
+    local QUESTIONS_SELECTED=0       # Currently selected question index
+    local QUESTIONS_UNREAD_COUNT=0   # Count of unread questions (for badge)
+    local QUESTIONS_TOTAL_COUNT=0    # Total count of pending questions
+    local QUESTIONS_LAST_LOAD=0      # Timestamp of last load (for periodic refresh)
 
     # Usage tracking state (refreshed periodically)
     local USAGE_SESSION_PCT=""   # 5-hour session utilization percentage
@@ -12923,6 +12938,10 @@ EOF
     # Fetch usage on startup
     watch_refresh_usage
 
+    # Load questions on startup
+    watch_load_questions
+    QUESTIONS_LAST_LOAD=$(date +%s)
+
     # Add an error to the errors file (can be called from subshells)
     # Args: $1=errors_file, $2=title, $3=message
     watch_add_error_to_file() {
@@ -12967,7 +12986,74 @@ EOF
         ERRORS_UNREAD_COUNT=0
     }
 
-    # Calculate next pane mode, skipping errors pane (mode 4) if no errors
+    # Load questions from JSON file into cache array
+    # Parses output from json_filter_questions into structured format
+    # Called periodically (every few seconds) from main render loop
+    watch_load_questions() {
+        local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+        [[ ! -f "$questions_file" ]] && {
+            QUESTIONS_CACHE=()
+            QUESTIONS_TOTAL_COUNT=0
+            return
+        }
+
+        # Get filtered questions output
+        local output
+        output=$(json_filter_questions "$questions_file" "pending") || output=""
+
+        # Parse output into cache array
+        # Format: "[status] id\n  From: agent\n  Time: timestamp\n  Question: text\n\n"
+        local -a new_cache=()
+        local current_id="" current_agent="" current_time="" current_question=""
+        local line
+
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ ^\[.*\]\ (q-[^\ ]+) ]]; then
+                # Start of new question - save previous if exists
+                if [[ -n "$current_id" ]]; then
+                    new_cache+=("${current_id}|${current_agent}|${current_time}|${current_question}")
+                fi
+                current_id="${BASH_REMATCH[1]}"
+                current_agent=""
+                current_time=""
+                current_question=""
+            elif [[ "$line" =~ ^\ \ From:\ (.+)$ ]]; then
+                current_agent="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ ^\ \ Time:\ (.+)$ ]]; then
+                current_time="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ ^\ \ Question:\ (.+)$ ]]; then
+                current_question="${BASH_REMATCH[1]}"
+            fi
+        done <<< "$output"
+
+        # Don't forget the last question
+        if [[ -n "$current_id" ]]; then
+            new_cache+=("${current_id}|${current_agent}|${current_time}|${current_question}")
+        fi
+
+        # Track new questions for badge
+        local prev_count=$QUESTIONS_TOTAL_COUNT
+        local new_count=${#new_cache[@]}
+
+        if [[ $new_count -gt $prev_count ]]; then
+            QUESTIONS_UNREAD_COUNT=$((QUESTIONS_UNREAD_COUNT + new_count - prev_count))
+        fi
+
+        QUESTIONS_CACHE=("${new_cache[@]}")
+        QUESTIONS_TOTAL_COUNT=$new_count
+
+        # Clamp selection to valid range
+        if [[ $QUESTIONS_SELECTED -ge $new_count ]]; then
+            QUESTIONS_SELECTED=$((new_count > 0 ? new_count - 1 : 0))
+        fi
+    }
+
+    # Mark all questions as read (reset unread count)
+    watch_mark_questions_read() {
+        QUESTIONS_UNREAD_COUNT=0
+    }
+
+    # Calculate next pane mode, skipping empty panes (errors mode 4, questions mode 7)
     # Args: $1=direction (1 for next, -1 for previous)
     # Sets: _NEXT_PANE_MODE
     watch_calc_next_pane() {
@@ -12978,6 +13064,11 @@ EOF
         # Skip errors pane (mode 4) if there are no errors
         # Use ERRORS_TOTAL_COUNT instead of array length for reliable cross-function access
         if [[ $next_mode -eq 4 && $ERRORS_TOTAL_COUNT -eq 0 ]]; then
+            next_mode=$(( (next_mode + direction + pane_count) % pane_count ))
+        fi
+
+        # Skip questions pane (mode 7) if there are no questions
+        if [[ $next_mode -eq 7 && $QUESTIONS_TOTAL_COUNT -eq 0 ]]; then
             next_mode=$(( (next_mode + direction + pane_count) % pane_count ))
         fi
 
@@ -17636,6 +17727,370 @@ try {
     # End Permissions Editor Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # Answer Question Dialog (DIALOG_MODE=14)
+    # ==========================================================================
+
+    watch_dialog_init_answer() {
+        # Initialize answer dialog with selected question data
+        if [[ ${#QUESTIONS_CACHE[@]} -eq 0 ]]; then
+            return 1
+        fi
+
+        # Parse selected question: "ID|AGENT|TIMESTAMP|QUESTION"
+        local selected="${QUESTIONS_CACHE[$QUESTIONS_SELECTED]}"
+        local q_id q_agent q_time q_text
+        q_id="${selected%%|*}"
+        local rest="${selected#*|}"
+        q_agent="${rest%%|*}"
+        rest="${rest#*|}"
+        q_time="${rest%%|*}"
+        q_text="${rest#*|}"
+
+        ANSWER_QUESTION_ID="$q_id"
+        ANSWER_AGENT_ID="$q_agent"
+        ANSWER_QUESTION_TEXT="$q_text"
+        ANSWER_TEXT=""
+        ANSWER_FOCUS=0  # 0=text, 1=Cancel, 2=Send
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+    }
+
+    watch_dialog_render_answer() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return
+        fi
+
+        # Calculate geometry
+        local dialog_height=16  # Taller to show question
+        local text_area_height=4
+        local inner_width=$((DIALOG_WIDTH - 4))
+        local text_width=$((inner_width - 2))
+
+        # Check for text-only redraw
+        if [[ "${_DIALOG_TEXT_DIRTY:-0}" == "1" && "${_DIALOG_DIRTY:-0}" != "1" ]]; then
+            _DIALOG_TEXT_DIRTY=0
+            local text_focused=$([[ $ANSWER_FOCUS -eq 0 ]] && echo 1 || echo 0)
+            dialog_redraw_text_area "$ANSWER_TEXT" "$text_focused"
+            dialog_redraw_answer_buttons
+            return
+        fi
+
+        # Only full redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" != "1" ]] && return
+        _DIALOG_DIRTY=0
+        _DIALOG_TEXT_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 1))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        local title="Answer Question from: $ANSWER_AGENT_ID"
+        dialog_draw_line "$row" "$title"
+        ((row++))
+
+        # Separator
+        dialog_draw_hline "$row" "├" "─" "┤"
+        ((row++))
+
+        # Show the question (wrapped to fit)
+        dialog_draw_line "$row" "Question:"
+        ((row++))
+
+        # Wrap question text for display (2 lines max)
+        local q_display="$ANSWER_QUESTION_TEXT"
+        if [[ ${#q_display} -gt $inner_width ]]; then
+            local line1="${q_display:0:$inner_width}"
+            local line2="${q_display:$inner_width:$inner_width}"
+            if [[ ${#q_display} -gt $((inner_width * 2)) ]]; then
+                line2="${line2:0:$((inner_width - 3))}..."
+            fi
+            printf '\e[%d;%dH│ %s%*s │' "$row" "$_DIALOG_START_COL" "$line1" "$((inner_width - ${#line1}))" ""
+            ((row++))
+            printf '\e[%d;%dH│ %s%*s │' "$row" "$_DIALOG_START_COL" "$line2" "$((inner_width - ${#line2}))" ""
+            ((row++))
+        else
+            printf '\e[%d;%dH│ %s%*s │' "$row" "$_DIALOG_START_COL" "$q_display" "$((inner_width - ${#q_display}))" ""
+            ((row++))
+            dialog_draw_line "$row" ""
+            ((row++))
+        fi
+
+        # Separator
+        dialog_draw_hline "$row" "├" "─" "┤"
+        ((row++))
+
+        # Instruction
+        dialog_draw_line "$row" "Your response (Enter for newline):"
+        ((row++))
+
+        # Text area box - top border
+        printf '\e[%d;%dH│ ┌' "$row" "$_DIALOG_START_COL"
+        local i
+        for ((i=0; i<text_width; i++)); do printf '─'; done
+        printf '┐ │'
+        ((row++))
+
+        # Cache geometry for text-only redraws
+        _DIALOG_TEXT_START_ROW=$row
+        _DIALOG_TEXT_WIDTH=$text_width
+        _DIALOG_TEXT_HEIGHT=$text_area_height
+
+        # Parse text into lines and display
+        local text_focused=$([[ $ANSWER_FOCUS -eq 0 ]] && echo 1 || echo 0)
+        local display_text="$ANSWER_TEXT"
+        [[ $text_focused == "1" ]] && display_text="${display_text}_"
+
+        # Split text by newlines and wrap long lines
+        local -a display_lines=()
+        local line=""
+        local char
+        local len=${#display_text}
+        for ((i=0; i<len; i++)); do
+            char="${display_text:$i:1}"
+            if [[ "$char" == $'\n' ]]; then
+                display_lines+=("$line")
+                line=""
+            else
+                line="${line}${char}"
+                if [[ ${#line} -ge $text_width ]]; then
+                    display_lines+=("$line")
+                    line=""
+                fi
+            fi
+        done
+        [[ -n "$line" ]] && display_lines+=("$line")
+
+        # Show last 4 lines (scroll to bottom)
+        local total_lines=${#display_lines[@]}
+        local start_line=0
+        if [[ $total_lines -gt $text_area_height ]]; then
+            start_line=$((total_lines - text_area_height))
+        fi
+
+        # Draw text area lines
+        local line_idx
+        for ((line_idx=0; line_idx<text_area_height; line_idx++)); do
+            local content_idx=$((start_line + line_idx))
+            local content=""
+            if [[ $content_idx -lt $total_lines ]]; then
+                content="${display_lines[$content_idx]}"
+            fi
+            printf '\e[%d;%dH│ │' "$row" "$_DIALOG_START_COL"
+            if [[ $text_focused == "1" ]]; then
+                printf '\e[7m%-*s\e[0m' "$text_width" "$content"
+            else
+                printf '%-*s' "$text_width" "$content"
+            fi
+            printf '│ │'
+            ((row++))
+        done
+
+        # Text area box - bottom border
+        printf '\e[%d;%dH│ └' "$row" "$_DIALOG_START_COL"
+        for ((i=0; i<text_width; i++)); do printf '─'; done
+        printf '┘ │'
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Buttons
+        _DIALOG_BUTTONS_ROW=$row
+        dialog_redraw_answer_buttons
+        ((row++))
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Tab: switch   Enter: select"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
+    }
+
+    # Helper to redraw just the answer dialog buttons
+    dialog_redraw_answer_buttons() {
+        local row=$_DIALOG_BUTTONS_ROW
+        local inner_width=$((DIALOG_WIDTH - 4))
+
+        # Button labels
+        local cancel_label=" Cancel "
+        local send_label=" Send "
+
+        # Disable Send if no text
+        local send_enabled=1
+        [[ -z "$ANSWER_TEXT" ]] && send_enabled=0
+
+        # Calculate button positions (centered with gap)
+        local total_btn_width=$(( ${#cancel_label} + 4 + ${#send_label} ))
+        local btn_start=$(( (inner_width - total_btn_width) / 2 ))
+
+        printf '\e[%d;%dH│ ' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$btn_start" ""
+
+        # Cancel button
+        if [[ $ANSWER_FOCUS -eq 1 ]]; then
+            printf '\e[7m%s\e[0m' "$cancel_label"
+        else
+            printf '%s' "$cancel_label"
+        fi
+
+        printf '    '  # Gap between buttons
+
+        # Send button
+        if [[ $send_enabled -eq 0 ]]; then
+            printf '\e[2m%s\e[0m' "$send_label"  # Dim if disabled
+        elif [[ $ANSWER_FOCUS -eq 2 ]]; then
+            printf '\e[7m%s\e[0m' "$send_label"
+        else
+            printf '%s' "$send_label"
+        fi
+
+        # Fill rest of line
+        local used=$((btn_start + ${#cancel_label} + 4 + ${#send_label}))
+        printf '%*s │' "$((inner_width - used))" ""
+    }
+
+    watch_dialog_key_answer() {
+        local key="$1"
+        # Focus: 0=text, 1=Cancel, 2=Send
+        case "$key" in
+            $'\t')  # Tab - forward
+                if [[ -z "$ANSWER_TEXT" ]]; then
+                    # Skip Send button when text is empty
+                    ANSWER_FOCUS=$(( ANSWER_FOCUS == 0 ? 1 : 0 ))
+                else
+                    ANSWER_FOCUS=$(( (ANSWER_FOCUS + 1) % 3 ))
+                fi
+                _DIALOG_DIRTY=1
+                ;;
+            $'\x1e')  # Enter
+                if [[ $ANSWER_FOCUS -eq 0 ]]; then
+                    # In text area, add newline
+                    ANSWER_TEXT="${ANSWER_TEXT}"$'\n'
+                    _DIALOG_TEXT_DIRTY=1
+                elif [[ $ANSWER_FOCUS -eq 1 ]]; then
+                    # Cancel button
+                    DIALOG_MODE=0
+                elif [[ $ANSWER_FOCUS -eq 2 && -n "$ANSWER_TEXT" ]]; then
+                    # Send button - send answer and acknowledge question
+                    DIALOG_MODE=0
+                    # Send response to agent
+                    cmd_send "$ANSWER_AGENT_ID" "$ANSWER_TEXT" >/dev/null 2>&1 || true
+                    # Acknowledge the question
+                    cmd_acknowledge "$ANSWER_QUESTION_ID" >/dev/null 2>&1 || true
+                    # Trigger questions reload
+                    QUESTIONS_LAST_LOAD=0
+                fi
+                ;;
+            $'\e')  # Escape - check for sequence
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                elif [[ $ANSWER_FOCUS -eq 0 ]]; then
+                    ANSWER_TEXT="${ANSWER_TEXT}["
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                ;;
+            'Z')  # Shift+Tab
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    if [[ -z "$ANSWER_TEXT" ]]; then
+                        ANSWER_FOCUS=$(( ANSWER_FOCUS == 0 ? 1 : 0 ))
+                    else
+                        ANSWER_FOCUS=$(( (ANSWER_FOCUS - 1 + 3) % 3 ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $ANSWER_FOCUS -eq 0 ]]; then
+                    ANSWER_TEXT="${ANSWER_TEXT}Z"
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                ;;
+            'A'|'B'|'C'|'D')  # Arrow keys or regular letters
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    # Arrow key - navigate focus
+                    if [[ "$key" == "A" || "$key" == "D" ]]; then
+                        # Up or Left
+                        if [[ -z "$ANSWER_TEXT" ]]; then
+                            ANSWER_FOCUS=$(( ANSWER_FOCUS == 0 ? 1 : 0 ))
+                        else
+                            ANSWER_FOCUS=$(( (ANSWER_FOCUS - 1 + 3) % 3 ))
+                        fi
+                    else
+                        # Down or Right
+                        if [[ -z "$ANSWER_TEXT" ]]; then
+                            ANSWER_FOCUS=$(( ANSWER_FOCUS == 0 ? 1 : 0 ))
+                        else
+                            ANSWER_FOCUS=$(( (ANSWER_FOCUS + 1) % 3 ))
+                        fi
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                elif [[ $ANSWER_FOCUS -eq 0 ]]; then
+                    ANSWER_TEXT="${ANSWER_TEXT}${key}"
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                ;;
+            $'\x15')  # Ctrl+U - delete to start of line
+                if [[ $ANSWER_FOCUS -eq 0 && -n "$ANSWER_TEXT" ]]; then
+                    dialog_delete_line "$ANSWER_TEXT"
+                    ANSWER_TEXT="$_DIALOG_TEXT_RESULT"
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                ;;
+            $'\x7f'|$'\b')  # Backspace
+                if [[ $ANSWER_FOCUS -eq 0 && -n "$ANSWER_TEXT" ]]; then
+                    if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                        # Option+Delete - delete word
+                        dialog_delete_word "$ANSWER_TEXT"
+                        ANSWER_TEXT="$_DIALOG_TEXT_RESULT"
+                        _DIALOG_ESC_PENDING=0
+                    else
+                        ANSWER_TEXT="${ANSWER_TEXT%?}"
+                    fi
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    DIALOG_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                elif [[ $ANSWER_FOCUS -eq 0 ]]; then
+                    ANSWER_TEXT="${ANSWER_TEXT}${key}"
+                    _DIALOG_TEXT_DIRTY=1
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Answer Question Dialog
+    # ==========================================================================
+
     # Open external diff tool for an agent
     # Args: $1=agent_id
     watch_open_external_diff() {
@@ -17739,6 +18194,13 @@ try {
         # Row 1: Navigation keys (left) + Usage stats (right)
         local help_text
         local help_text_len
+        # Build questions indicator if there are pending questions (shown before errors)
+        local questions_suffix=""
+        local questions_suffix_len=0
+        if [[ $QUESTIONS_TOTAL_COUNT -gt 0 ]]; then
+            questions_suffix="${COLOR_YELLOW}q: questions ($QUESTIONS_TOTAL_COUNT)${COLOR_RESET}${COLOR_DIM}    "
+            questions_suffix_len=$((18 + ${#QUESTIONS_TOTAL_COUNT}))  # "q: questions ()    " = 18 chars + digits
+        fi
         # Build errors indicator if there are unread errors (shown before Ctrl-C: quit)
         local errors_suffix=""
         local errors_suffix_len=0
@@ -17746,24 +18208,30 @@ try {
             errors_suffix="${COLOR_RED}e: errors ($ERRORS_UNREAD_COUNT)${COLOR_RESET}${COLOR_DIM}    "
             errors_suffix_len=$((16 + ${#ERRORS_UNREAD_COUNT}))  # "e: errors ()    " = 16 chars + digits
         fi
+        local badges_suffix="${questions_suffix}${errors_suffix}"
+        local badges_suffix_len=$((questions_suffix_len + errors_suffix_len))
         if [[ $RIGHT_PANE_MODE -eq 2 ]]; then
             # Denials mode: show time filter toggle
             local filter_name="${DENIALS_TIME_FILTER_NAMES[$DENIALS_TIME_FILTER]}"
-            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-            help_text_len=$((56 + ${#filter_name} + errors_suffix_len))
+            help_text=";/l: scroll    t: filter [$filter_name]    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+            help_text_len=$((56 + ${#filter_name} + badges_suffix_len))
         elif [[ $RIGHT_PANE_MODE -eq 5 ]]; then
             # Diff mode: show scroll and pane navigation, plus external diff if configured
             if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" ]]; then
-                help_text=";/l: scroll    o: ext diff    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-                help_text_len=$((55 + errors_suffix_len))
+                help_text=";/l: scroll    o: ext diff    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+                help_text_len=$((55 + badges_suffix_len))
             else
-                help_text=";/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-                help_text_len=$((40 + errors_suffix_len))
+                help_text=";/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+                help_text_len=$((40 + badges_suffix_len))
             fi
+        elif [[ $RIGHT_PANE_MODE -eq 7 ]]; then
+            # Questions mode: show selection and pane navigation
+            help_text="j/k: select    ;/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+            help_text_len=$((55 + badges_suffix_len))
         else
             # Normal mode
-            help_text="j/k: select    ;/l: scroll    n/p: pane    ${errors_suffix}Ctrl-C: quit"
-            help_text_len=$((55 + errors_suffix_len))
+            help_text="j/k: select    ;/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+            help_text_len=$((55 + badges_suffix_len))
         fi
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 5 + ${#SCROLL_OFFSET}))
         local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
@@ -17804,6 +18272,10 @@ try {
                     action_text_visible_len=${#action_text}
                     ;;
             esac
+        elif [[ $RIGHT_PANE_MODE -eq 7 ]]; then
+            # Questions mode: show answer instruction
+            action_text="Enter: answer selected question    n/p: pane"
+            action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
             action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
@@ -18343,6 +18815,118 @@ try {
 
             # Bottom separator - uses cached full-width separator
             printf '%s' "$_SEP_FULL"
+
+            # Store pane info for footer
+            _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
+            _WATCH_PANE_HEIGHT=$content_height
+
+            return  # Skip normal split pane rendering
+        fi
+
+        # ===== QUESTIONS MODE (MODE 7) =====
+        if [[ $RIGHT_PANE_MODE -eq 7 ]]; then
+            # Mark questions as read when viewing
+            watch_mark_questions_read
+
+            # Full-width header for questions mode (dim)
+            local question_count=${#QUESTIONS_CACHE[@]}
+            local header="── QUESTIONS ($question_count) "
+            while [[ ${#header} -lt $TERM_COLS ]]; do
+                header="${header}─"
+            done
+            printf "%s%s%s\n" "$COLOR_DIM" "$header" "$COLOR_RESET"
+
+            # Render full-width questions pane
+            local content_height=$pane_height
+            local content_width=$TERM_COLS
+
+            if [[ $question_count -eq 0 ]]; then
+                # Show "No pending questions" centered
+                local empty_msg="No pending questions"
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    if [[ $line_num -eq $((content_height / 2)) ]]; then
+                        local padding=$(( (content_width - ${#empty_msg}) / 2 ))
+                        [[ $padding -lt 0 ]] && padding=0
+                        printf '%*s%s\n' "$padding" "" "$empty_msg"
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            else
+                # Clamp selection to valid range
+                [[ $QUESTIONS_SELECTED -ge $question_count ]] && QUESTIONS_SELECTED=$((question_count - 1))
+                [[ $QUESTIONS_SELECTED -lt 0 ]] && QUESTIONS_SELECTED=0
+
+                # Build display lines (each question takes ~4 lines)
+                local -a question_display_lines=()
+                local idx=0
+                local entry
+                for entry in "${QUESTIONS_CACHE[@]}"; do
+                    # Parse: id|agent|timestamp|question
+                    local q_id="${entry%%|*}"
+                    local rest="${entry#*|}"
+                    local q_agent="${rest%%|*}"
+                    rest="${rest#*|}"
+                    local q_time="${rest%%|*}"
+                    local q_text="${rest#*|}"
+
+                    # Format relative time from ISO timestamp
+                    local rel_time
+                    rel_time=$(format_age "$q_time") || rel_time="?"
+
+                    # Determine if this question is selected
+                    local selected_marker=" "
+                    if [[ $idx -eq $QUESTIONS_SELECTED ]]; then
+                        selected_marker=">"
+                    fi
+
+                    # Add header line for this question
+                    question_display_lines+=("${selected_marker}[$((idx + 1))] $q_agent (${rel_time} ago)")
+
+                    # Wrap question text with indentation
+                    local indent="    "
+                    local wrap_width=$((content_width - ${#indent}))
+                    [[ $wrap_width -lt 20 ]] && wrap_width=20
+                    local remaining_text="$q_text"
+                    while [[ ${#remaining_text} -gt $wrap_width ]]; do
+                        question_display_lines+=("$indent${remaining_text:0:$wrap_width}")
+                        remaining_text="${remaining_text:$wrap_width}"
+                    done
+                    [[ -n "$remaining_text" ]] && question_display_lines+=("$indent$remaining_text")
+
+                    question_display_lines+=("")  # Blank line between questions
+                    idx=$((idx + 1))
+                done
+
+                local total_lines=${#question_display_lines[@]}
+
+                # Calculate scroll to keep selected question visible
+                local max_scroll=$((total_lines - content_height))
+                [[ $max_scroll -lt 0 ]] && max_scroll=0
+                [[ $SCROLL_OFFSET -gt $max_scroll ]] && SCROLL_OFFSET=$max_scroll
+                [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+
+                local start_idx=$SCROLL_OFFSET
+
+                # Render lines with selection highlighting
+                for ((line_num=0; line_num<content_height; line_num++)); do
+                    local array_idx=$((start_idx + line_num))
+                    if [[ $array_idx -ge 0 && $array_idx -lt $total_lines ]]; then
+                        local line="${question_display_lines[$array_idx]}"
+                        # Highlight lines starting with ">" (selected question header)
+                        if [[ "${line:0:1}" == ">" ]]; then
+                            printf "\e[7m%-${content_width}.${content_width}s\e[0m\n" "$line"
+                        else
+                            printf '%-*s\n' "$content_width" "$line"
+                        fi
+                    else
+                        printf '%-*s\n' "$content_width" ""
+                    fi
+                done
+            fi
+
+            # Bottom separator (dim) - uses cached full-width separator
+            printf '%s%s%s' "$COLOR_DIM" "$_SEP_FULL" "$COLOR_RESET"
 
             # Store pane info for footer
             _WATCH_PANE_START_ROW=$((tree_display_lines + 2))
@@ -19178,6 +19762,7 @@ try {
                 11) watch_dialog_key_number_input "$key" ;;
                 12) watch_dialog_key_string_input "$key" ;;
                 13) watch_dialog_key_permissions_editor "$key" ;;
+                14) watch_dialog_key_answer "$key" ;;
             esac
             return
         fi
@@ -19206,7 +19791,11 @@ try {
             'A')  # Up arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Up arrow = same as k (move selection up)
-                    if [[ $AGENT_COUNT -gt 0 ]]; then
+                    if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                        local q_count=${#QUESTIONS_CACHE[@]}
+                        QUESTIONS_SELECTED=$(( (QUESTIONS_SELECTED - 1 + q_count) % q_count ))
+                        SCROLL_OFFSET=0
+                    elif [[ $AGENT_COUNT -gt 0 ]]; then
                         SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
                         SELECTED_NAME=""
                     fi
@@ -19216,7 +19805,11 @@ try {
             'B')  # Down arrow (when part of escape sequence)
                 if [[ "$_WATCH_ESC_PENDING" == "2" ]]; then
                     # Down arrow = same as j (move selection down)
-                    if [[ $AGENT_COUNT -gt 0 ]]; then
+                    if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                        local q_count=${#QUESTIONS_CACHE[@]}
+                        QUESTIONS_SELECTED=$(( (QUESTIONS_SELECTED + 1) % q_count ))
+                        SCROLL_OFFSET=0
+                    elif [[ $AGENT_COUNT -gt 0 ]]; then
                         SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
                         SELECTED_NAME=""
                     fi
@@ -19243,16 +19836,26 @@ try {
                 ;;
             j)
                 _WATCH_ESC_PENDING=0
-                # Move selection down
-                if [[ $AGENT_COUNT -gt 0 ]]; then
+                # Move selection down (questions pane or agent list)
+                if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                    # In questions pane: navigate questions
+                    local q_count=${#QUESTIONS_CACHE[@]}
+                    QUESTIONS_SELECTED=$(( (QUESTIONS_SELECTED + 1) % q_count ))
+                    SCROLL_OFFSET=0  # Reset scroll to show selected
+                elif [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX + 1) % AGENT_COUNT ))
                     SELECTED_NAME=""  # Clear so render will update from new index
                 fi
                 ;;
             k)
                 _WATCH_ESC_PENDING=0
-                # Move selection up
-                if [[ $AGENT_COUNT -gt 0 ]]; then
+                # Move selection up (questions pane or agent list)
+                if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                    # In questions pane: navigate questions
+                    local q_count=${#QUESTIONS_CACHE[@]}
+                    QUESTIONS_SELECTED=$(( (QUESTIONS_SELECTED - 1 + q_count) % q_count ))
+                    SCROLL_OFFSET=0  # Reset scroll to show selected
+                elif [[ $AGENT_COUNT -gt 0 ]]; then
                     SELECTED_INDEX=$(( (SELECTED_INDEX - 1 + AGENT_COUNT) % AGENT_COUNT ))
                     SELECTED_NAME=""  # Clear so render will update from new index
                 fi
@@ -19352,11 +19955,26 @@ try {
                 watch_set_pane_mode 6 "$_WATCH_SELECTED_ID"
                 SCROLL_OFFSET=0
                 ;;
+            q)
+                _WATCH_ESC_PENDING=0
+                # Switch to questions pane (if there are questions or already viewing)
+                if [[ $QUESTIONS_TOTAL_COUNT -gt 0 || $RIGHT_PANE_MODE -eq 7 ]]; then
+                    watch_set_pane_mode 7 "$_WATCH_SELECTED_ID"
+                    SCROLL_OFFSET=0
+                fi
+                ;;
             c)
                 _WATCH_ESC_PENDING=0
                 # Clear all errors (only when in errors pane)
                 if [[ $RIGHT_PANE_MODE -eq 4 ]]; then
                     watch_clear_errors
+                fi
+                ;;
+            $'\x1e')  # Enter key - open answer dialog if in questions pane
+                _WATCH_ESC_PENDING=0
+                if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                    watch_dialog_init_answer
+                    DIALOG_MODE=14
                 fi
                 ;;
             h)
@@ -19546,6 +20164,14 @@ try {
         # Load any new errors from background processes
         watch_load_errors_from_file
 
+        # Load questions periodically (every 3 seconds)
+        local now
+        now=$(date +%s)
+        if [[ $((now - QUESTIONS_LAST_LOAD)) -ge 3 ]]; then
+            watch_load_questions
+            QUESTIONS_LAST_LOAD=$now
+        fi
+
         # Track dialog state for dirty detection at end of frame
         local prev_dialog_mode=$DIALOG_MODE
 
@@ -19566,6 +20192,7 @@ try {
                 11) watch_dialog_render_number_input ;;
                 12) watch_dialog_render_string_input ;;
                 13) watch_dialog_render_permissions_editor ;;
+                14) watch_dialog_render_answer ;;
             esac
             set -e
         else
