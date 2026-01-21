@@ -400,6 +400,26 @@ try {
 }
 
 # Escape a string for safe JSON embedding
+# Escape a string for use in JSON (pure bash, no external dependencies)
+# Handles: backslashes, quotes, newlines, tabs, carriage returns
+# Usage: escaped=$(json_escape_string "string with \"quotes\" and newlines")
+# Note: This returns the escaped content WITHOUT surrounding quotes
+json_escape_string() {
+    local str="$1"
+    # Escape backslashes first (order matters!)
+    str="${str//\\/\\\\}"
+    # Escape quotes
+    str="${str//\"/\\\"}"
+    # Escape control characters using printf for literal characters
+    local newline=$'\n'
+    local tab=$'\t'
+    local cr=$'\r'
+    str="${str//$newline/\\n}"
+    str="${str//$tab/\\t}"
+    str="${str//$cr/\\r}"
+    printf '%s' "$str"
+}
+
 # Usage: escaped=$(json_escape "string with \"quotes\" and special chars")
 json_escape() {
     local str="$1"
@@ -10995,7 +11015,9 @@ cmd_hooks_inject_status() {
         if [[ -n "$stdin_json" ]]; then
             local extracted_event
             extracted_event=$(echo "$stdin_json" | json_get "-" "hook_event_name" "")
-            [[ -n "$extracted_event" ]] && HOOK_EVENT="$extracted_event"
+            if [[ -n "$extracted_event" ]]; then
+                HOOK_EVENT="$extracted_event"
+            fi
         fi
     fi
 
@@ -11088,7 +11110,9 @@ EOF
     # Count agents
     local agent_count=0
     for agent_dir in "$AGENTS_DIR"/*/; do
-        [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] && agent_count=$((agent_count + 1))
+        if [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]]; then
+            agent_count=$((agent_count + 1))
+        fi
     done
 
     if [[ $agent_count -eq 0 ]]; then
@@ -11123,16 +11147,28 @@ EOF
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
     if [[ -f "$questions_file" ]]; then
         pending_questions=$(json_count_questions "$questions_file" "pending")
-        [[ -z "$pending_questions" ]] && pending_questions=0
+        if [[ -z "$pending_questions" ]]; then
+            pending_questions=0
+        fi
     fi
 
     # Build brief summary
     local parts=()
-    [[ $running -gt 0 ]] && parts+=("$running running")
-    [[ $waiting -gt 0 ]] && parts+=("$waiting waiting")
-    [[ $complete -gt 0 ]] && parts+=("$complete complete")
-    [[ $stopped -gt 0 ]] && parts+=("$stopped stopped")
-    [[ $creating -gt 0 ]] && parts+=("$creating creating")
+    if [[ $running -gt 0 ]]; then
+        parts+=("$running running")
+    fi
+    if [[ $waiting -gt 0 ]]; then
+        parts+=("$waiting waiting")
+    fi
+    if [[ $complete -gt 0 ]]; then
+        parts+=("$complete complete")
+    fi
+    if [[ $stopped -gt 0 ]]; then
+        parts+=("$stopped stopped")
+    fi
+    if [[ $creating -gt 0 ]]; then
+        parts+=("$creating creating")
+    fi
 
     # Join parts with ", "
     local IFS=", "
@@ -11187,34 +11223,29 @@ EOF
             ;;
     esac
 
-    # Output JSON using Python for proper escaping
+    # Output JSON using pure bash
     # Visible requires both --visible flag AND config hooks.statusVisible=true
     local visible_flag="false"
     if [[ "$VISIBLE" == "true" && "$CONFIG_HOOKS_STATUS_VISIBLE" != "false" ]]; then
         visible_flag="true"
     fi
 
-    python3 -c '
-import sys
-import json
+    # Escape content for JSON
+    local escaped_context
+    escaped_context=$(json_escape_string "$status_content")
+    local escaped_brief
+    escaped_brief=$(json_escape_string "$brief_summary")
 
-hook_event = sys.argv[1]
-context = sys.argv[2]
-visible = sys.argv[3] == "true"
-brief = sys.argv[4] if len(sys.argv) > 4 else ""
-
-output = {
-    "hookSpecificOutput": {
-        "hookEventName": hook_event,
-        "additionalContext": f"<ittybitty-status>\n{context}\n</ittybitty-status>"
-    }
-}
-
-if visible and brief:
-    output["systemMessage"] = f"[ib] Agents: {brief}"
-
-print(json.dumps(output, indent=2))
-' "$HOOK_EVENT" "$status_content" "$visible_flag" "$brief_summary"
+    # Output JSON
+    printf '{\n'
+    printf '  "hookSpecificOutput": {\n'
+    printf '    "hookEventName": "%s",\n' "$HOOK_EVENT"
+    printf '    "additionalContext": "<ittybitty-status>\\n%s\\n</ittybitty-status>"\n' "$escaped_context"
+    printf '  }'
+    if [[ "$visible_flag" == "true" && -n "$escaped_brief" ]]; then
+        printf ',\n  "systemMessage": "[ib] Agents: %s"' "$escaped_brief"
+    fi
+    printf '\n}\n'
 }
 
 # =============================================================================
