@@ -979,34 +979,21 @@ json_filter_questions() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             local q_id q_agent q_status q_timestamp q_question
-            q_id=$(echo "$line" | jq -r '.id')
-            q_agent=$(echo "$line" | jq -r '.agent')
-            q_status=$(echo "$line" | jq -r '.status')
-            q_timestamp=$(echo "$line" | jq -r '.timestamp')
-            q_question=$(echo "$line" | jq -r '.question')
+            q_id=$(echo "$line" | jq -r '.id' 2>/dev/null) || q_id=""
+            q_agent=$(echo "$line" | jq -r '.agent' 2>/dev/null) || q_agent=""
+            q_status=$(echo "$line" | jq -r '.status' 2>/dev/null) || q_status=""
+            q_timestamp=$(echo "$line" | jq -r '.timestamp' 2>/dev/null) || q_timestamp=""
+            q_question=$(echo "$line" | jq -r '.question' 2>/dev/null) || q_question=""
 
             # Skip if agents_dir provided and agent doesn't exist
             if [[ -n "$agents_dir" && ! -f "$agents_dir/$q_agent/meta.json" ]]; then
                 continue
             fi
 
-            # Calculate age from timestamp
+            # Calculate age from timestamp using existing format_age function
             local age=""
             if [[ -n "$q_timestamp" ]]; then
-                # Parse ISO timestamp to epoch (strip timezone suffix)
-                local ts_clean="${q_timestamp%Z}"
-                ts_clean="${ts_clean%[-+]*}"
-                local q_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$ts_clean" +%s 2>/dev/null || echo "$now_epoch")
-                local diff=$((now_epoch - q_epoch))
-                if [[ $diff -lt 60 ]]; then
-                    age="${diff}s ago"
-                elif [[ $diff -lt 3600 ]]; then
-                    age="$((diff / 60))m ago"
-                elif [[ $diff -lt 86400 ]]; then
-                    age="$((diff / 3600))h ago"
-                else
-                    age="$((diff / 86400))d ago"
-                fi
+                age="$(format_age "$q_timestamp" "$now_epoch") ago"
             fi
 
             echo "[$q_status] $q_id ($age)"
@@ -10045,6 +10032,131 @@ EOF
     else
         echo "$pending_count"
     fi
+}
+
+# =============================================================================
+# COMMAND: test-filter-questions
+# =============================================================================
+
+# Test questions filtering by agent existence
+# Input: JSON fixture with questions, valid_agents array, and expected_count
+cmd_test_filter_questions() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-filter-questions [options] <file>
+
+Test questions filtering by agent existence.
+
+Reads a JSON fixture file containing:
+- questions: array of question objects
+- valid_agents: array of agent IDs that should be considered "live"
+- expected_count: expected count after filtering
+
+Creates a temporary agents directory with mock meta.json files for valid agents,
+then tests json_count_questions with the agents_dir parameter.
+
+Options:
+  -h, --help      Show this help
+
+Examples:
+  ib test-filter-questions tests/fixtures/filter-questions/filter-dead-agents.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-filter-questions <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Create temp directory for mock agents
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" EXIT
+
+    local questions_file="$temp_dir/questions.json"
+    local agents_dir="$temp_dir/agents"
+
+    # Extract questions to temp file
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        jq '{questions: .questions}' "$input_file" > "$questions_file" 2>/dev/null || true
+
+        # Create mock agent directories for valid_agents
+        local agent_id
+        while IFS= read -r agent_id; do
+            [[ -z "$agent_id" ]] && continue
+            local agent_path="$agents_dir/$agent_id"
+            mkdir -p "$agent_path"
+            echo '{"id":"'"$agent_id"'"}' > "$agent_path/meta.json"
+        done < <(jq -r '.valid_agents // [] | .[]' "$input_file" 2>/dev/null || true)
+    else
+        # For osascript, extract questions and valid_agents
+        local json_b64
+        json_b64=$(base64 < "$input_file")
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+JSON.stringify({questions: data.questions || []}, null, 2);
+" > "$questions_file" 2>/dev/null
+
+        # Get valid_agents and create directories
+        local valid_agents
+        valid_agents=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+(data.valid_agents || []).join('\n');
+" 2>/dev/null)
+
+        while IFS= read -r agent_id; do
+            [[ -z "$agent_id" ]] && continue
+            local agent_path="$agents_dir/$agent_id"
+            mkdir -p "$agent_path"
+            echo '{"id":"'"$agent_id"'"}' > "$agent_path/meta.json"
+        done <<< "$valid_agents"
+    fi
+
+    # Ensure agents_dir exists even if no valid agents
+    mkdir -p "$agents_dir"
+
+    # Count pending questions with filtering
+    local count
+    count=$(json_count_questions "$questions_file" "pending" "$agents_dir")
+
+    echo "${count:-0}"
 }
 
 # =============================================================================
@@ -20147,6 +20259,10 @@ case "${1:-help}" in
     test-questions)
         shift
         cmd_test_questions "$@"
+        ;;
+    test-filter-questions)
+        shift
+        cmd_test_filter_questions "$@"
         ;;
     test-token-usage)
         shift
