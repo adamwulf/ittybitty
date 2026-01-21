@@ -1,0 +1,20 @@
+{
+  "questions": [
+    {
+      "id": "q-dead-1",
+      "agent": "dead-agent-1",
+      "timestamp": "2026-01-21T10:00:00Z",
+      "question": "Question from dead agent 1",
+      "status": "pending"
+    },
+    {
+      "id": "q-dead-2",
+      "agent": "dead-agent-2",
+      "timestamp": "2026-01-21T09:00:00Z",
+      "question": "Question from dead agent 2",
+      "status": "pending"
+    }
+  ],
+  "valid_agents": [],
+  "expected_count": "0"
+}

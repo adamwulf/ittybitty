@@ -1,0 +1,27 @@
+{
+  "questions": [
+    {
+      "id": "q-live-1",
+      "agent": "live-agent",
+      "timestamp": "2026-01-21T10:00:00Z",
+      "question": "Question from live agent",
+      "status": "pending"
+    },
+    {
+      "id": "q-dead-1",
+      "agent": "dead-agent",
+      "timestamp": "2026-01-21T09:00:00Z",
+      "question": "Question from dead agent",
+      "status": "pending"
+    },
+    {
+      "id": "q-live-2",
+      "agent": "another-live",
+      "timestamp": "2026-01-21T08:00:00Z",
+      "question": "Another question from live agent",
+      "status": "pending"
+    }
+  ],
+  "valid_agents": ["live-agent", "another-live"],
+  "expected_count": "2"
+}

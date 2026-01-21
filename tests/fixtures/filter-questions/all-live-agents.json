@@ -1,0 +1,20 @@
+{
+  "questions": [
+    {
+      "id": "q-live-1",
+      "agent": "live-agent-1",
+      "timestamp": "2026-01-21T10:00:00Z",
+      "question": "Question from live agent 1",
+      "status": "pending"
+    },
+    {
+      "id": "q-live-2",
+      "agent": "live-agent-2",
+      "timestamp": "2026-01-21T09:00:00Z",
+      "question": "Question from live agent 2",
+      "status": "pending"
+    }
+  ],
+  "valid_agents": ["live-agent-1", "live-agent-2"],
+  "expected_count": "2"
+}

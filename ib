@@ -956,39 +956,111 @@ JSON.stringify(base, null, 2);
 }
 
 # Filter questions by status and format output
-# Usage: json_filter_questions "file.json" "pending|all"
+# Usage: json_filter_questions "file.json" "pending|all" [agents_dir]
+# If agents_dir is provided, filters out questions from agents that no longer exist
 json_filter_questions() {
     local file="$1"
     local filter_status="$2"
+    local agents_dir="${3:-}"
+    local now_epoch=$(date +%s)
 
     if [[ ! -f "$file" ]]; then
         return 0
     fi
 
     if [[ "$JSON_ENGINE" == "jq" ]]; then
+        # Get raw question data as JSON lines
         local filter_expr=".questions // []"
         if [[ "$filter_status" == "pending" ]]; then
             filter_expr="$filter_expr | map(select(.status == \"pending\"))"
         fi
-        jq -r "$filter_expr | .[] | \"[\\(.status)] \\(.id)\\n  From: \\(.agent)\\n  Time: \\(.timestamp)\\n  Question: \\(.question)\\n\"" "$file" 2>/dev/null || true
+
+        # Process each question, filtering by agent existence and adding age
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local q_id q_agent q_status q_timestamp q_question
+            q_id=$(echo "$line" | jq -r '.id' 2>/dev/null) || q_id=""
+            q_agent=$(echo "$line" | jq -r '.agent' 2>/dev/null) || q_agent=""
+            q_status=$(echo "$line" | jq -r '.status' 2>/dev/null) || q_status=""
+            q_timestamp=$(echo "$line" | jq -r '.timestamp' 2>/dev/null) || q_timestamp=""
+            q_question=$(echo "$line" | jq -r '.question' 2>/dev/null) || q_question=""
+
+            # Skip if agents_dir provided and agent doesn't exist
+            if [[ -n "$agents_dir" && ! -f "$agents_dir/$q_agent/meta.json" ]]; then
+                continue
+            fi
+
+            # Calculate age from timestamp using existing format_age function
+            local age=""
+            if [[ -n "$q_timestamp" ]]; then
+                age="$(format_age "$q_timestamp" "$now_epoch") ago"
+            fi
+
+            echo "[$q_status] $q_id ($age)"
+            echo "  From: $q_agent"
+            echo "  Time: $q_timestamp"
+            echo "  Question: $q_question"
+            echo ""
+        done < <(jq -c "$filter_expr | .[]" "$file" 2>/dev/null || true)
     else
         local json_b64
         json_b64=$(base64 < "$file")
+        local agents_dir_b64=""
+        if [[ -n "$agents_dir" ]]; then
+            agents_dir_b64=$(echo -n "$agents_dir" | base64)
+        fi
 
         osascript -l JavaScript -e "
 ObjC.import('Foundation');
-var decoded = $.NSString.alloc.initWithDataEncoding(
-    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
-    $.NSUTF8StringEncoding
-).js;
+ObjC.import('stdlib');
+
+function decodeB64(b64) {
+    if (!b64) return '';
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+function fileExists(path) {
+    return $.NSFileManager.defaultManager.fileExistsAtPath(path);
+}
+
+function formatAge(timestamp, nowEpoch) {
+    // Parse ISO timestamp
+    var df = $.NSDateFormatter.alloc.init;
+    df.dateFormat = 'yyyy-MM-dd\\'T\\'HH:mm:ss';
+    df.timeZone = $.NSTimeZone.timeZoneWithName('UTC');
+    var tsClean = timestamp.replace(/Z\$/, '').replace(/[-+][0-9:]+\$/, '');
+    var date = df.dateFromString(tsClean);
+    if (!date) return '';
+    var epoch = date.timeIntervalSince1970;
+    var diff = nowEpoch - epoch;
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+}
+
+var decoded = decodeB64('$json_b64');
+var agentsDir = decodeB64('$agents_dir_b64');
+var nowEpoch = $now_epoch;
+
 try {
     var data = JSON.parse(decoded);
     var questions = data.questions || [];
     if ('$filter_status' === 'pending') {
         questions = questions.filter(function(q) { return q.status === 'pending'; });
     }
+    // Filter by agent existence if agentsDir provided
+    if (agentsDir) {
+        questions = questions.filter(function(q) {
+            return fileExists(agentsDir + '/' + q.agent + '/meta.json');
+        });
+    }
     questions.forEach(function(q) {
-        console.log('[' + q.status + '] ' + q.id);
+        var age = formatAge(q.timestamp, nowEpoch);
+        console.log('[' + q.status + '] ' + q.id + ' (' + age + ')');
         console.log('  From: ' + q.agent);
         console.log('  Time: ' + q.timestamp);
         console.log('  Question: ' + q.question);
@@ -1002,10 +1074,12 @@ try {
 }
 
 # Count questions by status
-# Usage: count=$(json_count_questions "file.json" "pending")
+# Usage: count=$(json_count_questions "file.json" "pending" [agents_dir])
+# If agents_dir is provided, only counts questions from agents that still exist
 json_count_questions() {
     local file="$1"
     local filter_status="$2"
+    local agents_dir="${3:-}"
 
     if [[ ! -f "$file" ]]; then
         echo "0"
@@ -1017,22 +1091,57 @@ json_count_questions() {
         if [[ "$filter_status" == "pending" ]]; then
             filter_expr="$filter_expr | map(select(.status == \"pending\"))"
         fi
-        jq -r "$filter_expr | length" "$file" 2>/dev/null || echo "0"
+
+        # If agents_dir provided, filter by existence
+        if [[ -n "$agents_dir" ]]; then
+            local count=0
+            while IFS= read -r agent; do
+                [[ -z "$agent" ]] && continue
+                if [[ -f "$agents_dir/$agent/meta.json" ]]; then
+                    count=$((count + 1))
+                fi
+            done < <(jq -r "$filter_expr | .[].agent" "$file" 2>/dev/null || true)
+            echo "$count"
+        else
+            jq -r "$filter_expr | length" "$file" 2>/dev/null || echo "0"
+        fi
     else
         local json_b64
         json_b64=$(base64 < "$file")
+        local agents_dir_b64=""
+        if [[ -n "$agents_dir" ]]; then
+            agents_dir_b64=$(echo -n "$agents_dir" | base64)
+        fi
 
         osascript -l JavaScript -e "
 ObjC.import('Foundation');
-var decoded = $.NSString.alloc.initWithDataEncoding(
-    $.NSData.alloc.initWithBase64EncodedStringOptions('$json_b64', 0),
-    $.NSUTF8StringEncoding
-).js;
+
+function decodeB64(b64) {
+    if (!b64) return '';
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+function fileExists(path) {
+    return $.NSFileManager.defaultManager.fileExistsAtPath(path);
+}
+
+var decoded = decodeB64('$json_b64');
+var agentsDir = decodeB64('$agents_dir_b64');
+
 try {
     var data = JSON.parse(decoded);
     var questions = data.questions || [];
     if ('$filter_status' === 'pending') {
         questions = questions.filter(function(q) { return q.status === 'pending'; });
+    }
+    // Filter by agent existence if agentsDir provided
+    if (agentsDir) {
+        questions = questions.filter(function(q) {
+            return fileExists(agentsDir + '/' + q.agent + '/meta.json');
+        });
     }
     questions.length;
 } catch(e) {
@@ -1043,26 +1152,58 @@ try {
 }
 
 # Add a question to questions file
-# Usage: json_add_question "file.json" "id" "agent" "question" "timestamp"
+# Usage: json_add_question "file.json" "id" "agent" "question" "timestamp" [agents_dir]
+# If agents_dir is provided, also cleans up stale questions from non-existent agents
 json_add_question() {
     local file="$1"
     local id="$2"
     local agent="$3"
     local question="$4"
     local timestamp="$5"
+    local agents_dir="${6:-}"
 
     if [[ "$JSON_ENGINE" == "jq" ]]; then
         local existing='{"questions":[]}'
         if [[ -f "$file" ]]; then
             existing=$(<"$file")
         fi
-        echo "$existing" | jq --arg id "$id" \
-            --arg agent "$agent" \
-            --arg question "$question" \
-            --arg timestamp "$timestamp" '
-            .questions //= [] |
-            .questions += [{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: "pending"}]
-        ' > "$file" 2>/dev/null || true
+
+        # If agents_dir provided, filter out stale questions during add
+        if [[ -n "$agents_dir" ]]; then
+            # Build list of valid agents (existing agent directories)
+            local valid_agents=()
+            local agent_id
+            while IFS= read -r agent_id; do
+                [[ -z "$agent_id" ]] && continue
+                if [[ -f "$agents_dir/$agent_id/meta.json" ]]; then
+                    valid_agents+=("$agent_id")
+                fi
+            done < <(echo "$existing" | jq -r '.questions // [] | .[].agent' 2>/dev/null | sort -u || true)
+            # The new agent is also valid
+            valid_agents+=("$agent")
+
+            # Create jq filter for valid agents
+            local valid_json
+            valid_json=$(printf '%s\n' "${valid_agents[@]}" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null || echo '[]')
+
+            echo "$existing" | jq --arg id "$id" \
+                --arg agent "$agent" \
+                --arg question "$question" \
+                --arg timestamp "$timestamp" \
+                --argjson valid_agents "$valid_json" '
+                .questions //= [] |
+                .questions |= map(select(.agent as $a | $valid_agents | index($a))) |
+                .questions += [{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: "pending"}]
+            ' > "$file" 2>/dev/null || true
+        else
+            echo "$existing" | jq --arg id "$id" \
+                --arg agent "$agent" \
+                --arg question "$question" \
+                --arg timestamp "$timestamp" '
+                .questions //= [] |
+                .questions += [{id: $id, agent: $agent, question: $question, timestamp: $timestamp, status: "pending"}]
+            ' > "$file" 2>/dev/null || true
+        fi
     else
         local existing_b64=""
         if [[ -f "$file" ]]; then
@@ -1077,6 +1218,10 @@ json_add_question() {
         question_b64=$(echo -n "$question" | base64)
         local timestamp_b64
         timestamp_b64=$(echo -n "$timestamp" | base64)
+        local agents_dir_b64=""
+        if [[ -n "$agents_dir" ]]; then
+            agents_dir_b64=$(echo -n "$agents_dir" | base64)
+        fi
 
         osascript -l JavaScript -e "
 ObjC.import('Foundation');
@@ -1089,6 +1234,10 @@ function decodeB64(b64) {
     ).js;
 }
 
+function fileExists(path) {
+    return $.NSFileManager.defaultManager.fileExistsAtPath(path);
+}
+
 var data = {questions: []};
 if ('$existing_b64' !== '') {
     try {
@@ -1099,9 +1248,20 @@ if ('$existing_b64' !== '') {
     }
 }
 
+var agentsDir = decodeB64('$agents_dir_b64');
+var newAgent = decodeB64('$agent_b64');
+
+// If agentsDir provided, filter out stale questions
+if (agentsDir) {
+    data.questions = data.questions.filter(function(q) {
+        // Keep if agent still exists OR if it's the new agent being added
+        return q.agent === newAgent || fileExists(agentsDir + '/' + q.agent + '/meta.json');
+    });
+}
+
 data.questions.push({
     id: decodeB64('$id_b64'),
-    agent: decodeB64('$agent_b64'),
+    agent: newAgent,
     question: decodeB64('$question_b64'),
     timestamp: decodeB64('$timestamp_b64'),
     status: 'pending'
@@ -4261,6 +4421,7 @@ generate_status_block() {
 
 # Generate pending questions block for status output
 # Returns: formatted questions block or empty if no pending questions
+# Filters out questions from agents that no longer exist
 generate_questions_block() {
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
 
@@ -4269,9 +4430,9 @@ generate_questions_block() {
         return
     fi
 
-    # Count pending questions
+    # Count pending questions (only from live agents)
     local pending_count
-    pending_count=$(json_count_questions "$questions_file" "pending")
+    pending_count=$(json_count_questions "$questions_file" "pending" "$AGENTS_DIR")
 
     if [[ -z "$pending_count" || "$pending_count" -eq 0 ]]; then
         return
@@ -4283,8 +4444,8 @@ generate_questions_block() {
     echo "Agents are waiting for your response. Use 'ib acknowledge <id>' then 'ib send <agent> \"answer\"' to respond."
     echo ""
 
-    # Format each pending question
-    json_filter_questions "$questions_file" "pending"
+    # Format each pending question (only from live agents)
+    json_filter_questions "$questions_file" "pending" "$AGENTS_DIR"
 }
 
 # =============================================================================
@@ -9874,6 +10035,131 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: test-filter-questions
+# =============================================================================
+
+# Test questions filtering by agent existence
+# Input: JSON fixture with questions, valid_agents array, and expected_count
+cmd_test_filter_questions() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-filter-questions [options] <file>
+
+Test questions filtering by agent existence.
+
+Reads a JSON fixture file containing:
+- questions: array of question objects
+- valid_agents: array of agent IDs that should be considered "live"
+- expected_count: expected count after filtering
+
+Creates a temporary agents directory with mock meta.json files for valid agents,
+then tests json_count_questions with the agents_dir parameter.
+
+Options:
+  -h, --help      Show this help
+
+Examples:
+  ib test-filter-questions tests/fixtures/filter-questions/filter-dead-agents.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-filter-questions <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Create temp directory for mock agents
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" EXIT
+
+    local questions_file="$temp_dir/questions.json"
+    local agents_dir="$temp_dir/agents"
+
+    # Extract questions to temp file
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        jq '{questions: .questions}' "$input_file" > "$questions_file" 2>/dev/null || true
+
+        # Create mock agent directories for valid_agents
+        local agent_id
+        while IFS= read -r agent_id; do
+            [[ -z "$agent_id" ]] && continue
+            local agent_path="$agents_dir/$agent_id"
+            mkdir -p "$agent_path"
+            echo '{"id":"'"$agent_id"'"}' > "$agent_path/meta.json"
+        done < <(jq -r '.valid_agents // [] | .[]' "$input_file" 2>/dev/null || true)
+    else
+        # For osascript, extract questions and valid_agents
+        local json_b64
+        json_b64=$(base64 < "$input_file")
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+JSON.stringify({questions: data.questions || []}, null, 2);
+" > "$questions_file" 2>/dev/null
+
+        # Get valid_agents and create directories
+        local valid_agents
+        valid_agents=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+(data.valid_agents || []).join('\n');
+" 2>/dev/null)
+
+        while IFS= read -r agent_id; do
+            [[ -z "$agent_id" ]] && continue
+            local agent_path="$agents_dir/$agent_id"
+            mkdir -p "$agent_path"
+            echo '{"id":"'"$agent_id"'"}' > "$agent_path/meta.json"
+        done <<< "$valid_agents"
+    fi
+
+    # Ensure agents_dir exists even if no valid agents
+    mkdir -p "$agents_dir"
+
+    # Count pending questions with filtering
+    local count
+    count=$(json_count_questions "$questions_file" "pending" "$agents_dir")
+
+    echo "${count:-0}"
+}
+
+# =============================================================================
 # COMMAND: test-token-usage
 # =============================================================================
 
@@ -11675,9 +11961,9 @@ EOF
         echo '{"questions":[]}' > "$questions_file"
     fi
 
-    # Add the question using our JSON helper
+    # Add the question using our JSON helper (also cleans up stale questions)
     local iso_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    json_add_question "$questions_file" "$question_id" "$AGENT_ID" "$QUESTION" "$iso_timestamp"
+    json_add_question "$questions_file" "$question_id" "$AGENT_ID" "$QUESTION" "$iso_timestamp" "$AGENTS_DIR"
 
     # Log the question
     log_agent "$AGENT_ID" "Asked user question ($question_id): $QUESTION"
@@ -11832,9 +12118,9 @@ EOF
         filter_status="all"
     fi
 
-    # Use json_count_questions helper
+    # Use json_count_questions helper (filter out questions from dead agents)
     local count
-    count=$(json_count_questions "$questions_file" "$filter_status")
+    count=$(json_count_questions "$questions_file" "$filter_status" "$AGENTS_DIR")
 
     if [[ "$count" -eq 0 ]]; then
         if [[ "$SHOW_ALL" == true ]]; then
@@ -11848,8 +12134,8 @@ EOF
     echo "Questions ($count):"
     echo ""
 
-    # Format output using json_filter_questions helper
-    json_filter_questions "$questions_file" "$filter_status"
+    # Format output using json_filter_questions helper (filter out questions from dead agents)
+    json_filter_questions "$questions_file" "$filter_status" "$AGENTS_DIR"
 }
 
 cmd_watchdog() {
@@ -19973,6 +20259,10 @@ case "${1:-help}" in
     test-questions)
         shift
         cmd_test_questions "$@"
+        ;;
+    test-filter-questions)
+        shift
+        cmd_test_filter_questions "$@"
         ;;
     test-token-usage)
         shift
