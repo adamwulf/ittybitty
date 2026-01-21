@@ -1,0 +1,18 @@
+{
+  "operation": "add",
+  "input": {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "ib hooks main-path"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

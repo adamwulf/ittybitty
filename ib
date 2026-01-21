@@ -8563,6 +8563,85 @@ cmd_test_validate_meta() {
 }
 
 # =============================================================================
+# COMMAND: test-status-hooks
+# =============================================================================
+
+# Test status hooks JSON helper functions
+# Input: JSON file with operation and input
+# Operations: has, add, remove
+# Output: result of the operation
+cmd_test_status_hooks() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        cat <<EOF
+Usage: ib test-status-hooks <fixture.json>
+
+Test the status hooks JSON helper functions.
+
+Fixture JSON format:
+  {
+    "operation": "has|add|remove",
+    "input": { ... settings JSON ... }
+  }
+
+Operations:
+  has    - Test json_has_status_hooks, outputs "true" or "false"
+  add    - Test json_add_status_hooks, outputs "valid" if result has hooks
+  remove - Test json_remove_status_hooks, outputs "valid" if result has no hooks
+
+Examples:
+  ib test-status-hooks tests/fixtures/status-hooks/true-has-both-hooks.json
+  ib test-status-hooks tests/fixtures/status-hooks/false-has-empty.json
+EOF
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    local operation
+    local input_json
+    operation=$(json_get "$fixture_file" "operation" "")
+    input_json=$(json_get "$fixture_file" "input" "{}")
+
+    case "$operation" in
+        has)
+            if json_has_status_hooks "$input_json"; then
+                echo "true"
+            else
+                echo "false"
+            fi
+            ;;
+        add)
+            local result
+            result=$(json_add_status_hooks "$input_json")
+            if json_has_status_hooks "$result"; then
+                echo "valid"
+            else
+                echo "invalid"
+            fi
+            ;;
+        remove)
+            local result
+            result=$(json_remove_status_hooks "$input_json")
+            if json_has_status_hooks "$result"; then
+                echo "invalid"
+            else
+                echo "valid"
+            fi
+            ;;
+        *)
+            echo "Error: unknown operation: $operation" >&2
+            echo "Supported operations: has, add, remove" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
 # COMMAND: test-format-age
 # =============================================================================
 
@@ -19795,6 +19874,10 @@ case "${1:-help}" in
     test-validate-meta)
         shift
         cmd_test_validate_meta "$@"
+        ;;
+    test-status-hooks)
+        shift
+        cmd_test_status_hooks "$@"
         ;;
     test-format-age)
         shift

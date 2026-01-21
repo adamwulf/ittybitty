@@ -1,0 +1,17 @@
+{
+  "operation": "has",
+  "input": {
+    "hooks": {
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "ib hooks inject-status --full --visible"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
