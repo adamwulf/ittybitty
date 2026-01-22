@@ -13003,6 +13003,7 @@ EOF
 
         # Parse output into cache array
         # Format: "[status] id\n  From: agent\n  Time: timestamp\n  Question: text\n\n"
+        # Cache format: "ID|AGENT|TIMESTAMP|AGE|QUESTION" (AGE is pre-computed for performance)
         local -a new_cache=()
         local current_id="" current_agent="" current_time="" current_question=""
         local line
@@ -13011,7 +13012,9 @@ EOF
             if [[ "$line" =~ ^\[.*\]\ (q-[^\ ]+) ]]; then
                 # Start of new question - save previous if exists
                 if [[ -n "$current_id" ]]; then
-                    new_cache+=("${current_id}|${current_agent}|${current_time}|${current_question}")
+                    local current_age
+                    current_age=$(format_age "$current_time") || current_age="?"
+                    new_cache+=("${current_id}|${current_agent}|${current_time}|${current_age}|${current_question}")
                 fi
                 current_id="${BASH_REMATCH[1]}"
                 current_agent=""
@@ -13028,7 +13031,9 @@ EOF
 
         # Don't forget the last question
         if [[ -n "$current_id" ]]; then
-            new_cache+=("${current_id}|${current_agent}|${current_time}|${current_question}")
+            local current_age
+            current_age=$(format_age "$current_time") || current_age="?"
+            new_cache+=("${current_id}|${current_agent}|${current_time}|${current_age}|${current_question}")
         fi
 
         # Track new questions for badge
@@ -17737,14 +17742,16 @@ try {
             return 1
         fi
 
-        # Parse selected question: "ID|AGENT|TIMESTAMP|QUESTION"
+        # Parse selected question: "ID|AGENT|TIMESTAMP|AGE|QUESTION"
         local selected="${QUESTIONS_CACHE[$QUESTIONS_SELECTED]}"
-        local q_id q_agent q_time q_text
+        local q_id q_agent q_time q_age q_text
         q_id="${selected%%|*}"
         local rest="${selected#*|}"
         q_agent="${rest%%|*}"
         rest="${rest#*|}"
         q_time="${rest%%|*}"
+        rest="${rest#*|}"
+        q_age="${rest%%|*}"  # Skip age field (not needed in dialog)
         q_text="${rest#*|}"
 
         ANSWER_QUESTION_ID="$q_id"
@@ -18854,25 +18861,27 @@ try {
                 done
             else
                 # Clamp selection to valid range
-                [[ $QUESTIONS_SELECTED -ge $question_count ]] && QUESTIONS_SELECTED=$((question_count - 1))
-                [[ $QUESTIONS_SELECTED -lt 0 ]] && QUESTIONS_SELECTED=0
+                if [[ $QUESTIONS_SELECTED -ge $question_count ]]; then
+                    QUESTIONS_SELECTED=$((question_count - 1))
+                fi
+                if [[ $QUESTIONS_SELECTED -lt 0 ]]; then
+                    QUESTIONS_SELECTED=0
+                fi
 
                 # Build display lines (each question takes ~4 lines)
                 local -a question_display_lines=()
                 local idx=0
                 local entry
                 for entry in "${QUESTIONS_CACHE[@]}"; do
-                    # Parse: id|agent|timestamp|question
+                    # Parse: id|agent|timestamp|age|question
                     local q_id="${entry%%|*}"
                     local rest="${entry#*|}"
                     local q_agent="${rest%%|*}"
                     rest="${rest#*|}"
                     local q_time="${rest%%|*}"
+                    rest="${rest#*|}"
+                    local rel_time="${rest%%|*}"
                     local q_text="${rest#*|}"
-
-                    # Format relative time from ISO timestamp
-                    local rel_time
-                    rel_time=$(format_age "$q_time") || rel_time="?"
 
                     # Determine if this question is selected
                     local selected_marker=" "
