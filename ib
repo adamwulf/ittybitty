@@ -863,7 +863,7 @@ build_settings_json() {
     local agent_id="$5"
 
     # Mandatory permissions that are always added
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git reset:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git reset:*)", "Bash(git update-index:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
     local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
     local hook_cmd="ib hook-permission-denied $agent_id"
 
