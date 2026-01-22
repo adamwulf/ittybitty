@@ -1,0 +1,19 @@
+{
+  "questions": [
+    {
+      "id": "q-test-123",
+      "agent": "test-agent-abc",
+      "timestamp": "2026-01-21T10:00:00Z",
+      "question": "This is a test question?",
+      "status": "pending"
+    }
+  ],
+  "valid_agents": ["test-agent-abc"],
+  "expected_count": "1",
+  "expected_output_contains": [
+    "[pending] q-test-123",
+    "From: test-agent-abc",
+    "Time: 2026-01-21T10:00:00Z",
+    "Question: This is a test question?"
+  ]
+}
