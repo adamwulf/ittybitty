@@ -18202,7 +18202,7 @@ try {
         local questions_suffix_len=0
         if [[ $QUESTIONS_TOTAL_COUNT -gt 0 ]]; then
             questions_suffix="${COLOR_YELLOW}q: questions ($QUESTIONS_TOTAL_COUNT)${COLOR_RESET}${COLOR_DIM}    "
-            questions_suffix_len=$((18 + ${#QUESTIONS_TOTAL_COUNT}))  # "q: questions ()    " = 18 chars + digits
+            questions_suffix_len=$((19 + ${#QUESTIONS_TOTAL_COUNT}))  # "q: questions ()    " = 19 chars + digits
         fi
         # Build errors indicator if there are unread errors (shown before Ctrl-C: quit)
         local errors_suffix=""
