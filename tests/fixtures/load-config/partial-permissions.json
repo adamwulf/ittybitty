@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "manager": {
+      "allow": ["Task", "WebSearch"]
+    }
+  },
+  "fps": 20
+}

@@ -146,6 +146,7 @@ The `ib` script uses `set -e` (exit on error), which means **any command returni
 | `[[ "$var" == "x" ]]` | Returns 1 if false | Only use in `if` statements, not standalone |
 | `local var=$(cmd)` | Exit status is from `local`, not `cmd` | Declare first: `local var; var=$(cmd)` |
 | `read -t 0.1 key` | Returns 1 on timeout | `read -t 0.1 key \|\| true` |
+| `[[ -n "$var" ]] && do_thing` | Line returns 1 if condition is false | Add `\|\| true` at end: `[[ -n "$var" ]] && do_thing \|\| true` |
 
 ### Safe Patterns
 
@@ -178,12 +179,48 @@ if [[ -n "$var" ]]; then
 fi
 ```
 
+### The `&&` Short-Circuit Trap
+
+**CRITICAL**: The pattern `[[ condition ]] && action` is **NOT SAFE** with `set -e` when used as a standalone statement!
+
+When the condition is false, the `&&` short-circuits, and the **entire line returns exit code 1**, causing the script to exit.
+
+```bash
+# BAD: Exits script if $var is empty!
+[[ -n "$var" ]] && CONFIG_VAR="$var"
+
+# GOOD: Add || true to make the line always return 0
+[[ -n "$var" ]] && CONFIG_VAR="$var" || true
+
+# ALSO GOOD: Use if statement
+if [[ -n "$var" ]]; then
+    CONFIG_VAR="$var"
+fi
+```
+
+**Why this happens**: In bash, `A && B` returns the exit code of the last executed command:
+- If A succeeds (exit 0), B runs, and the line returns B's exit code
+- If A fails (exit 1), B doesn't run, and the line returns 1 (A's exit code)
+
+With `set -e`, that exit code 1 terminates the script.
+
+**Real example from ib** (the bug that prompted this documentation):
+```bash
+# In load_config(), these lines would exit the script when the
+# config didn't have hooks.injectStatus defined:
+[[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS"
+
+# Fixed by adding || true:
+[[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
+```
+
 ### Debugging `set -e` Issues
 
 If the script exits unexpectedly:
 1. Add `set -x` temporarily to see which command failed
 2. Look for commands that might return non-zero in success cases
 3. Check recent changes to interactive input handling (read, grep in loops)
+4. Look for `[[ ... ]] && ...` patterns without `|| true` at the end
 
 ## Configuration
 

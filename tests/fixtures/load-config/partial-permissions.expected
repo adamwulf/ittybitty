@@ -1,0 +1,11 @@
+manager_allow: ["Task","WebSearch"]
+manager_deny: []
+worker_allow: []
+worker_deny: []
+create_prs: false
+max_agents: 10
+model:
+fps: 20
+external_diff_tool:
+auto_compact_threshold:
+no_ff: false

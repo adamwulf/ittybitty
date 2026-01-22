@@ -1,0 +1,11 @@
+manager_allow: []
+manager_deny: []
+worker_allow: []
+worker_deny: []
+create_prs: false
+max_agents: 10
+model: claude-3-5-sonnet
+fps: 10
+external_diff_tool: code --diff --wait
+auto_compact_threshold:
+no_ff: false
