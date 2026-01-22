@@ -9494,6 +9494,39 @@ cmd_test_json_has() {
 }
 
 # =============================================================================
+# COMMAND: test-inject-status-filter
+# =============================================================================
+
+# Test the agent context detection logic used in inject-status hook filtering
+# Usage: ib test-inject-status-filter <fixture.json>
+# Fixture JSON should contain a "cwd" field
+# Returns: "skip" if cwd is in agent worktree, "inject" otherwise
+cmd_test_inject_status_filter() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        echo "Usage: ib test-inject-status-filter <fixture.json>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: fixture file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    # Read fixture and extract cwd
+    local cwd
+    cwd=$(json_get "$fixture_file" "cwd" "")
+
+    # Check if cwd is in an agent worktree (same logic as inject-status filter)
+    if [[ -n "$cwd" && "$cwd" == */.ittybitty/agents/*/repo* ]]; then
+        echo "skip"
+    else
+        echo "inject"
+    fi
+}
+
+# =============================================================================
 # COMMAND: test-config-priority
 # =============================================================================
 
@@ -11303,6 +11336,14 @@ cmd_hooks_inject_status() {
             extracted_event=$(echo "$stdin_json" | json_get "-" "hook_event_name" "")
             if [[ -n "$extracted_event" ]]; then
                 HOOK_EVENT="$extracted_event"
+            fi
+
+            # Skip injection for agent Claude instances
+            # Agents running in worktrees shouldn't see status of other agents
+            local cwd
+            cwd=$(echo "$stdin_json" | json_get "-" "cwd" "")
+            if [[ -n "$cwd" && "$cwd" == */.ittybitty/agents/*/repo* ]]; then
+                exit 0
             fi
         fi
     fi
@@ -20235,6 +20276,10 @@ case "${1:-help}" in
     test-json-has)
         shift
         cmd_test_json_has "$@"
+        ;;
+    test-inject-status-filter)
+        shift
+        cmd_test_inject_status_filter "$@"
         ;;
     test-config-priority)
         shift
