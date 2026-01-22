@@ -11470,10 +11470,10 @@ EOF
         esac
     done
 
-    # Count pending questions
+    # Count pending questions (filter out questions from dead agents)
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
     if [[ -f "$questions_file" ]]; then
-        pending_questions=$(json_count_questions "$questions_file" "pending")
+        pending_questions=$(json_count_questions "$questions_file" "pending" "$AGENTS_DIR")
         if [[ -z "$pending_questions" ]]; then
             pending_questions=0
         fi
@@ -12993,9 +12993,9 @@ EOF
             return
         }
 
-        # Get filtered questions output
+        # Get filtered questions output (filter out questions from dead agents)
         local output
-        output=$(json_filter_questions "$questions_file" "pending") || output=""
+        output=$(json_filter_questions "$questions_file" "pending" "$AGENTS_DIR") || output=""
 
         # Parse output into cache array
         # Format: "[status] id\n  From: agent\n  Time: timestamp\n  Question: text\n\n"
