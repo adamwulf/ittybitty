@@ -15884,6 +15884,7 @@ try {
         "errors:panel:4:Error Messages"
         "diff:panel:5:Git Diff"
         "status:panel:6:Git Status - commits and changes"
+        "questions:panel:7:User Questions"
     )
 
     watch_dialog_init_cmd_jump() {
@@ -19714,8 +19715,8 @@ try {
         # Render tree and get selected agent (skip for full-width modes)
         local t_tree_start t_tree_end
         [[ $DEBUG_MODE -eq 1 ]] && t_tree_start=$(get_ms)
-        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 ]]; then
-            # Denials/Diff mode: skip tree rendering, set tree_display_lines to 0
+        if [[ $RIGHT_PANE_MODE -eq 2 || $RIGHT_PANE_MODE -eq 5 || $RIGHT_PANE_MODE -eq 7 ]]; then
+            # Denials/Diff/Questions mode: skip tree rendering, set tree_display_lines to 0
             # Still need to process agent list for state tracking
             local agent_ids=()
             local line
