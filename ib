@@ -2732,6 +2732,27 @@ try {
     return 0
 }
 
+# Apply parsed config values from _CFG_* to CONFIG_* variables
+# Only applies values that are non-empty (preserves defaults/previous values)
+# Called by load_config() for both user and project configs
+_apply_parsed_config() {
+    # Note: Using || true to prevent set -e from exiting when condition is false
+    [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW" || true
+    [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY" || true
+    [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW" || true
+    [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY" || true
+    [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS" || true
+    [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS" || true
+    [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL" || true
+    [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS" || true
+    [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS" || true
+    [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
+    [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
+    [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
+    [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
+    [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
+}
+
 load_config() {
     # Set all defaults first
     CONFIG_MANAGER_ALLOW=""
@@ -2767,22 +2788,7 @@ load_config() {
         local user_content
         user_content=$(<"$user_file")
         if _config_parse_all "$user_content"; then
-            # Apply user values (only if set)
-            # Note: Using || true to prevent set -e from exiting when condition is false
-            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW" || true
-            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY" || true
-            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW" || true
-            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY" || true
-            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS" || true
-            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS" || true
-            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL" || true
-            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS" || true
-            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS" || true
-            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
-            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
-            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
-            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
-            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
+            _apply_parsed_config
         fi
     fi
 
@@ -2791,22 +2797,7 @@ load_config() {
         local project_content
         project_content=$(<"$project_file")
         if _config_parse_all "$project_content"; then
-            # Apply project values (only if set - project overrides user)
-            # Note: Using || true to prevent set -e from exiting when condition is false
-            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW" || true
-            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY" || true
-            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW" || true
-            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY" || true
-            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS" || true
-            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS" || true
-            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL" || true
-            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS" || true
-            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS" || true
-            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
-            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
-            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
-            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
-            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
+            _apply_parsed_config
         fi
     fi
 }
@@ -9392,17 +9383,18 @@ EOF
 
     if _config_parse_all "$input"; then
         # Apply parsed values (only if set)
-        [[ -n "$_CFG_MANAGER_ALLOW" ]] && manager_allow="$_CFG_MANAGER_ALLOW"
-        [[ -n "$_CFG_MANAGER_DENY" ]] && manager_deny="$_CFG_MANAGER_DENY"
-        [[ -n "$_CFG_WORKER_ALLOW" ]] && worker_allow="$_CFG_WORKER_ALLOW"
-        [[ -n "$_CFG_WORKER_DENY" ]] && worker_deny="$_CFG_WORKER_DENY"
-        [[ -n "$_CFG_CREATE_PRS" ]] && create_prs="$_CFG_CREATE_PRS"
-        [[ -n "$_CFG_MAX_AGENTS" ]] && max_agents="$_CFG_MAX_AGENTS"
-        [[ -n "$_CFG_MODEL" ]] && model="$_CFG_MODEL"
-        [[ -n "$_CFG_FPS" ]] && fps="$_CFG_FPS"
-        [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && external_diff_tool="$_CFG_EXTERNAL_DIFF_TOOL"
-        [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && auto_compact_threshold="$_CFG_AUTO_COMPACT_THRESHOLD"
-        [[ -n "$_CFG_NO_FF" ]] && no_ff="$_CFG_NO_FF"
+        # Note: Using || true to prevent set -e from exiting when condition is false
+        [[ -n "$_CFG_MANAGER_ALLOW" ]] && manager_allow="$_CFG_MANAGER_ALLOW" || true
+        [[ -n "$_CFG_MANAGER_DENY" ]] && manager_deny="$_CFG_MANAGER_DENY" || true
+        [[ -n "$_CFG_WORKER_ALLOW" ]] && worker_allow="$_CFG_WORKER_ALLOW" || true
+        [[ -n "$_CFG_WORKER_DENY" ]] && worker_deny="$_CFG_WORKER_DENY" || true
+        [[ -n "$_CFG_CREATE_PRS" ]] && create_prs="$_CFG_CREATE_PRS" || true
+        [[ -n "$_CFG_MAX_AGENTS" ]] && max_agents="$_CFG_MAX_AGENTS" || true
+        [[ -n "$_CFG_MODEL" ]] && model="$_CFG_MODEL" || true
+        [[ -n "$_CFG_FPS" ]] && fps="$_CFG_FPS" || true
+        [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && external_diff_tool="$_CFG_EXTERNAL_DIFF_TOOL" || true
+        [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && auto_compact_threshold="$_CFG_AUTO_COMPACT_THRESHOLD" || true
+        [[ -n "$_CFG_NO_FF" ]] && no_ff="$_CFG_NO_FF" || true
     fi
 
     # Output in expected format
@@ -9417,6 +9409,70 @@ EOF
     echo "external_diff_tool:${external_diff_tool:+ $external_diff_tool}"
     echo "auto_compact_threshold:${auto_compact_threshold:+ $auto_compact_threshold}"
     echo "no_ff: $no_ff"
+}
+
+# =============================================================================
+# COMMAND: test-apply-parsed-config
+# =============================================================================
+
+# Test the _apply_parsed_config helper function in isolation
+# Usage: ib test-apply-parsed-config <file>
+# Input file is JSON with _CFG_* values to set before calling the function.
+# Tests that CONFIG_* variables are properly updated.
+cmd_test_apply_parsed_config() {
+    local input_file="$1"
+
+    if [[ -z "$input_file" ]]; then
+        echo "Usage: ib test-apply-parsed-config <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    local input
+    input=$(cat "$input_file")
+
+    # Initialize CONFIG_* with defaults (same as load_config does)
+    CONFIG_MANAGER_ALLOW=""
+    CONFIG_MANAGER_DENY=""
+    CONFIG_WORKER_ALLOW=""
+    CONFIG_WORKER_DENY=""
+    CONFIG_CREATE_PRS="false"
+    CONFIG_MAX_AGENTS="10"
+    CONFIG_MODEL=""
+    CONFIG_FPS="10"
+    CONFIG_ALLOW_AGENT_QUESTIONS="true"
+    CONFIG_EXTERNAL_DIFF_TOOL=""
+    CONFIG_AUTO_COMPACT_THRESHOLD=""
+    CONFIG_NO_FF="false"
+    CONFIG_HOOKS_INJECT_STATUS="true"
+    CONFIG_HOOKS_STATUS_VISIBLE="true"
+
+    # Parse input JSON to set _CFG_* values
+    if _config_parse_all "$input"; then
+        # Apply parsed config (the function under test)
+        _apply_parsed_config
+    fi
+
+    # Output CONFIG_* values in a consistent format for test comparison
+    # Using ${var:+ $var} pattern to avoid trailing spaces on empty values
+    echo "CONFIG_MANAGER_ALLOW:${CONFIG_MANAGER_ALLOW:+ $CONFIG_MANAGER_ALLOW}"
+    echo "CONFIG_MANAGER_DENY:${CONFIG_MANAGER_DENY:+ $CONFIG_MANAGER_DENY}"
+    echo "CONFIG_WORKER_ALLOW:${CONFIG_WORKER_ALLOW:+ $CONFIG_WORKER_ALLOW}"
+    echo "CONFIG_WORKER_DENY:${CONFIG_WORKER_DENY:+ $CONFIG_WORKER_DENY}"
+    echo "CONFIG_CREATE_PRS: $CONFIG_CREATE_PRS"
+    echo "CONFIG_MAX_AGENTS: $CONFIG_MAX_AGENTS"
+    echo "CONFIG_MODEL:${CONFIG_MODEL:+ $CONFIG_MODEL}"
+    echo "CONFIG_FPS: $CONFIG_FPS"
+    echo "CONFIG_ALLOW_AGENT_QUESTIONS: $CONFIG_ALLOW_AGENT_QUESTIONS"
+    echo "CONFIG_EXTERNAL_DIFF_TOOL:${CONFIG_EXTERNAL_DIFF_TOOL:+ $CONFIG_EXTERNAL_DIFF_TOOL}"
+    echo "CONFIG_AUTO_COMPACT_THRESHOLD:${CONFIG_AUTO_COMPACT_THRESHOLD:+ $CONFIG_AUTO_COMPACT_THRESHOLD}"
+    echo "CONFIG_NO_FF: $CONFIG_NO_FF"
+    echo "CONFIG_HOOKS_INJECT_STATUS: $CONFIG_HOOKS_INJECT_STATUS"
+    echo "CONFIG_HOOKS_STATUS_VISIBLE: $CONFIG_HOOKS_STATUS_VISIBLE"
 }
 
 # =============================================================================
@@ -21033,6 +21089,10 @@ case "${1:-help}" in
     test-load-config)
         shift
         cmd_test_load_config "$@"
+        ;;
+    test-apply-parsed-config)
+        shift
+        cmd_test_apply_parsed_config "$@"
         ;;
     test-settings-load)
         shift

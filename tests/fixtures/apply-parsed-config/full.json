@@ -1,0 +1,24 @@
+{
+  "model": "opus",
+  "fps": 15,
+  "maxAgents": 20,
+  "createPullRequests": true,
+  "allowAgentQuestions": false,
+  "noFastForward": true,
+  "autoCompactThreshold": 80,
+  "externalDiffTool": "code --diff",
+  "permissions": {
+    "manager": {
+      "allow": ["Read", "Write"],
+      "deny": ["Bash"]
+    },
+    "worker": {
+      "allow": ["Read"],
+      "deny": ["Write", "Edit"]
+    }
+  },
+  "hooks": {
+    "injectStatus": false,
+    "statusVisible": false
+  }
+}
