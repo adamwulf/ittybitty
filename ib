@@ -2713,20 +2713,21 @@ try {
     fi
 
     # Convert placeholder back to empty string
-    [[ "$_CFG_MANAGER_ALLOW" == "__UNSET__" ]] && _CFG_MANAGER_ALLOW=""
-    [[ "$_CFG_MANAGER_DENY" == "__UNSET__" ]] && _CFG_MANAGER_DENY=""
-    [[ "$_CFG_WORKER_ALLOW" == "__UNSET__" ]] && _CFG_WORKER_ALLOW=""
-    [[ "$_CFG_WORKER_DENY" == "__UNSET__" ]] && _CFG_WORKER_DENY=""
-    [[ "$_CFG_CREATE_PRS" == "__UNSET__" ]] && _CFG_CREATE_PRS=""
-    [[ "$_CFG_MAX_AGENTS" == "__UNSET__" ]] && _CFG_MAX_AGENTS=""
-    [[ "$_CFG_MODEL" == "__UNSET__" ]] && _CFG_MODEL=""
-    [[ "$_CFG_FPS" == "__UNSET__" ]] && _CFG_FPS=""
-    [[ "$_CFG_ALLOW_AGENT_QUESTIONS" == "__UNSET__" ]] && _CFG_ALLOW_AGENT_QUESTIONS=""
-    [[ "$_CFG_EXTERNAL_DIFF_TOOL" == "__UNSET__" ]] && _CFG_EXTERNAL_DIFF_TOOL=""
-    [[ "$_CFG_AUTO_COMPACT_THRESHOLD" == "__UNSET__" ]] && _CFG_AUTO_COMPACT_THRESHOLD=""
-    [[ "$_CFG_NO_FF" == "__UNSET__" ]] && _CFG_NO_FF=""
-    [[ "$_CFG_HOOKS_INJECT_STATUS" == "__UNSET__" ]] && _CFG_HOOKS_INJECT_STATUS=""
-    [[ "$_CFG_HOOKS_STATUS_VISIBLE" == "__UNSET__" ]] && _CFG_HOOKS_STATUS_VISIBLE=""
+    # Note: Using || true to prevent set -e from exiting when condition is false
+    [[ "$_CFG_MANAGER_ALLOW" == "__UNSET__" ]] && _CFG_MANAGER_ALLOW="" || true
+    [[ "$_CFG_MANAGER_DENY" == "__UNSET__" ]] && _CFG_MANAGER_DENY="" || true
+    [[ "$_CFG_WORKER_ALLOW" == "__UNSET__" ]] && _CFG_WORKER_ALLOW="" || true
+    [[ "$_CFG_WORKER_DENY" == "__UNSET__" ]] && _CFG_WORKER_DENY="" || true
+    [[ "$_CFG_CREATE_PRS" == "__UNSET__" ]] && _CFG_CREATE_PRS="" || true
+    [[ "$_CFG_MAX_AGENTS" == "__UNSET__" ]] && _CFG_MAX_AGENTS="" || true
+    [[ "$_CFG_MODEL" == "__UNSET__" ]] && _CFG_MODEL="" || true
+    [[ "$_CFG_FPS" == "__UNSET__" ]] && _CFG_FPS="" || true
+    [[ "$_CFG_ALLOW_AGENT_QUESTIONS" == "__UNSET__" ]] && _CFG_ALLOW_AGENT_QUESTIONS="" || true
+    [[ "$_CFG_EXTERNAL_DIFF_TOOL" == "__UNSET__" ]] && _CFG_EXTERNAL_DIFF_TOOL="" || true
+    [[ "$_CFG_AUTO_COMPACT_THRESHOLD" == "__UNSET__" ]] && _CFG_AUTO_COMPACT_THRESHOLD="" || true
+    [[ "$_CFG_NO_FF" == "__UNSET__" ]] && _CFG_NO_FF="" || true
+    [[ "$_CFG_HOOKS_INJECT_STATUS" == "__UNSET__" ]] && _CFG_HOOKS_INJECT_STATUS="" || true
+    [[ "$_CFG_HOOKS_STATUS_VISIBLE" == "__UNSET__" ]] && _CFG_HOOKS_STATUS_VISIBLE="" || true
 
     return 0
 }
@@ -2767,20 +2768,21 @@ load_config() {
         user_content=$(<"$user_file")
         if _config_parse_all "$user_content"; then
             # Apply user values (only if set)
-            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW"
-            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY"
-            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW"
-            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY"
-            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS"
-            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS"
-            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL"
-            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS"
-            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS"
-            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL"
-            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD"
-            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF"
-            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS"
-            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE"
+            # Note: Using || true to prevent set -e from exiting when condition is false
+            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW" || true
+            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY" || true
+            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW" || true
+            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY" || true
+            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS" || true
+            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS" || true
+            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL" || true
+            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS" || true
+            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS" || true
+            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
+            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
+            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
+            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
+            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
         fi
     fi
 
@@ -2790,20 +2792,21 @@ load_config() {
         project_content=$(<"$project_file")
         if _config_parse_all "$project_content"; then
             # Apply project values (only if set - project overrides user)
-            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW"
-            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY"
-            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW"
-            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY"
-            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS"
-            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS"
-            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL"
-            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS"
-            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS"
-            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL"
-            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD"
-            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF"
-            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS"
-            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE"
+            # Note: Using || true to prevent set -e from exiting when condition is false
+            [[ -n "$_CFG_MANAGER_ALLOW" ]] && CONFIG_MANAGER_ALLOW="$_CFG_MANAGER_ALLOW" || true
+            [[ -n "$_CFG_MANAGER_DENY" ]] && CONFIG_MANAGER_DENY="$_CFG_MANAGER_DENY" || true
+            [[ -n "$_CFG_WORKER_ALLOW" ]] && CONFIG_WORKER_ALLOW="$_CFG_WORKER_ALLOW" || true
+            [[ -n "$_CFG_WORKER_DENY" ]] && CONFIG_WORKER_DENY="$_CFG_WORKER_DENY" || true
+            [[ -n "$_CFG_CREATE_PRS" ]] && CONFIG_CREATE_PRS="$_CFG_CREATE_PRS" || true
+            [[ -n "$_CFG_MAX_AGENTS" ]] && CONFIG_MAX_AGENTS="$_CFG_MAX_AGENTS" || true
+            [[ -n "$_CFG_MODEL" ]] && CONFIG_MODEL="$_CFG_MODEL" || true
+            [[ -n "$_CFG_FPS" ]] && CONFIG_FPS="$_CFG_FPS" || true
+            [[ -n "$_CFG_ALLOW_AGENT_QUESTIONS" ]] && CONFIG_ALLOW_AGENT_QUESTIONS="$_CFG_ALLOW_AGENT_QUESTIONS" || true
+            [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
+            [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
+            [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
+            [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
+            [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
         fi
     fi
 }
