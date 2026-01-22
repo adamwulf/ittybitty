@@ -1,0 +1,11 @@
+manager_allow: []
+manager_deny: []
+worker_allow: []
+worker_deny: []
+create_prs: true
+max_agents: 10
+model:
+fps: 10
+external_diff_tool:
+auto_compact_threshold:
+no_ff: true
