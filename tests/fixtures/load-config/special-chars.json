@@ -1,0 +1,4 @@
+{
+  "model": "claude-3-5-sonnet",
+  "externalDiffTool": "code --diff --wait"
+}
