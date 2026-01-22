@@ -781,6 +781,76 @@ echo "2h" > tests/fixtures/parse-duration/7200-2-hours.txt
 
 **Note**: Always use `ib` (not `./ib`) to ensure you run the current version from PATH. This is especially important in worktrees where `./ib` would run a stale checkout.
 
+## Agent Merge Review Checklist
+
+**Before merging any agent's work, thoroughly review for these issues:**
+
+### 1. `set -e` Safety
+
+The script uses `set -e` (exit on error). Check for these common bugs:
+
+| Pattern | Problem | Fix |
+|---------|---------|-----|
+| `[[ condition ]] && action` | Returns 1 if condition false, exits script | Add `\|\| true` at end |
+| `grep "pattern" file` | Returns 1 if no match | Use `grep ... \|\| true` or in conditional |
+| `(( count++ ))` | Returns 1 when count was 0 | Use `(( count++ )) \|\| true` |
+| Standalone `[[ test ]]` | Returns 1 if false | Only use inside `if` statements |
+
+**Key rule**: Any `[[ ... ]] && ...` pattern MUST have `|| true` appended unless it's inside an `if` block.
+
+### 2. Bash 3.2 Compatibility
+
+The script must work on macOS default bash (3.2). Reject code using:
+- `${var,,}` or `${var^^}` (case conversion)
+- `declare -A` (associative arrays)
+- `readarray` or `mapfile`
+- `&>>` (append redirect with stderr)
+- Negative array indices `${arr[-1]}`
+
+### 3. Helper Function Testing
+
+If new helper functions are added:
+- Must have corresponding `cmd_test_*` command for testing
+- Must have test fixtures in `tests/fixtures/`
+- Must be added to `tests/test-*.sh` suite
+
+### 4. Duplicate Code
+
+Watch for repeated code blocks that should be helper functions:
+- If the same 3+ lines appear twice, consider extracting to a function
+- Helper functions should be pure (no side effects) when possible for testability
+
+### 5. Comments and Clarity
+
+- Complex logic should have explanatory comments
+- `|| true` additions should have a brief comment explaining why (e.g., `# set -e safety`)
+- Function headers should document args, return values, and side effects
+
+### 6. Performance (for `ib watch` hot paths)
+
+- Avoid subprocess spawning in render loops
+- Use bash builtins over external commands when possible
+- Check if changes affect code called at 10+ FPS
+
+### 7. Security
+
+- No command injection vulnerabilities
+- Proper quoting of variables in commands
+- No hardcoded credentials or paths
+
+### Review Command
+
+```bash
+# Review agent's diff
+ib diff <agent-id>
+
+# Run tests in agent's worktree (ask agent to run)
+ib send <agent-id> "./tests/test-all.sh"
+
+# Check for set -e issues (look for && without || true)
+git show agent/<id>:ib | grep -n '\[\[.*\]\] &&' | grep -v '|| true'
+```
+
 ## Key Implementation Details
 
 - **State detection**: See "Process and Session Management" section above for detailed `get_state` behavior
