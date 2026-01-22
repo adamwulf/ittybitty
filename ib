@@ -18228,9 +18228,9 @@ try {
                 help_text_len=$((40 + badges_suffix_len))
             fi
         elif [[ $RIGHT_PANE_MODE -eq 7 ]]; then
-            # Questions mode: show selection and pane navigation
-            help_text="j/k: select    ;/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
-            help_text_len=$((55 + badges_suffix_len))
+            # Questions mode: show selection, go to agent, and pane navigation
+            help_text="j/k: select    g: agent    ;/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
+            help_text_len=$((67 + badges_suffix_len))
         else
             # Normal mode
             help_text="j/k: select    ;/l: scroll    n/p: pane    ${badges_suffix}Ctrl-C: quit"
@@ -19875,6 +19875,20 @@ try {
                 # Scroll up (show newer content, toward bottom)
                 SCROLL_OFFSET=$((SCROLL_OFFSET - 10))
                 if [[ $SCROLL_OFFSET -lt 0 ]]; then
+                    SCROLL_OFFSET=0
+                fi
+                ;;
+            g)
+                _WATCH_ESC_PENDING=0
+                # Go to agent (only in questions pane)
+                if [[ $RIGHT_PANE_MODE -eq 7 && ${#QUESTIONS_CACHE[@]} -gt 0 ]]; then
+                    # Parse selected question: "ID|AGENT|TIMESTAMP|AGE|QUESTION"
+                    local selected="${QUESTIONS_CACHE[$QUESTIONS_SELECTED]}"
+                    local rest="${selected#*|}"
+                    local q_agent="${rest%%|*}"
+                    # Select the agent and switch to agent log pane
+                    SELECTED_NAME="$q_agent"
+                    watch_set_pane_mode 0 "$q_agent"
                     SCROLL_OFFSET=0
                 fi
                 ;;
