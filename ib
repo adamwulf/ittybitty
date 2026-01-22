@@ -2731,32 +2731,6 @@ try {
     return 0
 }
 
-# Helper to get config value with user -> project precedence (LEGACY - kept for compatibility)
-# NOTE: For bulk loading, use load_config() which uses _config_parse_all() for better performance
-# Usage: _config_get "key.path" "default" ["user_file"] ["project_file"]
-# Returns value from project if key exists there, else user if key exists there, else default
-_config_get() {
-    local keypath="$1"
-    local default="$2"
-    local user_file="${3:-$HOME/.ittybitty.json}"
-    local project_file="${4:-.ittybitty.json}"
-
-    # Check project config first (highest priority)
-    if [[ -f "$project_file" ]] && json_has "$project_file" "$keypath"; then
-        json_get "$project_file" "$keypath" "$default"
-        return
-    fi
-
-    # Check user config second
-    if [[ -f "$user_file" ]] && json_has "$user_file" "$keypath"; then
-        json_get "$user_file" "$keypath" "$default"
-        return
-    fi
-
-    # Fall back to default
-    echo "$default"
-}
-
 load_config() {
     # Set all defaults first
     CONFIG_MANAGER_ALLOW=""
