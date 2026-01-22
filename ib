@@ -12938,10 +12938,6 @@ EOF
     # Fetch usage on startup
     watch_refresh_usage
 
-    # Load questions on startup
-    watch_load_questions
-    QUESTIONS_LAST_LOAD=$(date +%s)
-
     # Add an error to the errors file (can be called from subshells)
     # Args: $1=errors_file, $2=title, $3=message
     watch_add_error_to_file() {
@@ -20156,6 +20152,10 @@ try {
         FEEDBACK_TRIGGER_FRAME=3  # Show after 3 frames (give UI time to render)
     fi
 
+    # Load questions on startup
+    watch_load_questions
+    QUESTIONS_LAST_LOAD=$(date +%s)
+
     # Main loop
     local FRAME_NUMBER=0
     while true; do
@@ -20777,7 +20777,15 @@ EOF
 # =============================================================================
 
 # Check that all required dependencies are installed
-check_dependencies
+# Skip for test commands that don't need external tools (parse-state, test-*)
+case "${1:-}" in
+    parse-state|test-*)
+        # Test commands only use internal logic, no external dependencies needed
+        ;;
+    *)
+        check_dependencies
+        ;;
+esac
 
 # Initialize paths to use root repo (handles running from worktrees)
 init_paths
