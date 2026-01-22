@@ -1,0 +1,18 @@
+{
+  "questions": [
+    {
+      "id": "q-old123",
+      "agent": "worker-done",
+      "timestamp": "2026-01-14T10:30:00Z",
+      "question": "This question was already answered",
+      "status": "acknowledged"
+    },
+    {
+      "id": "q-old456",
+      "agent": "worker-finished",
+      "timestamp": "2026-01-14T11:00:00Z",
+      "question": "Another answered question",
+      "status": "acknowledged"
+    }
+  ]
+}
