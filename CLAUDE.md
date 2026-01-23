@@ -1027,27 +1027,24 @@ Key files:
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
-`ib` spawns persistent Claude agents in isolated git worktrees. Check your role marker at conversation start:
-
-| Marker | Role | Action |
-|--------|------|--------|
-| `<ittybitty>You are an IttyBitty manager agent.</ittybitty>` | Manager | See [AGENT CONTEXT] above |
-| `<ittybitty>You are an IttyBitty worker agent.</ittybitty>` | Worker | See [AGENT CONTEXT] above |
-| No marker | Primary Claude | Read below |
+`ib` spawns persistent Claude agents in isolated git worktrees. Check your role marker at conversation start.
 
 ### Primary Claude
 
-Spawn agents for complex/parallel tasks. **No auto-notifications** - tell user to run `ib watch`.
+Spawn agents for complex/parallel tasks. Status updates appear automatically via hooks. User can also run `ib watch` for live monitoring.
 Always spawn **manager** agents (not `--worker`). Managers assess the task and spawn their own workers if needed.
 
 | Command | Description |
 |---------|-------------|
 | `ib new-agent "goal"` | Spawn agent (returns ID) |
+| `ib list` | Show all agents |
 | `ib look <id>` | View agent output |
 | `ib send <id> "msg"` | Send input to agent |
+| `ib status <id>` | Show commits/changes |
 | `ib diff <id>` | Review agent's changes |
-| `ib merge <id> --force` | Merge and close agent |
-| `ib kill <id> --force` | Close without merging |
+| `ib merge <id>` | Merge and close agent |
+| `ib kill <id>` | Close without merging |
+| `ib resume <id>` | Restart stopped agent |
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
 
@@ -1059,8 +1056,11 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 |-------|---------|
 | `creating` | Starting up |
 | `running` | Actively working |
+| `compacting` | Summarizing context |
 | `waiting` | Idle, may need input |
 | `complete` | Signaled done |
+| `rate_limited` | Hit API rate limits |
 | `stopped` | Session ended |
+| `unknown` | State unclear |
 
 </ittybitty>
