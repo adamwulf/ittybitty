@@ -39,7 +39,7 @@ Worker Agents (focused workers, no sub-agents)
 
 ## Version
 
-The version is defined at the top of the `ib` script (line 10): `VERSION="x.y.z"`
+The version is defined at the top of the `ib` script in the `VERSION` variable: `VERSION="x.y.z"`
 
 When bumping the version, update only this line.
 
@@ -406,7 +406,7 @@ Each agent has an `agent.log` file at `.ittybitty/agents/<id>/agent.log` that ca
 
 ### How Logging Works
 
-The `log_agent` helper function (ib:62) both writes to the log file AND echoes to stdout:
+The `log_agent` helper function both writes to the log file AND echoes to stdout:
 ```bash
 log_agent "$ID" "message"           # logs and prints
 log_agent "$ID" "message" --quiet   # logs only, no stdout
@@ -511,20 +511,20 @@ The `kill_agent_process` function uses two strategies:
 
 ### Agent State Detection
 
-The `get_state` function (ib:867) reads recent tmux output to determine state:
+The `get_state` function reads recent tmux output to determine state:
 
-| State | Detection Method |
-|-------|------------------|
+| State | Meaning |
+|-------|---------|
 | `stopped` | tmux session doesn't exist |
-| `creating` | Session exists but Claude hasn't started yet (no logo, may show permissions screen) |
-| `compacting` | Last 5 lines contain "Compacting conversation" |
-| `running` | Last 5 lines contain active indicators ("esc to interrupt", "⎿  Running") OR last 15 lines contain "ctrl+b ctrl+b", "thinking)" |
-| `rate_limited` | Last 15 lines contain "rate_limit_error" or "usage limit reached" |
-| `complete` | Last 15 lines contain "I HAVE COMPLETED THE GOAL" |
-| `waiting` | Last 15 lines contain standalone "WAITING" |
-| `unknown` | Session exists but no clear indicators |
+| `creating` | Agent starting up, Claude not yet running |
+| `compacting` | Agent is summarizing context |
+| `running` | Actively executing |
+| `rate_limited` | Hit API rate limits |
+| `complete` | Signaled task completion |
+| `waiting` | Idle, may need input |
+| `unknown` | Session exists but state unclear |
 
-**Priority order**:
+**Detection priority order** (see `get_state` function for patterns):
 1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
 2. Check last 5 lines for compacting state ("Compacting conversation") - agent is busy summarizing context
 3. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
@@ -560,7 +560,7 @@ When Claude starts in a new worktree, it may show a "Do you trust the files in t
 
 ### Detection Strategy
 
-The `wait_for_claude_start` function (ib:471) waits for EITHER:
+The `wait_for_claude_start` function waits for EITHER:
 1. **Logo** ("Claude Code v") - Claude started, no permissions needed
 2. **Permissions screen** ("Enter to confirm" + "trust") - needs acceptance
 
@@ -574,7 +574,7 @@ wait_for_claude_start()
   └── Permissions detected → send Enter → wait_for_claude_logo()
 ```
 
-The `auto_accept_workspace_trust` function (ib:525):
+The `auto_accept_workspace_trust` function:
 1. Waits for Claude to start (logo OR permissions)
 2. If logo appeared first → return immediately
 3. If permissions screen → send Enter, wait 4s, verify logo appears
@@ -824,25 +824,13 @@ echo "2h" > tests/fixtures/parse-duration/7200-2-hours.txt
 
 ### 1. `set -e` Safety
 
-The script uses `set -e` (exit on error). Check for these common bugs:
-
-| Pattern | Problem | Fix |
-|---------|---------|-----|
-| `[[ condition ]] && action` | Returns 1 if condition false, exits script | Add `\|\| true` at end |
-| `grep "pattern" file` | Returns 1 if no match | Use `grep ... \|\| true` or in conditional |
-| `(( count++ ))` | Returns 1 when count was 0 | Use `(( count++ )) \|\| true` |
-| Standalone `[[ test ]]` | Returns 1 if false | Only use inside `if` statements |
+See the **"Bash Script Behavior (`set -e`)"** section for comprehensive documentation of `set -e` pitfalls and safe patterns.
 
 **Key rule**: Any `[[ ... ]] && ...` pattern MUST have `|| true` appended unless it's inside an `if` block.
 
 ### 2. Bash 3.2 Compatibility
 
-The script must work on macOS default bash (3.2). Reject code using:
-- `${var,,}` or `${var^^}` (case conversion)
-- `declare -A` (associative arrays)
-- `readarray` or `mapfile`
-- `&>>` (append redirect with stderr)
-- Negative array indices `${arr[-1]}`
+See the **"Bash Version Compatibility"** section for the complete list of Bash 4.0+ features to avoid. The script must work on macOS default bash (3.2).
 
 ### 3. Helper Function Testing
 
@@ -994,23 +982,12 @@ Permissions flow through several layers:
                     ▼
 ┌─────────────────────────────────────────┐
 │ $AGENT_DIR/settings.local.json          │  ← Claude Code reads
-│ - permissions.allow: [...]              │
-│ - permissions.deny: [...]               │
-│ - hooks: Stop, PreToolUse, PermRequest  │
-└─────────────────────────────────────────┘
-                    │
-                    ▼ Hooks enforce at runtime
-┌─────────────────────────────────────────┐
-│ PreToolUse hook (ib hooks agent-path)   │  ← Path isolation
-│ - Blocks access to main repo            │
-│ - Blocks access to other agent worktrees│
-│ - Logs violations to agent.log          │
-├─────────────────────────────────────────┤
-│ PermissionRequest hook                  │  ← Tool allow/deny
-│ - Auto-denies tools not in allow list   │
-│ - Logs denied requests to agent.log     │
+│ - permissions.allow/deny                │
+│ - hooks (see "Agent Hooks" section)     │
 └─────────────────────────────────────────┘
 ```
+
+Hooks enforce permissions at runtime. See the **"Agent Hooks"** section for details on PreToolUse (path isolation) and PermissionRequest (tool allow/deny) hooks.
 
 **User-configurable permissions** (`.ittybitty.json`):
 ```json
@@ -1036,12 +1013,12 @@ Permissions flow through several layers:
 |----------|--------------|
 | **Plan mode** | `EnterPlanMode`, `ExitPlanMode` (agents should work directly, not enter planning mode) |
 
-**Why file tools are allowed by default:** The PreToolUse hook enforces path isolation at runtime. Agents can only access files in their own worktree - attempts to access the main repo or other agents' files are blocked regardless of tool permissions.
+**Why file tools are allowed by default:** Path isolation is enforced at runtime by the PreToolUse hook (see **"Agent Hooks"** section). Agents can only access files in their own worktree.
 
 Key files:
 - `.ittybitty.json` - User-editable config in repo root (optional)
 - `$AGENT_DIR/settings.local.json` - Generated per-agent, merges mandatory + user permissions
-- `$AGENT_DIR/agent.log` - Contains `[PreToolUse]` and `[PermissionRequest]` denial logs
+- `$AGENT_DIR/agent.log` - Contains hook denial logs (see **"Agent Hooks"** for log format)
 
 <!-- INSTALLED ITTYBITTY BLOCK: This is the installed copy of the <ittybitty> section.
      The canonical source is in the ib script: get_ittybitty_instructions() function.
