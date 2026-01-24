@@ -1322,6 +1322,53 @@ JSON.stringify(data, null, 2);
     fi
 }
 
+# Remove all questions from a specific agent
+# Usage: remove_agent_questions "file.json" "agent_id"
+# Returns: 0 if successful
+remove_agent_questions() {
+    local file="$1"
+    local agent_id="$2"
+
+    if [[ ! -f "$file" ]]; then
+        return 0  # No file, nothing to remove
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        local existing
+        existing=$(<"$file")
+        echo "$existing" | jq --arg agent "$agent_id" '
+            .questions |= map(select(.agent != $agent))
+        ' > "$file" 2>/dev/null || true
+    else
+        local existing_b64
+        existing_b64=$(base64 < "$file")
+        local agent_b64
+        agent_b64=$(echo -n "$agent_id" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+
+var data = JSON.parse(decodeB64('$existing_b64'));
+var agentId = decodeB64('$agent_b64');
+
+if (data.questions) {
+    data.questions = data.questions.filter(function(q) {
+        return q.agent !== agentId;
+    });
+}
+
+JSON.stringify(data, null, 2);
+" > "$file" 2>/dev/null || true
+    fi
+}
+
 # Get agent ID from question
 # Usage: agent_id=$(json_get_question_agent "file.json" "question_id")
 json_get_question_agent() {
@@ -6961,6 +7008,10 @@ EOF
         fi
     fi
 
+    # Remove any questions from this agent
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    remove_agent_questions "$questions_file" "$ID"
+
     # Teardown the agent (logs, kills, archives, removes)
     teardown_agent "$ID" "" "Agent killed"
     echo "Closed agent: $ID"
@@ -7108,11 +7159,17 @@ EOF
     local killed=0
     local failed=0
 
+    # Get questions file path for updating question status
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+
     # Kill each agent in the list
     for id in "${agents_to_kill[@]}"; do
         [[ -d "$AGENTS_DIR/$id" ]] || continue
 
         echo -n "  Killing $id... "
+
+        # Remove any questions from this agent
+        remove_agent_questions "$questions_file" "$id"
 
         # Teardown the agent (quiet mode for batch)
         if teardown_agent "$id" "--quiet" "Agent nuked"; then
@@ -7776,6 +7833,10 @@ EOF
 
     # Archive output (captures complete log including the message above)
     archive_agent_output "$ID"
+
+    # Remove any questions from this agent
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    remove_agent_questions "$questions_file" "$ID"
 
     # Remove agent directory last (no more logging possible after this)
     rm -rf "$AGENT_DIR"
@@ -10471,6 +10532,125 @@ var data = JSON.parse(decodeB64('$json_b64'));
 
     # Get formatted output from json_filter_questions
     json_filter_questions "$questions_file" "pending" "$agents_dir"
+}
+
+# =============================================================================
+# COMMAND: test-update-question-status
+# =============================================================================
+
+# Test remove_agent_questions function
+# Input: JSON fixture with questions and agent_id
+# Output: remaining question IDs after removal (one per line)
+cmd_test_remove_agent_questions() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-remove-agent-questions [options] <file>
+
+Test removing questions by agent ID.
+
+Reads a JSON fixture file containing:
+- questions: array of question objects
+- agent_id: the agent ID whose questions should be removed
+
+Runs remove_agent_questions and outputs the IDs of remaining questions.
+
+Options:
+  -h, --help      Show this help
+
+Examples:
+  ib test-remove-agent-questions tests/fixtures/remove-agent-questions/remove-single.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-remove-agent-questions <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Create temp directory for test
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf '$temp_dir'" EXIT
+
+    local questions_file="$temp_dir/questions.json"
+
+    # Extract test parameters and write questions file
+    local agent_id
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        jq '{questions: .questions}' "$input_file" > "$questions_file" 2>/dev/null || true
+        agent_id=$(jq -r '.agent_id // ""' "$input_file" 2>/dev/null || true)
+    else
+        local json_b64
+        json_b64=$(base64 < "$input_file")
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+JSON.stringify({questions: data.questions || []}, null, 2);
+" > "$questions_file" 2>/dev/null
+
+        agent_id=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$json_b64'));
+data.agent_id || '';
+" 2>/dev/null)
+    fi
+
+    # Run remove_agent_questions
+    remove_agent_questions "$questions_file" "$agent_id"
+
+    # Output remaining question IDs
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        jq -r '.questions[].id' "$questions_file" 2>/dev/null || true
+    else
+        local result_b64
+        result_b64=$(base64 < "$questions_file")
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+function decodeB64(b64) {
+    return $.NSString.alloc.initWithDataEncoding(
+        $.NSData.alloc.initWithBase64EncodedStringOptions(b64, 0),
+        $.NSUTF8StringEncoding
+    ).js;
+}
+var data = JSON.parse(decodeB64('$result_b64'));
+(data.questions || []).map(function(q) { return q.id; }).join('\n');
+" 2>/dev/null
+    fi
 }
 
 # =============================================================================
@@ -21256,6 +21436,10 @@ case "${1:-help}" in
     test-filter-questions-output)
         shift
         cmd_test_filter_questions_output "$@"
+        ;;
+    test-remove-agent-questions)
+        shift
+        cmd_test_remove_agent_questions "$@"
         ;;
     test-token-usage)
         shift
