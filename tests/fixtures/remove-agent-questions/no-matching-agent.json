@@ -1,0 +1,8 @@
+{
+  "questions": [
+    {"id": "q1", "agent": "agent-a", "question": "Question 1?", "status": "pending", "timestamp": "2026-01-01T12:00:00Z"},
+    {"id": "q2", "agent": "agent-b", "question": "Question 2?", "status": "pending", "timestamp": "2026-01-01T12:01:00Z"}
+  ],
+  "agent_id": "agent-c",
+  "expected_output": "q1\nq2"
+}
