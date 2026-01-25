@@ -440,6 +440,7 @@ When agents are killed/merged/nuked, logs are archived to `.ittybitty/archive/`:
     agent.log            # Timestamped event log
     meta.json            # Agent config (prompt, model, session_id, manager, etc.)
     settings.local.json  # Permissions and hooks configuration
+    debug-logs/          # Tmux captures when state was unknown (for test cases)
 ```
 
 The teardown order ensures complete logs:

@@ -2161,7 +2161,7 @@ cmd_test_compare_versions() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -2197,6 +2197,11 @@ archive_agent_output() {
         # Note: copied to $AGENT_DIR before worktree removal in teardown_agent
         if [[ -f "$AGENT_DIR/settings.local.json" ]]; then
             mv "$AGENT_DIR/settings.local.json" "$archive_folder/settings.local.json"
+        fi
+
+        # Archive debug-logs directory (tmux captures when state was unknown)
+        if [[ -d "$AGENT_DIR/debug-logs" ]]; then
+            cp -r "$AGENT_DIR/debug-logs" "$archive_folder/debug-logs"
         fi
 
         echo "Archived to: $archive_folder/"
@@ -12853,6 +12858,20 @@ cmd_watchdog() {
                 if [[ "$prev_state" != "unknown" ]]; then
                     echo "[watchdog] Agent state: unknown (counter: $waiting_counter, next notify at: $notify_interval)"
                     log_agent "$AGENT_ID" "[watchdog] State changed to: unknown" --quiet
+
+                    # Save debug log for future test case creation
+                    local debug_dir="$AGENT_DIR/debug-logs"
+                    mkdir -p "$debug_dir"
+                    local debug_timestamp
+                    debug_timestamp=$(date +%Y%m%d-%H%M%S)
+                    local debug_file="$debug_dir/unknown-${debug_timestamp}.txt"
+                    local TMUX_SESSION
+                    TMUX_SESSION=$(session_name "$AGENT_ID")
+                    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+                        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$debug_file" 2>/dev/null || true
+                        echo "[watchdog] Saved debug log: $debug_file"
+                        log_agent "$AGENT_ID" "[watchdog] Debug log saved: debug-logs/unknown-${debug_timestamp}.txt" --quiet
+                    fi
                 fi
 
                 # Check if we've reached the notification threshold
