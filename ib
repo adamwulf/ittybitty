@@ -6691,13 +6691,10 @@ EOF
         exit 1
     fi
 
-    # Determine target branch for comparison
-    local TARGET_BRANCH=""
-    if git show-ref --verify --quiet refs/heads/main; then
-        TARGET_BRANCH="main"
-    elif git show-ref --verify --quiet refs/heads/master; then
-        TARGET_BRANCH="master"
-    else
+    # Get current branch name for display (use HEAD for merge-base to match ib merge behavior)
+    local TARGET_BRANCH
+    TARGET_BRANCH=$(git branch --show-current 2>/dev/null) || true
+    if [[ -z "$TARGET_BRANCH" ]]; then
         TARGET_BRANCH="HEAD"
     fi
 
@@ -6710,7 +6707,7 @@ EOF
         if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
             # Use merge-base to compare only agent's changes
             local MERGE_BASE
-            MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+            MERGE_BASE=$(git merge-base HEAD "$BRANCH_NAME")
             local commit_count=$(git log "$MERGE_BASE..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
             if [[ "$commit_count" -gt 0 ]]; then
                 echo "Commits on $BRANCH_NAME (vs $TARGET_BRANCH):"
@@ -6727,10 +6724,10 @@ EOF
     echo "Worktree: $WORKTREE_PATH"
     echo ""
 
-    # Find merge-base to avoid showing unrelated changes from target branch
+    # Find merge-base with HEAD to match ib merge behavior
     local MERGE_BASE=""
     if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-        MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+        MERGE_BASE=$(git merge-base HEAD "$BRANCH_NAME")
     fi
 
     # Show commits
@@ -6780,8 +6777,8 @@ cmd_diff() {
                 cat <<EOF
 Usage: ib diff <id> [options]
 
-Show the full diff of an agent's work compared to the merge-base with main.
-This shows only the agent's changes, not unrelated changes from main branch.
+Show the full diff of an agent's work compared to the merge-base with HEAD.
+This shows only the agent's changes, not unrelated changes from the current branch.
 
 Arguments:
   id              Agent identifier
@@ -6833,25 +6830,15 @@ EOF
         exit 1
     fi
 
-    # Determine target branch for comparison
-    local TARGET_BRANCH=""
-    if git show-ref --verify --quiet refs/heads/main; then
-        TARGET_BRANCH="main"
-    elif git show-ref --verify --quiet refs/heads/master; then
-        TARGET_BRANCH="master"
-    else
-        TARGET_BRANCH="HEAD"
-    fi
-
     # Check if branch exists
     if ! git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
         echo "Error: branch '$BRANCH_NAME' does not exist" >&2
         exit 1
     fi
 
-    # Find merge-base to avoid showing unrelated changes from target branch
+    # Find merge-base with HEAD to match ib merge behavior (merges into current branch)
     local MERGE_BASE
-    MERGE_BASE=$(git merge-base "$TARGET_BRANCH" "$BRANCH_NAME")
+    MERGE_BASE=$(git merge-base HEAD "$BRANCH_NAME")
 
     if [[ "$STAT_ONLY" == true ]]; then
         git diff --stat "$MERGE_BASE..$BRANCH_NAME"
@@ -16768,17 +16755,9 @@ try {
         esac
 
         # Get the diff (merge-base comparison like cmd_diff)
-        local target_branch=""
-        if git show-ref --verify --quiet refs/heads/main; then
-            target_branch="main"
-        elif git show-ref --verify --quiet refs/heads/master; then
-            target_branch="master"
-        else
-            target_branch=$(git branch --show-current 2>/dev/null) || target_branch="HEAD"
-        fi
         local branch_name="agent/$_WATCH_SELECTED_ID"
         local merge_base
-        merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || merge_base="$target_branch"
+        merge_base=$(git merge-base HEAD "$branch_name" 2>/dev/null) || merge_base="HEAD"
         MERGE_DIFF=$(git diff --stat "$merge_base..$branch_name" 2>/dev/null || echo "Unable to get diff")
     }
 
@@ -18592,24 +18571,14 @@ try {
         local agent_id="$1"
         local branch_name="agent/$agent_id"
 
-        # Determine target branch (main or master)
-        local target_branch=""
-        if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
-            target_branch="main"
-        elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
-            target_branch="master"
-        else
-            target_branch="HEAD"
-        fi
-
         # Check if branch exists
         if ! git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
             return 1
         fi
 
-        # Get merge base
+        # Get merge base with HEAD to match ib merge behavior
         local merge_base
-        merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || return 1
+        merge_base=$(git merge-base HEAD "$branch_name" 2>/dev/null) || return 1
 
         # Get branch HEAD
         local branch_head
@@ -19828,19 +19797,9 @@ try {
                 echo "ERROR:$MERGE_CHECK_ERROR" >> "$tmpfile"
             fi
 
-            # Determine target branch for diff
-            local target_branch=""
-            if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
-                target_branch="main"
-            elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
-                target_branch="master"
-            else
-                target_branch="HEAD"
-            fi
-
-            # Get diff output
+            # Get diff output (merge-base with HEAD to match ib merge behavior)
             local merge_base
-            merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || true
+            merge_base=$(git merge-base HEAD "$branch_name" 2>/dev/null) || true
             if [[ -n "$merge_base" ]]; then
                 git diff "$merge_base..$branch_name" 2>/dev/null >> "$tmpfile" || true
             fi
@@ -19960,21 +19919,18 @@ try {
                 continue
             fi
 
-            # Determine target branch
-            local target_branch=""
-            if git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
-                target_branch="main"
-            elif git show-ref --verify --quiet refs/heads/master 2>/dev/null; then
-                target_branch="master"
-            else
+            # Get current branch name for display (use HEAD for merge-base to match ib merge)
+            local target_branch
+            target_branch=$(git branch --show-current 2>/dev/null) || true
+            if [[ -z "$target_branch" ]]; then
                 target_branch="HEAD"
             fi
 
             echo "STATUS:ok" > "$tmpfile"
 
-            # Find merge-base
+            # Find merge-base with HEAD to match ib merge behavior
             local merge_base=""
-            merge_base=$(git merge-base "$target_branch" "$branch_name" 2>/dev/null) || true
+            merge_base=$(git merge-base HEAD "$branch_name" 2>/dev/null) || true
 
             # Show header info
             echo "Agent: $agent_id" >> "$tmpfile"
