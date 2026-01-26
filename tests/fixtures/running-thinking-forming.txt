@@ -1,0 +1,9 @@
+✳ Forming… (Esc to interrupt · thought for 1s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/agent-jkl012
+  Session: 5% (15m) Weekly: 15% (4h)
+  ⏵⏵ accept edits on (shift+Tab to cycle)

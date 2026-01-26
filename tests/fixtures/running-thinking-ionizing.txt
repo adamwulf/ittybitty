@@ -1,0 +1,9 @@
+✻ Ionizing… (Esc to interrupt · thought for 2s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/agent-abc123
+  Session: 20% (3h 51m) Weekly: 65% (17h)
+  ⏵⏵ accept edits on (shift+Tab to cycle)

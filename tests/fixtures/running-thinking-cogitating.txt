@@ -1,0 +1,9 @@
+✢ Cogitating… (Esc to interrupt · thought for 3s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/agent-def456
+  Session: 45% (2h 15m) Weekly: 50% (12h)
+  ⏵⏵ accept edits on (shift+Tab to cycle)

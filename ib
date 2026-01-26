@@ -3921,10 +3921,17 @@ parse_state() {
 
     # Check for thinking spinners at start of line (model is actively thinking)
     # These Unicode spinner characters appear at line start when Claude is processing
+    # Active thinking contains "(Esc to interrupt" or similar interruption markers
     # Exclude completion time indicators like "✻ Cogitated for 4m 4s" or "✻ Brewed for 6m 20s"
-    # These have the structure: spinner + word + "for" (any verb, not specific ones)
+    # These have the structure: spinner + word + "for" without interruption markers
     if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-        # Check if any spinner line contains completion time indicator (pattern: spinner word for)
+        # If the spinner line contains an interruption marker, it's actively thinking
+        if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+            echo "running"
+            return
+        fi
+        # Otherwise, check if it's a completion time indicator (pattern: spinner word for)
+        # If NOT a completion indicator, it's still an active spinner
         if ! [[ "$last_lines" =~ [✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]]; then
             echo "running"
             return
@@ -6497,10 +6504,14 @@ EOF
     fi
 
     # Send to tmux session
-    # Send message first, then Enter separately with a tiny delay
-    # This helps when the target agent is busy processing
+    # Send message first, then Enter separately with a delay
+    # Delay scales with message length since long pastes take time to complete
     tmux send-keys -t "$TMUX_SESSION" "$MESSAGE"
-    sleep 0.1
+    local msg_len=${#MESSAGE}
+    local delay
+    # Base 0.1s + 0.5s per 100 chars, min 0.2s, max 3s
+    delay=$(awk -v len="$msg_len" 'BEGIN {d = 0.1 + (len / 100) * 0.5; if (d < 0.2) d = 0.2; if (d > 3) d = 3; printf "%.1f", d}')
+    sleep "$delay"
     tmux send-keys -t "$TMUX_SESSION" Enter
 
     # Log to recipient (quiet - goes to their log only)

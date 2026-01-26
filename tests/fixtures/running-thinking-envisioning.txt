@@ -1,0 +1,9 @@
+✻ Envisioning… (Esc to interrupt · thought for 1s)
+
+────────────────────────────────────────────────────────────
+❯ Try "how do I implement this?"
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/agent-ghi789
+  Session: 10% (30m) Weekly: 30% (8h)
+  ⏵⏵ accept edits on (shift+Tab to cycle)
