@@ -2303,17 +2303,17 @@ is_running_as_agent() {
 
     # Primary check: worktree path pattern
     if is_in_agent_worktree; then
-        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - pwd matches agent worktree: $(pwd)" >&2
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - pwd matches agent worktree: $(pwd)" >&2 || true  # set -e safety
         return 0
     fi
 
     # Secondary check: ib-spawned tmux session name (for cases where agent cd'd elsewhere)
     if is_in_ib_tmux_session; then
-        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - in ittybitty tmux session" >&2
+        [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: TRUE - in ittybitty tmux session" >&2 || true  # set -e safety
         return 0
     fi
 
-    [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: FALSE - pwd: $(pwd), TMUX=${TMUX:-unset}" >&2
+    [[ -n "$debug" ]] && echo "[DEBUG] is_running_as_agent: FALSE - pwd: $(pwd), TMUX=${TMUX:-unset}" >&2 || true  # set -e safety
     return 1
 }
 
@@ -2329,9 +2329,9 @@ enforce_command_access() {
     local in_tmux_session=false
     local is_claude=false
 
-    is_in_agent_worktree && in_worktree=true
-    is_in_ib_tmux_session && in_tmux_session=true
-    is_claude_running && is_claude=true
+    is_in_agent_worktree && in_worktree=true || true  # set -e safety
+    is_in_ib_tmux_session && in_tmux_session=true || true  # set -e safety
+    is_claude_running && is_claude=true || true  # set -e safety
 
     # Case 1: Agent (Claude running in worktree or ib tmux session)
     if [[ "$is_claude" == "true" ]] && { [[ "$in_worktree" == "true" ]] || [[ "$in_tmux_session" == "true" ]]; }; then
