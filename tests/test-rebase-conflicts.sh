@@ -1,9 +1,9 @@
 #!/bin/bash
-# Integration test suite for merge conflict detection
-# Run from repo root: ./tests/test-merge-conflicts.sh
+# Integration test suite for rebase conflict detection
+# Run from repo root: ./tests/test-rebase-conflicts.sh
 #
-# This test creates temporary git repos to test the check_merge_conflicts function
-# and the pre-merge conflict detection in cmd_merge.
+# This test creates temporary git repos to test the check_rebase_conflicts function
+# and the pre-rebase conflict detection in cmd_merge.
 
 set -e
 
@@ -25,21 +25,21 @@ fi
 
 # Skip if running from agent worktree
 if ! "$IB" is-in-main-repo; then
-    echo "SKIP: test-merge-conflicts requires running from main repo (not agent worktree)"
+    echo "SKIP: test-rebase-conflicts requires running from main repo (not agent worktree)"
     exit 0
 fi
 
-# Extract just the check_merge_conflicts function from ib script
+# Extract just the check_rebase_conflicts function from ib script
 # This avoids side effects from sourcing the entire script
 extract_function() {
     # Use sed to extract the function definition
-    sed -n '/^check_merge_conflicts()/,/^}/p' "$IB"
+    sed -n '/^check_rebase_conflicts()/,/^}/p' "$IB"
 }
 
 # Check if the function exists before trying to extract it
 FUNC_DEF=$(extract_function)
 if [[ -z "$FUNC_DEF" ]]; then
-    echo "SKIP: check_merge_conflicts function not yet implemented in ib"
+    echo "SKIP: check_rebase_conflicts function not found in ib"
     exit 0
 fi
 
@@ -78,22 +78,6 @@ create_test_repo() {
     cd ..
 }
 
-# Helper: Create a branch with modified content
-create_branch_with_change() {
-    local repo="$1"
-    local branch="$2"
-    local file="$3"
-    local content="$4"
-
-    cd "$repo"
-    git checkout --quiet -b "$branch"
-    echo "$content" > "$file"
-    git add "$file"
-    git commit --quiet -m "Change $file on $branch"
-    git checkout --quiet -
-    cd ..
-}
-
 # Test: No conflicts when branches have no overlap
 test_no_conflict_separate_files() {
     local test_name="no conflict - separate files"
@@ -113,7 +97,7 @@ test_no_conflict_separate_files() {
     local main_branch
     main_branch=$(git branch --show-current)
 
-    if check_merge_conflicts "$main_branch" "feature"; then
+    if check_rebase_conflicts "$main_branch" "feature"; then
         echo -e "${GREEN}PASS${NC} $test_name"
         ((PASSED++))
     else
@@ -149,7 +133,7 @@ test_conflict_same_file() {
     git checkout --quiet "$main_branch"
 
 
-    if check_merge_conflicts "$main_branch" "feature"; then
+    if check_rebase_conflicts "$main_branch" "feature"; then
         echo -e "${RED}FAIL${NC} $test_name - expected conflicts but none detected"
         ((FAILED++))
     else
@@ -179,7 +163,7 @@ test_no_conflict_fast_forward() {
     git checkout --quiet "$main_branch"
 
 
-    if check_merge_conflicts "$main_branch" "feature"; then
+    if check_rebase_conflicts "$main_branch" "feature"; then
         echo -e "${GREEN}PASS${NC} $test_name"
         ((PASSED++))
     else
@@ -190,9 +174,9 @@ test_no_conflict_fast_forward() {
     cd "$SCRIPT_DIR"
 }
 
-# Test: Conflict detection returns file names
-test_conflict_shows_files() {
-    local test_name="conflict - shows conflicting files"
+# Test: Conflict detection returns rebase output with conflict info
+test_conflict_shows_output() {
+    local test_name="conflict - shows conflict output"
     setup_temp_dir
 
     create_test_repo "test-repo"
@@ -216,20 +200,21 @@ test_conflict_shows_files() {
 
 
     local conflict_output
-    conflict_output=$(check_merge_conflicts "$main_branch" "feature" 2>&1) || true
+    conflict_output=$(check_rebase_conflicts "$main_branch" "feature" 2>&1) || true
 
-    if [[ "$conflict_output" == *"file.txt"* ]]; then
+    # Rebase conflict output should mention CONFLICT
+    if [[ "$conflict_output" == *"CONFLICT"* ]]; then
         echo -e "${GREEN}PASS${NC} $test_name"
         ((PASSED++))
     else
-        echo -e "${RED}FAIL${NC} $test_name - expected file.txt in output, got: $conflict_output"
+        echo -e "${RED}FAIL${NC} $test_name - expected CONFLICT in output, got: $conflict_output"
         ((FAILED++))
     fi
 
     cd "$SCRIPT_DIR"
 }
 
-# Test: No conflict when feature is ancestor of main
+# Test: No conflict when feature is ancestor of main (nothing to rebase)
 test_no_conflict_ancestor() {
     local test_name="no conflict - feature is ancestor"
     setup_temp_dir
@@ -249,7 +234,7 @@ test_no_conflict_ancestor() {
     git commit --quiet -m "Update on main"
 
 
-    if check_merge_conflicts "$main_branch" "feature"; then
+    if check_rebase_conflicts "$main_branch" "feature"; then
         echo -e "${GREEN}PASS${NC} $test_name"
         ((PASSED++))
     else
@@ -260,7 +245,43 @@ test_no_conflict_ancestor() {
     cd "$SCRIPT_DIR"
 }
 
-echo "Running merge conflict detection tests..."
+# Test: No leftover temp branches after check
+test_cleanup_temp_branches() {
+    local test_name="cleanup - no leftover temp branches"
+    setup_temp_dir
+
+    create_test_repo "test-repo"
+    cd test-repo
+
+    local main_branch
+    main_branch=$(git branch --show-current)
+
+    # Create a simple feature branch
+    git checkout --quiet -b feature
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit --quiet -m "Add feature"
+    git checkout --quiet "$main_branch"
+
+    # Run conflict check
+    check_rebase_conflicts "$main_branch" "feature" >/dev/null 2>&1 || true
+
+    # Check for leftover temp branches
+    local temp_branches
+    temp_branches=$(git branch | grep "temp-rebase-check" || true)
+
+    if [[ -z "$temp_branches" ]]; then
+        echo -e "${GREEN}PASS${NC} $test_name"
+        ((PASSED++))
+    else
+        echo -e "${RED}FAIL${NC} $test_name - found leftover branches: $temp_branches"
+        ((FAILED++))
+    fi
+
+    cd "$SCRIPT_DIR"
+}
+
+echo "Running rebase conflict detection tests..."
 echo "========================================"
 echo ""
 
@@ -268,8 +289,9 @@ echo ""
 test_no_conflict_separate_files
 test_conflict_same_file
 test_no_conflict_fast_forward
-test_conflict_shows_files
+test_conflict_shows_output
 test_no_conflict_ancestor
+test_cleanup_temp_branches
 
 echo ""
 echo "========================================"

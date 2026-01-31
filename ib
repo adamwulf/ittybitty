@@ -3298,60 +3298,6 @@ check_rebase_conflicts() {
     return $result
 }
 
-# Check if merging source_branch into target_branch would cause conflicts
-# Args: $1 = target branch (e.g., "main"), $2 = source branch (e.g., "agent/task-123")
-# Returns: 0 if merge would succeed (no conflicts), 1 if conflicts would occur
-# Outputs: If conflicts detected, prints conflicting file paths to stdout
-check_merge_conflicts() {
-    local target_branch="$1"
-    local source_branch="$2"
-
-    # Try git merge-tree --write-tree first (git 2.38+)
-    # This is the cleanest method - doesn't touch working directory at all
-    local merge_output
-    if merge_output=$(git merge-tree --write-tree "$target_branch" "$source_branch" 2>/dev/null); then
-        # Exit code 0 means merge would succeed
-        return 0
-    else
-        local exit_code=$?
-        # Exit code 1 with output means conflicts detected
-        # Exit code could also indicate the command doesn't exist (older git)
-        if [[ $exit_code -eq 1 && -n "$merge_output" ]]; then
-            # Parse conflicting files from merge-tree output
-            # Format includes lines like "CONFLICT (content): Merge conflict in <file>"
-            echo "$merge_output" | grep "^CONFLICT" | sed 's/.*Merge conflict in //' | sed 's/.*: //' || true
-            return 1
-        fi
-        # Command failed for other reason (possibly old git version)
-        # Fall through to fallback method
-    fi
-
-    # Fallback for older git versions (< 2.38): use merge --no-commit --no-ff
-    # This is messier but works on older git
-    # Save current state
-    local original_branch
-    original_branch=$(git branch --show-current 2>/dev/null) || original_branch=$(git rev-parse HEAD)
-
-    # Try a test merge
-    if git checkout "$target_branch" >/dev/null 2>&1; then
-        if git merge --no-commit --no-ff "$source_branch" >/dev/null 2>&1; then
-            # Merge succeeded - abort and return success
-            git merge --abort >/dev/null 2>&1 || true
-            git checkout "$original_branch" >/dev/null 2>&1 || true
-            return 0
-        else
-            # Merge failed - get conflicting files and abort
-            git diff --name-only --diff-filter=U 2>/dev/null || true
-            git merge --abort >/dev/null 2>&1 || true
-            git checkout "$original_branch" >/dev/null 2>&1 || true
-            return 1
-        fi
-    fi
-
-    # Could not checkout target branch - assume no conflicts and let the actual merge handle it
-    return 0
-}
-
 # Comprehensive merge check - performs all checks that cmd_merge_check does
 # Sets global variables with results (can be called from anywhere)
 # Args: $1 = agent_id, $2 = target_branch (optional, auto-detected if not provided)
