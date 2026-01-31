@@ -6977,8 +6977,7 @@ EOF
     if [[ "$FORCE" != true ]]; then
         # If running as an agent, error instead of blocking on interactive prompt
         if is_running_as_agent; then
-            echo "Error: Cannot use interactive confirmation in agent mode." >&2
-            echo "Use: ib kill $ID --force" >&2
+            echo "Error: Cannot prompt for confirmation in non-interactive mode. Use --force to skip confirmation." >&2
             exit 1
         fi
         local confirm
@@ -7112,8 +7111,7 @@ EOF
     if [[ "$FORCE" != true && ${#agents_to_kill[@]} -gt 0 ]]; then
         # If running as an agent, error instead of blocking on interactive prompt
         if is_running_as_agent; then
-            echo "Error: Cannot use interactive confirmation in agent mode." >&2
-            echo "Use: ib nuke --force" >&2
+            echo "Error: Cannot prompt for confirmation in non-interactive mode. Use --force to skip confirmation." >&2
             exit 1
         fi
         local confirm
@@ -7730,8 +7728,7 @@ EOF
     if [[ "$FORCE" != true && "$commit_count" -gt 0 ]]; then
         # If running as an agent, error instead of blocking on interactive prompt
         if is_running_as_agent; then
-            echo "Error: Cannot use interactive confirmation in agent mode." >&2
-            echo "Use: ib merge $ID --force" >&2
+            echo "Error: Cannot prompt for confirmation in non-interactive mode. Use --force to skip confirmation." >&2
             exit 1
         fi
         local confirm
@@ -12079,8 +12076,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib send <id> "msg"` | Send input to agent |
 | `ib status <id>` | Show commits/changes |
 | `ib diff <id>` | Review agent's changes |
-| `ib merge <id> --force` | Merge and close agent (use `--force` to skip confirmation) |
-| `ib kill <id>` | Close without merging |
+| `ib merge <id> --force` | Merge and close agent (`--force` skips confirmation) |
+| `ib kill <id> --force` | Close without merging (`--force` skips confirmation) |
 | `ib resume <id>` | Restart stopped agent |
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
