@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Optimized `json_filter_questions()` to reduce subprocess calls
 - Replaced Python with pure bash for JSON output in inject-status
 - Refactored hook event reading from stdin instead of CLI param
+- `ib merge` now rebases agent branch onto target before merging (cleaner history)
+- Manager-to-worker merges use `--ff-only` (linear history), user-to-agent merges use `--no-ff` (preserves branch point)
 
 ### Fixed
 - Fix `set -e` exit with `&&` conditional assignment patterns
@@ -33,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Removed STATUS.md-based status injection (replaced with hooks)
 - Removed outdated analysis doc and profiling scripts
 - Removed unused `_config_get` function
+- Removed `noFastForward` config option (replaced by automatic context-based merge behavior)
+- Removed unused `check_merge_conflicts()` function (replaced by `check_rebase_conflicts()`)
 
 ## [0.1.2] - 2026-01-17
 
