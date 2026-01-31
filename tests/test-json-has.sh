@@ -67,8 +67,8 @@ fi
 # ===========================================
 # Test: Key exists with boolean false
 # ===========================================
-echo '{"noFastForward": false}' > "$TEST_DIR/test.json"
-result=$("$IB" test-json-has "$TEST_DIR/test.json" "noFastForward")
+echo '{"createPullRequests": false}' > "$TEST_DIR/test.json"
+result=$("$IB" test-json-has "$TEST_DIR/test.json" "createPullRequests")
 if [[ "$result" == "true" ]]; then
     pass "key exists with boolean false"
 else

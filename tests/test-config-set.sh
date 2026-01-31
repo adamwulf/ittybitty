@@ -120,13 +120,13 @@ fi
 
 # Test: Set boolean false (should be unquoted)
 rm -f .ittybitty.json
-"$IB" config set noFastForward false >/dev/null
+"$IB" config set createPullRequests false >/dev/null
 content=$(cat .ittybitty.json)
-# Should be "noFastForward": false NOT "noFastForward": "false"
-if [[ "$content" == *'"noFastForward": false'* ]]; then
-    pass "set noFastForward boolean false"
+# Should be "createPullRequests": false NOT "createPullRequests": "false"
+if [[ "$content" == *'"createPullRequests": false'* ]]; then
+    pass "set createPullRequests boolean false"
 else
-    fail "set noFastForward boolean false" "Content: $content"
+    fail "set createPullRequests boolean false" "Content: $content"
 fi
 
 # Test: Set allowAgentQuestions boolean
@@ -191,8 +191,8 @@ fi
 
 # Test: Get boolean value
 rm -f .ittybitty.json
-"$IB" config set noFastForward true >/dev/null
-result=$("$IB" config get noFastForward)
+"$IB" config set createPullRequests true >/dev/null
+result=$("$IB" config get createPullRequests)
 if [[ "$result" == "true" ]]; then
     pass "get boolean value"
 else

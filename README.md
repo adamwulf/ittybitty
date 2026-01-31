@@ -225,7 +225,7 @@ ittybitty uses two config files with this precedence:
 | `.ittybitty.json` | Project (repo root) | Highest - overrides user settings |
 | `~/.ittybitty.json` | User (home directory) | Lower - provides personal defaults |
 
-Use project config for repo-specific settings. Use user config for personal preferences like `externalDiffTool` or `noFastForward`.
+Use project config for repo-specific settings. Use user config for personal preferences like `externalDiffTool`.
 
 ### Quick Config with `ib config`
 
@@ -238,7 +238,6 @@ ib config get maxAgents
 ib config set maxAgents 20
 
 # Get/set user config (with --global)
-ib config --global set noFastForward true   # Your personal default
 ib config --global set externalDiffTool "code --diff"
 ib config --global list                     # Show user config only
 ```
@@ -252,7 +251,6 @@ ib config --global list                     # Show user config only
 | `fps` | 10 | Refresh rate for `ib watch` |
 | `createPullRequests` | false | Create PRs instead of leaving changes on branch |
 | `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
-| `noFastForward` | false | Always create merge commits with `--no-ff` |
 | `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
 | `hooks.injectStatus` | true | Enable status injection via hooks |

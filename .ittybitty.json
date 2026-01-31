@@ -27,6 +27,5 @@
       "deny": []
     }
   },
-  "noFastForward": true,
   "externalDiffTool": "\"git webdiff\""
 }
