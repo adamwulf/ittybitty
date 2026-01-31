@@ -1043,8 +1043,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib send <id> "msg"` | Send input to agent |
 | `ib status <id>` | Show commits/changes |
 | `ib diff <id>` | Review agent's changes |
-| `ib merge <id> --force` | Merge and close agent (use `--force` to skip confirmation) |
-| `ib kill <id>` | Close without merging |
+| `ib merge <id> --force` | Merge and close agent (`--force` skips confirmation) |
+| `ib kill <id> --force` | Close without merging (`--force` skips confirmation) |
 | `ib resume <id>` | Restart stopped agent |
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
