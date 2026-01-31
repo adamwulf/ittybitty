@@ -1034,8 +1034,6 @@ Key files:
 Spawn agents for complex/parallel tasks. Status updates appear automatically via hooks. User can also run `ib watch` for live monitoring.
 Always spawn **manager** agents (not `--worker`). Managers assess the task and spawn their own workers if needed.
 
-**Agents start automatically** - each agent has a watchdog that handles initialization, permission prompts, and monitors for issues (rate limits, context compaction). Never send input to "help" an agent start. Just spawn with `ib new-agent` and monitor with `ib look` or `ib list`.
-
 | Command | Description |
 |---------|-------------|
 | `ib new-agent "goal"` | Spawn agent (returns ID) |
@@ -1044,8 +1042,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib send <id> "msg"` | Send input to agent |
 | `ib status <id>` | Show commits/changes |
 | `ib diff <id>` | Review agent's changes |
-| `ib merge <id> --force` | Merge and close agent (`--force` skips confirmation) |
-| `ib kill <id> --force` | Close without merging (`--force` skips confirmation) |
+| `ib merge <id>` | Merge and close agent |
+| `ib kill <id>` | Close without merging |
 | `ib resume <id>` | Restart stopped agent |
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
