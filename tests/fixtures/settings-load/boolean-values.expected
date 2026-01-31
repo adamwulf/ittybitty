@@ -4,6 +4,7 @@ fps:
 createPullRequests: false
 allowAgentQuestions: true
 noFastForward: false
+mergeStrategy:
 autoCompactThreshold:
 externalDiffTool:
 permissions.manager:

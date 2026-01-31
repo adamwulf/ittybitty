@@ -240,6 +240,7 @@ Configuration is loaded from two files with the following precedence:
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
 - `noFastForward` - when `true`, `ib merge` always creates a merge commit with `--no-ff` (default: false)
+- `mergeStrategy` - merge strategy for `ib merge`: "merge" (default) or "rebase"
 - `externalDiffTool` - external diff tool command for `ib diff --external`
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 

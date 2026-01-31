@@ -2686,6 +2686,7 @@ _config_parse_all() {
     _CFG_EXTERNAL_DIFF_TOOL=""
     _CFG_AUTO_COMPACT_THRESHOLD=""
     _CFG_NO_FF=""
+    _CFG_MERGE_STRATEGY=""
     _CFG_HOOKS_INJECT_STATUS=""
     _CFG_HOOKS_STATUS_VISIBLE=""
 
@@ -2709,6 +2710,7 @@ _config_parse_all() {
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if has("noFastForward") then .noFastForward else "__UNSET__" end),
+                (if has("mergeStrategy") then .mergeStrategy else "__UNSET__" end),
                 (if .hooks then (if .hooks | has("injectStatus") then .hooks.injectStatus else "__UNSET__" end) else "__UNSET__" end),
                 (if .hooks then (if .hooks | has("statusVisible") then .hooks.statusVisible else "__UNSET__" end) else "__UNSET__" end)
             ] | @tsv
@@ -2742,6 +2744,7 @@ try {
         d.hasOwnProperty('externalDiffTool') ? d.externalDiffTool : '__UNSET__',
         d.hasOwnProperty('autoCompactThreshold') ? d.autoCompactThreshold : '__UNSET__',
         d.hasOwnProperty('noFastForward') ? d.noFastForward : '__UNSET__',
+        d.hasOwnProperty('mergeStrategy') ? d.mergeStrategy : '__UNSET__',
         h.hasOwnProperty('injectStatus') ? h.injectStatus : '__UNSET__',
         h.hasOwnProperty('statusVisible') ? h.statusVisible : '__UNSET__'
     ].join('\t');
@@ -2756,7 +2759,7 @@ try {
             _CFG_WORKER_ALLOW _CFG_WORKER_DENY \
             _CFG_CREATE_PRS _CFG_MAX_AGENTS _CFG_MODEL _CFG_FPS \
             _CFG_ALLOW_AGENT_QUESTIONS _CFG_EXTERNAL_DIFF_TOOL \
-            _CFG_AUTO_COMPACT_THRESHOLD _CFG_NO_FF \
+            _CFG_AUTO_COMPACT_THRESHOLD _CFG_NO_FF _CFG_MERGE_STRATEGY \
             _CFG_HOOKS_INJECT_STATUS _CFG_HOOKS_STATUS_VISIBLE \
             <<< "$result"
     fi
@@ -2775,6 +2778,7 @@ try {
     [[ "$_CFG_EXTERNAL_DIFF_TOOL" == "__UNSET__" ]] && _CFG_EXTERNAL_DIFF_TOOL="" || true
     [[ "$_CFG_AUTO_COMPACT_THRESHOLD" == "__UNSET__" ]] && _CFG_AUTO_COMPACT_THRESHOLD="" || true
     [[ "$_CFG_NO_FF" == "__UNSET__" ]] && _CFG_NO_FF="" || true
+    [[ "$_CFG_MERGE_STRATEGY" == "__UNSET__" ]] && _CFG_MERGE_STRATEGY="" || true
     [[ "$_CFG_HOOKS_INJECT_STATUS" == "__UNSET__" ]] && _CFG_HOOKS_INJECT_STATUS="" || true
     [[ "$_CFG_HOOKS_STATUS_VISIBLE" == "__UNSET__" ]] && _CFG_HOOKS_STATUS_VISIBLE="" || true
 
@@ -2798,6 +2802,7 @@ _apply_parsed_config() {
     [[ -n "$_CFG_EXTERNAL_DIFF_TOOL" ]] && CONFIG_EXTERNAL_DIFF_TOOL="$_CFG_EXTERNAL_DIFF_TOOL" || true
     [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
     [[ -n "$_CFG_NO_FF" ]] && CONFIG_NO_FF="$_CFG_NO_FF" || true
+    [[ -n "$_CFG_MERGE_STRATEGY" ]] && CONFIG_MERGE_STRATEGY="$_CFG_MERGE_STRATEGY" || true
     [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
     [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
 }
@@ -2816,6 +2821,7 @@ load_config() {
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_NO_FF="false"
+    CONFIG_MERGE_STRATEGY="merge"
     CONFIG_HOOKS_INJECT_STATUS="true"
     CONFIG_HOOKS_STATUS_VISIBLE="true"
 
@@ -7554,12 +7560,15 @@ cmd_merge() {
     local ID=""
     local TARGET_BRANCH=""
     local FORCE=false
+    local USE_REBASE=""  # empty = use config, "true" = force rebase, "false" = force merge
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --into)    TARGET_BRANCH="$2"; shift 2 ;;
             --force)   FORCE=true; shift ;;
+            --rebase)  USE_REBASE="true"; shift ;;
+            --merge)   USE_REBASE="false"; shift ;;
             -h|--help)
                 cat <<EOF
 Usage: ib merge <id> [options]
@@ -7575,6 +7584,8 @@ Arguments:
 
 Options:
   --into BRANCH   Target branch to merge into (default: current branch if agent, main/master if root)
+  --rebase        Use rebase strategy (rebase agent branch onto target, then fast-forward)
+  --merge         Use merge strategy (create merge commit) - overrides config
   --force         Don't ask for confirmation
   -h, --help      Show this help
 
@@ -7582,13 +7593,20 @@ The merge command:
 1. Checks for uncommitted changes in both:
    - The current directory (where merge will happen)
    - The agent's worktree
-2. Merges the agent's branch into target
+2. Merges the agent's branch into target (or rebases if --rebase or mergeStrategy=rebase)
 3. Kills the agent's Claude process and tmux session
 4. Cleans up the worktree, branch, and agent data
+
+Merge Strategies:
+  merge (default)   Creates a merge commit preserving branch history
+  rebase            Rebases agent's commits onto target for linear history
+
+Configure default strategy: ib config set mergeStrategy rebase
 
 Examples:
   ib merge task-a1b2
   ib merge task-a1b2 --into develop
+  ib merge task-a1b2 --rebase
   ib merge task-a1b2 --force
 EOF
                 exit 0
@@ -7755,41 +7773,103 @@ EOF
         fi
     fi
 
-    # Log the start of merge
-    log_agent "$ID" "Starting merge of $BRANCH_NAME into $TARGET_BRANCH ($commit_count commits)"
+    # Determine merge strategy: command-line flag > config > default (merge)
+    local use_rebase_strategy=false
+    if [[ "$USE_REBASE" == "true" ]]; then
+        use_rebase_strategy=true
+    elif [[ "$USE_REBASE" == "false" ]]; then
+        use_rebase_strategy=false
+    elif [[ "$CONFIG_MERGE_STRATEGY" == "rebase" ]]; then
+        use_rebase_strategy=true
+    fi
 
-    # Perform the merge FIRST (before killing anything)
+    # Log the start of merge
+    local strategy_label="merge"
+    [[ "$use_rebase_strategy" == "true" ]] && strategy_label="rebase"
+    log_agent "$ID" "Starting $strategy_label of $BRANCH_NAME into $TARGET_BRANCH ($commit_count commits)"
+
+    # Perform the merge/rebase FIRST (before killing anything)
     # This ensures we don't leave agents in limbo if merge fails
     if [[ "$commit_count" -gt 0 ]]; then
-        log_agent "$ID" "Checking out $TARGET_BRANCH..."
-        local checkout_error
-        checkout_error=$(git checkout "$TARGET_BRANCH" 2>&1) || {
-            echo "Error: could not checkout $TARGET_BRANCH" >&2
-            echo "$checkout_error" >&2
-            log_agent "$ID" "ERROR: Failed to checkout $TARGET_BRANCH - $checkout_error"
-            if [[ "$checkout_error" == *"already used by worktree"* ]]; then
-                echo "Hint: Branch is checked out in another worktree. Try merging from the root repo." >&2
-                log_agent "$ID" "HINT: Branch is checked out elsewhere - merge from root repo or use --into"
+        if [[ "$use_rebase_strategy" == "true" ]]; then
+            # REBASE STRATEGY:
+            # 1. Rebase agent branch onto target (in the agent's worktree)
+            # 2. Fast-forward target to the rebased branch
+            log_agent "$ID" "Rebasing $BRANCH_NAME onto $TARGET_BRANCH..."
+            local rebase_error
+            rebase_error=$(git -C "$WORKTREE_PATH" rebase "$TARGET_BRANCH" 2>&1) || {
+                echo "Error: rebase failed" >&2
+                echo "$rebase_error" >&2
+                log_agent "$ID" "ERROR: Rebase failed - $rebase_error"
+                if [[ "$rebase_error" == *"CONFLICT"* ]]; then
+                    echo "Hint: The agent can resolve conflicts with:" >&2
+                    echo "  git rebase --continue  # after resolving conflicts" >&2
+                    echo "  git rebase --abort     # to cancel rebase" >&2
+                    echo "" >&2
+                    echo "Or ask the agent to resolve:" >&2
+                    echo "  ib send $ID \"Please resolve the rebase conflicts and complete the rebase, then say I HAVE COMPLETED THE GOAL\"" >&2
+                    log_agent "$ID" "HINT: Rebase conflicts detected - ask agent to resolve"
+                fi
+                exit 1
+            }
+            log_agent "$ID" "Rebase completed successfully"
+
+            # Now fast-forward target branch to the rebased commits
+            log_agent "$ID" "Checking out $TARGET_BRANCH..."
+            local checkout_error
+            checkout_error=$(git checkout "$TARGET_BRANCH" 2>&1) || {
+                echo "Error: could not checkout $TARGET_BRANCH" >&2
+                echo "$checkout_error" >&2
+                log_agent "$ID" "ERROR: Failed to checkout $TARGET_BRANCH - $checkout_error"
+                if [[ "$checkout_error" == *"already used by worktree"* ]]; then
+                    echo "Hint: Branch is checked out in another worktree. Try merging from the root repo." >&2
+                    log_agent "$ID" "HINT: Branch is checked out elsewhere - merge from root repo or use --into"
+                fi
+                exit 1
+            }
+
+            log_agent "$ID" "Fast-forwarding $TARGET_BRANCH to $BRANCH_NAME..."
+            local ff_error
+            ff_error=$(git merge --ff-only "$BRANCH_NAME" 2>&1) || {
+                echo "Error: fast-forward failed" >&2
+                echo "$ff_error" >&2
+                log_agent "$ID" "ERROR: Fast-forward failed - $ff_error"
+                echo "Hint: This shouldn't happen after a successful rebase. The branch may have diverged." >&2
+                exit 1
+            }
+            log_agent "$ID" "Fast-forward merge completed successfully"
+        else
+            # MERGE STRATEGY (original behavior):
+            log_agent "$ID" "Checking out $TARGET_BRANCH..."
+            local checkout_error
+            checkout_error=$(git checkout "$TARGET_BRANCH" 2>&1) || {
+                echo "Error: could not checkout $TARGET_BRANCH" >&2
+                echo "$checkout_error" >&2
+                log_agent "$ID" "ERROR: Failed to checkout $TARGET_BRANCH - $checkout_error"
+                if [[ "$checkout_error" == *"already used by worktree"* ]]; then
+                    echo "Hint: Branch is checked out in another worktree. Try merging from the root repo." >&2
+                    log_agent "$ID" "HINT: Branch is checked out elsewhere - merge from root repo or use --into"
+                fi
+                exit 1
+            }
+            log_agent "$ID" "Merging $BRANCH_NAME..."
+            local merge_error
+            local merge_flags=""
+            if [[ "$CONFIG_NO_FF" == "true" ]]; then
+                merge_flags="--no-ff"
             fi
-            exit 1
-        }
-        log_agent "$ID" "Merging $BRANCH_NAME..."
-        local merge_error
-        local merge_flags=""
-        if [[ "$CONFIG_NO_FF" == "true" ]]; then
-            merge_flags="--no-ff"
+            merge_error=$(git merge $merge_flags "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
+                echo "Error: merge failed" >&2
+                echo "$merge_error" >&2
+                log_agent "$ID" "ERROR: Merge failed - $merge_error"
+                if [[ "$merge_error" == *"CONFLICT"* ]]; then
+                    echo "Hint: Resolve conflicts manually, then run: git add . && git commit" >&2
+                    log_agent "$ID" "HINT: Merge conflicts detected - resolve manually"
+                fi
+                exit 1
+            }
+            log_agent "$ID" "Merge completed successfully"
         fi
-        merge_error=$(git merge $merge_flags "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
-            echo "Error: merge failed" >&2
-            echo "$merge_error" >&2
-            log_agent "$ID" "ERROR: Merge failed - $merge_error"
-            if [[ "$merge_error" == *"CONFLICT"* ]]; then
-                echo "Hint: Resolve conflicts manually, then run: git add . && git commit" >&2
-                log_agent "$ID" "HINT: Merge conflicts detected - resolve manually"
-            fi
-            exit 1
-        }
-        log_agent "$ID" "Merge completed successfully"
     fi
 
     # Capture tmux output BEFORE killing session (so archive has it)
@@ -9509,6 +9589,7 @@ cmd_test_apply_parsed_config() {
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_NO_FF="false"
+    CONFIG_MERGE_STRATEGY="merge"
     CONFIG_HOOKS_INJECT_STATUS="true"
     CONFIG_HOOKS_STATUS_VISIBLE="true"
 
@@ -9532,6 +9613,7 @@ cmd_test_apply_parsed_config() {
     echo "CONFIG_EXTERNAL_DIFF_TOOL:${CONFIG_EXTERNAL_DIFF_TOOL:+ $CONFIG_EXTERNAL_DIFF_TOOL}"
     echo "CONFIG_AUTO_COMPACT_THRESHOLD:${CONFIG_AUTO_COMPACT_THRESHOLD:+ $CONFIG_AUTO_COMPACT_THRESHOLD}"
     echo "CONFIG_NO_FF: $CONFIG_NO_FF"
+    echo "CONFIG_MERGE_STRATEGY: $CONFIG_MERGE_STRATEGY"
     echo "CONFIG_HOOKS_INJECT_STATUS: $CONFIG_HOOKS_INJECT_STATUS"
     echo "CONFIG_HOOKS_STATUS_VISIBLE: $CONFIG_HOOKS_STATUS_VISIBLE"
 }
@@ -9568,6 +9650,7 @@ cmd_test_settings_load() {
         echo "createPullRequests:"
         echo "allowAgentQuestions:"
         echo "noFastForward:"
+        echo "mergeStrategy:"
         echo "autoCompactThreshold:"
         echo "externalDiffTool:"
         echo "permissions.manager:"
@@ -9588,6 +9671,7 @@ cmd_test_settings_load() {
                 (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                 (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
                 (if has("noFastForward") then .noFastForward else "__UNSET__" end),
+                (if has("mergeStrategy") then .mergeStrategy else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 ((.permissions.manager.allow // []) | length),
@@ -9617,6 +9701,7 @@ try {
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
         d.noFastForward !== undefined ? d.noFastForward : '__UNSET__',
+        d.mergeStrategy !== undefined ? d.mergeStrategy : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -9629,11 +9714,11 @@ try {
     fi
 
     # Parse TSV result
-    local maxAgents model fps createPRs allowQuestions noFF autoCompact extDiff
+    local maxAgents model fps createPRs allowQuestions noFF mergeStrat autoCompact extDiff
     local pm_allow pm_deny pw_allow pw_deny
     if [[ -n "$result" ]]; then
         IFS=$'\t' read -r \
-            maxAgents model fps createPRs allowQuestions noFF autoCompact extDiff \
+            maxAgents model fps createPRs allowQuestions noFF mergeStrat autoCompact extDiff \
             pm_allow pm_deny pw_allow pw_deny \
             <<< "$result"
     fi
@@ -9645,6 +9730,7 @@ try {
     [[ "$createPRs" == "__UNSET__" ]] && createPRs=""
     [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions=""
     [[ "$noFF" == "__UNSET__" ]] && noFF=""
+    [[ "$mergeStrat" == "__UNSET__" ]] && mergeStrat=""
     [[ "$autoCompact" == "__UNSET__" ]] && autoCompact=""
     [[ "$extDiff" == "__UNSET__" ]] && extDiff=""
 
@@ -9655,6 +9741,7 @@ try {
     echo "createPullRequests:${createPRs:+ $createPRs}"
     echo "allowAgentQuestions:${allowQuestions:+ $allowQuestions}"
     echo "noFastForward:${noFF:+ $noFF}"
+    echo "mergeStrategy:${mergeStrat:+ $mergeStrat}"
     echo "autoCompactThreshold:${autoCompact:+ $autoCompact}"
     echo "externalDiffTool:${extDiff:+ $extDiff}"
 
@@ -13261,7 +13348,7 @@ EOF
     local SETTINGS_FOCUS_USER=0       # Focus index for user settings tab
     local SETTINGS_FOCUS_PROJECT=0    # Focus index for project settings tab
     # Config keys for settings tabs (8 scalar + 2 permission groups = 10 items + 1 Close button)
-    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "noFastForward" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
+    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "noFastForward" "mergeStrategy" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
     local SETTINGS_ITEMS_COUNT=11     # 10 config items + Close button
 
     # Legacy aliases for compatibility
@@ -15473,6 +15560,7 @@ EOF
         _SETTINGS_CACHE_createPullRequests=""
         _SETTINGS_CACHE_allowAgentQuestions=""
         _SETTINGS_CACHE_noFastForward=""
+        _SETTINGS_CACHE_mergeStrategy=""
         _SETTINGS_CACHE_autoCompactThreshold=""
         _SETTINGS_CACHE_externalDiffTool=""
         _SETTINGS_CACHE_permissions_manager=""
@@ -15500,6 +15588,7 @@ EOF
                     (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                     (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
                     (if has("noFastForward") then .noFastForward else "__UNSET__" end),
+                    (if has("mergeStrategy") then .mergeStrategy else "__UNSET__" end),
                     (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                     (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                     ((.permissions.manager.allow // []) | length),
@@ -15529,6 +15618,7 @@ try {
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
         d.noFastForward !== undefined ? d.noFastForward : '__UNSET__',
+        d.mergeStrategy !== undefined ? d.mergeStrategy : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -15549,6 +15639,7 @@ try {
                 _SETTINGS_CACHE_createPullRequests \
                 _SETTINGS_CACHE_allowAgentQuestions \
                 _SETTINGS_CACHE_noFastForward \
+                _SETTINGS_CACHE_mergeStrategy \
                 _SETTINGS_CACHE_autoCompactThreshold \
                 _SETTINGS_CACHE_externalDiffTool \
                 _pm_allow _pm_deny _pw_allow _pw_deny \
@@ -15561,6 +15652,7 @@ try {
             [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests=""
             [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions=""
             [[ "$_SETTINGS_CACHE_noFastForward" == "__UNSET__" ]] && _SETTINGS_CACHE_noFastForward=""
+            [[ "$_SETTINGS_CACHE_mergeStrategy" == "__UNSET__" ]] && _SETTINGS_CACHE_mergeStrategy=""
             [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold=""
             [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool=""
 
@@ -15609,6 +15701,7 @@ try {
             createPullRequests) default_value="false" ;;
             allowAgentQuestions) default_value="true" ;;
             noFastForward) default_value="false" ;;
+            mergeStrategy) default_value="merge" ;;
             autoCompactThreshold) default_value="" ;;
             externalDiffTool) default_value="" ;;
             permissions.manager) default_value="allow: 0, deny: 0" ;;
@@ -15624,6 +15717,7 @@ try {
             createPullRequests) cached_value="$_SETTINGS_CACHE_createPullRequests" ;;
             allowAgentQuestions) cached_value="$_SETTINGS_CACHE_allowAgentQuestions" ;;
             noFastForward) cached_value="$_SETTINGS_CACHE_noFastForward" ;;
+            mergeStrategy) cached_value="$_SETTINGS_CACHE_mergeStrategy" ;;
             autoCompactThreshold) cached_value="$_SETTINGS_CACHE_autoCompactThreshold" ;;
             externalDiffTool) cached_value="$_SETTINGS_CACHE_externalDiffTool" ;;
             permissions.manager) cached_value="$_SETTINGS_CACHE_permissions_manager" ;;
@@ -15909,6 +16003,10 @@ try {
                 # Enum cycle
                 settings_cycle_model "$key" "$config_file"
                 ;;
+            mergeStrategy)
+                # Enum cycle for merge strategy
+                settings_cycle_merge_strategy "$key" "$config_file"
+                ;;
             maxAgents|fps|autoCompactThreshold)
                 # Number input dialog
                 watch_dialog_init_number_input "$key" "$config_file"
@@ -15988,6 +16086,40 @@ try {
             opus) new_value="haiku" ;;
             haiku) new_value="" ;;  # Clear/unset
             *) new_value="sonnet" ;;
+        esac
+
+        if [[ -z "$new_value" ]]; then
+            json_delete "$config_file" "$key"
+        else
+            json_set "$config_file" "$key" "$new_value"
+        fi
+        load_config
+        _DIALOG_DIRTY=1
+    }
+
+    # Cycle through merge strategy options
+    # Args: $1=key, $2=config_file
+    settings_cycle_merge_strategy() {
+        local key=$1
+        local config_file=$2
+
+        # Create config file if needed
+        if [[ ! -f "$config_file" ]]; then
+            echo "{}" > "$config_file"
+        fi
+
+        # Get current value
+        local current_value=""
+        if json_has "$config_file" "$key"; then
+            current_value=$(json_get "$config_file" "$key" "")
+        fi
+
+        # Cycle: merge -> rebase -> (unset/merge)
+        local new_value
+        case "$current_value" in
+            merge) new_value="rebase" ;;
+            rebase) new_value="" ;;  # Clear/unset (defaults to merge)
+            *) new_value="merge" ;;
         esac
 
         if [[ -z "$new_value" ]]; then
@@ -20760,6 +20892,7 @@ Available Keys:
   createPullRequests          Auto-create PRs on merge (default: false)
   allowAgentQuestions         Allow agents to ask user questions (default: true)
   noFastForward               Always create merge commits (default: false)
+  mergeStrategy               Merge strategy: merge or rebase (default: merge)
   autoCompactThreshold        Context % to trigger /compact (1-100, unset=auto)
   externalDiffTool            External diff tool command
   permissions.manager.allow   Tools allowed for manager agents (JSON array)
@@ -20819,6 +20952,7 @@ cmd_config() {
                 createPullRequests) default_value="false"; has_default=true ;;
                 allowAgentQuestions) default_value="true"; has_default=true ;;
                 noFastForward) default_value="false"; has_default=true ;;
+                mergeStrategy) default_value="merge"; has_default=true ;;
                 autoCompactThreshold) default_value=""; has_default=true ;;
                 externalDiffTool) default_value=""; has_default=true ;;
                 permissions.manager.allow) default_value="[]"; has_default=true ;;
@@ -21079,6 +21213,7 @@ cmd_config() {
                 "createPullRequests|false|Auto-create PRs on merge"
                 "allowAgentQuestions|true|Allow agents to ask user questions"
                 "noFastForward|false|Always create merge commits"
+                "mergeStrategy|merge|Merge strategy (merge or rebase)"
                 "autoCompactThreshold||Context % to trigger /compact (1-100)"
                 "externalDiffTool||External diff tool command"
                 "hooks.injectStatus|true|Enable status injection via hooks"

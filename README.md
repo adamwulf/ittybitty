@@ -253,6 +253,7 @@ ib config --global list                     # Show user config only
 | `createPullRequests` | false | Create PRs instead of leaving changes on branch |
 | `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
 | `noFastForward` | false | Always create merge commits with `--no-ff` |
+| `mergeStrategy` | merge | Merge strategy: "merge" or "rebase" |
 | `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
 | `hooks.injectStatus` | true | Enable status injection via hooks |

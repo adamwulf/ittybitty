@@ -1,10 +1,10 @@
 maxAgents:
-model: haiku
+model:
 fps:
 createPullRequests:
 allowAgentQuestions:
 noFastForward:
-mergeStrategy:
+mergeStrategy: rebase
 autoCompactThreshold:
 externalDiffTool:
 permissions.manager:
