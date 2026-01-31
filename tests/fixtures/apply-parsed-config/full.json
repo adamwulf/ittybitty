@@ -4,7 +4,6 @@
   "maxAgents": 20,
   "createPullRequests": true,
   "allowAgentQuestions": false,
-  "noFastForward": true,
   "autoCompactThreshold": 80,
   "externalDiffTool": "code --diff",
   "permissions": {

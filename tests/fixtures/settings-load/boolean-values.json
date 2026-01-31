@@ -1,5 +1,4 @@
 {
   "createPullRequests": false,
-  "allowAgentQuestions": true,
-  "noFastForward": false
+  "allowAgentQuestions": true
 }

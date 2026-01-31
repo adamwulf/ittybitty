@@ -57,9 +57,9 @@ cd "$WORK_DIR"
 # Test: --global set creates user config file
 # ===========================================
 rm -f "$FAKE_HOME/.ittybitty.json"
-HOME="$FAKE_HOME" "$IB" config --global set noFastForward true >/dev/null
+HOME="$FAKE_HOME" "$IB" config --global set createPullRequests true >/dev/null
 if [[ -f "$FAKE_HOME/.ittybitty.json" ]]; then
-    value=$(HOME="$FAKE_HOME" "$IB" config --global get noFastForward)
+    value=$(HOME="$FAKE_HOME" "$IB" config --global get createPullRequests)
     if [[ "$value" == "true" ]]; then
         pass "--global set creates user config file"
     else
@@ -119,10 +119,10 @@ fi
 # ===========================================
 # Test: --global list shows only user config
 # ===========================================
-echo '{"noFastForward": true}' > "$FAKE_HOME/.ittybitty.json"
+echo '{"createPullRequests": true}' > "$FAKE_HOME/.ittybitty.json"
 rm -f .ittybitty.json
 result=$(HOME="$FAKE_HOME" "$IB" config --global list)
-if [[ "$result" == *"noFastForward:"*"true"*"(user)"* ]] && \
+if [[ "$result" == *"createPullRequests:"*"true"*"(user)"* ]] && \
    [[ "$result" == *"~/.ittybitty.json"* ]]; then
     pass "--global list shows user config"
 else

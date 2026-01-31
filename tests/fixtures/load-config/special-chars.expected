@@ -8,4 +8,3 @@ model: claude-3-5-sonnet
 fps: 10
 external_diff_tool: code --diff --wait
 auto_compact_threshold:
-no_ff: false

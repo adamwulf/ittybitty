@@ -108,8 +108,8 @@ fi
 # Test: Project config used when user file missing
 # ===========================================
 rm -f "$USER_FILE"
-echo '{"noFastForward": true}' > "$PROJECT_FILE"
-result=$("$IB" test-config-priority "$USER_FILE" "$PROJECT_FILE" "noFastForward")
+echo '{"createPullRequests": true}' > "$PROJECT_FILE"
+result=$("$IB" test-config-priority "$USER_FILE" "$PROJECT_FILE" "createPullRequests")
 if [[ "$result" == "true (project)" ]]; then
     pass "project config when user missing"
 else
@@ -119,9 +119,9 @@ fi
 # ===========================================
 # Test: Boolean false in project overrides user true
 # ===========================================
-echo '{"noFastForward": true}' > "$USER_FILE"
-echo '{"noFastForward": false}' > "$PROJECT_FILE"
-result=$("$IB" test-config-priority "$USER_FILE" "$PROJECT_FILE" "noFastForward")
+echo '{"createPullRequests": true}' > "$USER_FILE"
+echo '{"createPullRequests": false}' > "$PROJECT_FILE"
+result=$("$IB" test-config-priority "$USER_FILE" "$PROJECT_FILE" "createPullRequests")
 if [[ "$result" == "false (project)" ]]; then
     pass "project false overrides user true"
 else

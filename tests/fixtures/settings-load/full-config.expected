@@ -3,8 +3,6 @@ model: opus
 fps: 30
 createPullRequests: true
 allowAgentQuestions: false
-noFastForward: true
-mergeStrategy:
 autoCompactThreshold: 80
 externalDiffTool: code --diff
 permissions.manager: allow: 3, deny: 1

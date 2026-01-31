@@ -239,8 +239,6 @@ Configuration is loaded from two files with the following precedence:
 - `permissions.worker.allow/deny` - tools for worker agents
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
 - `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
-- `noFastForward` - when `true`, `ib merge` always creates a merge commit with `--no-ff` (default: false)
-- `mergeStrategy` - merge strategy for `ib merge`: "merge" (default) or "rebase"
 - `externalDiffTool` - external diff tool command for `ib diff --external`
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
 
@@ -252,11 +250,10 @@ ib config list                              # Shows (project), (user), or (defau
 ib config list --global                     # Shows user config only
 
 # Get/set project config (default)
-ib config get noFastForward
-ib config set noFastForward true
+ib config get maxAgents
+ib config set maxAgents 20
 
 # Get/set user config (with --global)
-ib config --global set noFastForward true   # Set user default
 ib config --global set externalDiffTool "code --diff"
 ```
 
