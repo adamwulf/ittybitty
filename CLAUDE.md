@@ -1023,6 +1023,7 @@ Key files:
      The canonical source is in the ib script: get_ittybitty_instructions() function.
      To update: modify get_ittybitty_instructions() in ib, then reinstall via 'ib watch' setup dialog.
      New users installing ib will get the latest version from the ib script. -->
+
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
@@ -1033,8 +1034,6 @@ Key files:
 Spawn agents for complex/parallel tasks. Status updates appear automatically via hooks. User can also run `ib watch` for live monitoring.
 Always spawn **manager** agents (not `--worker`). Managers assess the task and spawn their own workers if needed.
 
-**Agents start automatically** - `ib` handles all initialization and permission prompts. Never send empty strings or manual input to "start" an agent. Just spawn with `ib new-agent` and monitor with `ib look` or `ib list`.
-
 | Command | Description |
 |---------|-------------|
 | `ib new-agent "goal"` | Spawn agent (returns ID) |
@@ -1043,8 +1042,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `ib send <id> "msg"` | Send input to agent |
 | `ib status <id>` | Show commits/changes |
 | `ib diff <id>` | Review agent's changes |
-| `ib merge <id> --force` | Merge and close agent (`--force` skips confirmation) |
-| `ib kill <id> --force` | Close without merging (`--force` skips confirmation) |
+| `ib merge <id>` | Merge and close agent |
+| `ib kill <id>` | Close without merging |
 | `ib resume <id>` | Restart stopped agent |
 | `ib questions` | Check agent questions |
 | `ib acknowledge <qid>` | Mark question handled |
