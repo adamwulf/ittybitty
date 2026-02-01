@@ -18746,7 +18746,7 @@ try {
             action_text_visible_len=${#action_text}
         else
             # Normal mode: show action keys
-            action_text="@: agent    /: cmd    s: send    m: merge    x: kill    !: nuke    a: new"
+            action_text="@: jump to agent    /: commands    a: new agent"
             action_text_visible_len=${#action_text}
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
             if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
