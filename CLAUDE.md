@@ -99,27 +99,9 @@ Spawning subprocesses (`sed`, `awk`, `grep`, `tail`, `head`, etc.) has significa
 | `echo "$line" \| cut -d: -f1` | `${line%%:*}` (parameter expansion) |
 | `cat "$file"` | `$(<"$file")` (bash builtin) |
 
-### Use Regex Instead of Character Iteration
-
-For pattern matching, use bash's `=~` operator with `BASH_REMATCH` instead of character-by-character loops:
-
-```bash
-# BAD: O(line_length) - iterates every character
-while [[ $i -lt $len ]]; do
-    char="${line:$i:1}"
-    # ... process char ...
-    i=$((i + 1))
-done
-
-# GOOD: O(n) where n = number of matches (typically 1-2)
-while [[ "$remaining" =~ ^([^[]*)\[([^]]*)\](.*)$ ]]; do
-    prefix="${BASH_REMATCH[1]}"
-    bracket_content="${BASH_REMATCH[2]}"
-    remaining="${BASH_REMATCH[3]}"
-done
-```
-
 ### Complexity Guidelines
+
+Use `[[ "$str" =~ pattern ]]` + `BASH_REMATCH` instead of character-by-character loops.
 
 | Context | Target | Example |
 |---------|--------|---------|
@@ -135,92 +117,22 @@ done
 
 ## Bash Script Behavior (`set -e`)
 
-The `ib` script uses `set -e` (exit on error), which means **any command returning non-zero will terminate the entire script**. This is a common source of subtle bugs.
+The `ib` script uses `set -e` (exit on error), which means **any command returning non-zero will terminate the entire script**.
 
-### Common Pitfalls
+### Common Pitfalls and Solutions
 
-| Command | Problem | Solution |
+| Pattern | Problem | Solution |
 |---------|---------|----------|
-| `grep "pattern" file` | Returns 1 if no matches | `grep "pattern" file \|\| true` or use in conditional |
+| `grep "pattern" file` | Returns 1 if no matches | `grep "pattern" file \|\| true` or use in `if` |
 | `(( count++ ))` | Returns 1 when count was 0 | `(( count++ )) \|\| true` or `count=$((count + 1))` |
-| `[[ "$var" == "x" ]]` | Returns 1 if false | Only use in `if` statements, not standalone |
+| `[[ "$var" == "x" ]]` | Returns 1 if false | Only use inside `if` statements |
 | `local var=$(cmd)` | Exit status is from `local`, not `cmd` | Declare first: `local var; var=$(cmd)` |
 | `read -t 0.1 key` | Returns 1 on timeout | `read -t 0.1 key \|\| true` |
-| `[[ -n "$var" ]] && do_thing` | Line returns 1 if condition is false | Add `\|\| true` at end: `[[ -n "$var" ]] && do_thing \|\| true` |
+| `[[ cond ]] && action` | Returns 1 if condition false | `[[ cond ]] && action \|\| true` |
 
-### Safe Patterns
+**Key rule**: Any `[[ ... ]] && ...` pattern MUST have `|| true` appended unless inside an `if` block.
 
-```bash
-# BAD: grep failure exits script
-matches=$(grep "pattern" file)
-
-# GOOD: handle no-match case
-matches=$(grep "pattern" file || true)
-
-# GOOD: use in conditional
-if grep -q "pattern" file; then
-    # found
-fi
-
-# BAD: arithmetic can fail
-(( index++ ))
-
-# GOOD: safe increment
-(( index++ )) || true
-# or
-index=$((index + 1))
-
-# BAD: standalone test
-[[ -n "$var" ]]
-
-# GOOD: test in conditional
-if [[ -n "$var" ]]; then
-    # var is set
-fi
-```
-
-### The `&&` Short-Circuit Trap
-
-**CRITICAL**: The pattern `[[ condition ]] && action` is **NOT SAFE** with `set -e` when used as a standalone statement!
-
-When the condition is false, the `&&` short-circuits, and the **entire line returns exit code 1**, causing the script to exit.
-
-```bash
-# BAD: Exits script if $var is empty!
-[[ -n "$var" ]] && CONFIG_VAR="$var"
-
-# GOOD: Add || true to make the line always return 0
-[[ -n "$var" ]] && CONFIG_VAR="$var" || true
-
-# ALSO GOOD: Use if statement
-if [[ -n "$var" ]]; then
-    CONFIG_VAR="$var"
-fi
-```
-
-**Why this happens**: In bash, `A && B` returns the exit code of the last executed command:
-- If A succeeds (exit 0), B runs, and the line returns B's exit code
-- If A fails (exit 1), B doesn't run, and the line returns 1 (A's exit code)
-
-With `set -e`, that exit code 1 terminates the script.
-
-**Real example from ib** (the bug that prompted this documentation):
-```bash
-# In load_config(), these lines would exit the script when the
-# config didn't have hooks.injectStatus defined:
-[[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS"
-
-# Fixed by adding || true:
-[[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
-```
-
-### Debugging `set -e` Issues
-
-If the script exits unexpectedly:
-1. Add `set -x` temporarily to see which command failed
-2. Look for commands that might return non-zero in success cases
-3. Check recent changes to interactive input handling (read, grep in loops)
-4. Look for `[[ ... ]] && ...` patterns without `|| true` at the end
+**Debugging**: Add `set -x` temporarily to see which command failed, or look for `&&` patterns without `|| true`.
 
 ## Configuration
 
@@ -245,69 +157,21 @@ Configuration is loaded from two files with the following precedence:
 ### Managing Config with `ib config`
 
 ```bash
-# List all config with sources
-ib config list                              # Shows (project), (user), or (default)
-ib config list --global                     # Shows user config only
-
-# Get/set project config (default)
-ib config get maxAgents
-ib config set maxAgents 20
-
-# Get/set user config (with --global)
-ib config --global set externalDiffTool "code --diff"
+ib config list                    # Show all config with sources
+ib config get maxAgents           # Get a value
+ib config set maxAgents 20        # Set project config
+ib config --global set key val    # Set user config
 ```
-
-### Auto-Compact Threshold
-
-The `autoCompactThreshold` setting controls when the watchdog automatically triggers `/compact` on an agent:
-
-| Value | Behavior |
-|-------|----------|
-| Unset or >100 | Claude handles compaction automatically (default) |
-| 1-100 | Watchdog sends `/compact` when context usage reaches this percentage |
-
-Example `.ittybitty.json`:
-```json
-{
-  "autoCompactThreshold": 80
-}
-```
-
-When enabled, the watchdog:
-1. Monitors the "Context left until auto-compact: X%" message in agent output
-2. Calculates usage as `100 - remaining%`
-3. Sends `/compact` when usage >= threshold
-4. Waits for compaction to complete before checking again
 
 ## Custom Prompts
 
-You can add custom instructions to agents by creating markdown files in `.ittybitty/prompts/`:
+Add custom instructions to agents via markdown files in `.ittybitty/prompts/`:
 
-| File | Applied To | Use Case |
-|------|------------|----------|
-| `.ittybitty/prompts/all.md` | All agents (managers and workers) | Project-wide coding standards, context about the codebase |
-| `.ittybitty/prompts/manager.md` | Manager agents only | Manager-specific workflow guidance, escalation policies |
-| `.ittybitty/prompts/worker.md` | Worker agents only | Worker-specific constraints, output format requirements |
-
-**Example `.ittybitty/prompts/all.md`:**
-```markdown
-## Project Standards
-- Use TypeScript strict mode
-- Follow the existing code style in src/
-- Run `npm test` before committing
-```
-
-**Example `.ittybitty/prompts/manager.md`:**
-```markdown
-## Manager Guidelines
-- For UI changes, always spawn a separate worker for tests
-- Prefer smaller, focused workers over large multi-task workers
-```
-
-Custom prompts are injected into the agent's context in these sections:
-- `[CUSTOM INSTRUCTIONS]` - from `all.md`
-- `[CUSTOM MANAGER INSTRUCTIONS]` - from `manager.md`
-- `[CUSTOM WORKER INSTRUCTIONS]` - from `worker.md`
+| File | Applied To |
+|------|------------|
+| `all.md` | All agents |
+| `manager.md` | Manager agents only |
+| `worker.md` | Worker agents only |
 
 ## User Hooks
 
@@ -400,90 +264,21 @@ grep "\[PreToolUse\]" .ittybitty/agents/<id>/agent.log         # Path isolation 
 
 ## Logging System
 
-Each agent has an `agent.log` file at `.ittybitty/agents/<id>/agent.log` that captures timestamped events.
+Each agent has an `agent.log` at `.ittybitty/agents/<id>/agent.log` with timestamped events (creation, messages, denials, teardown).
 
-### How Logging Works
-
-The `log_agent` helper function both writes to the log file AND echoes to stdout:
 ```bash
 log_agent "$ID" "message"           # logs and prints
-log_agent "$ID" "message" --quiet   # logs only, no stdout
+log_agent "$ID" "message" --quiet   # logs only
+ib log "debug info"                 # agents can self-log
 ```
 
-### What Gets Logged
-
-| Event | Command | Logged Message |
-|-------|---------|----------------|
-| Agent creation | `new-agent` | "Agent created (manager: X, prompt: Y)" |
-| Subagent spawned | `new-agent` | "Spawned worker/manager subagent: ID (prompt: Y)" (manager's log) |
-| Message received | `send` | "Received message from X: Y" (recipient's log) |
-| Message sent | `send` | "Sent message to X: Y" (sender's log) |
-| Tool denied (not in allow list) | PermissionRequest hook | "[PermissionRequest] Permission denied: TOOL_NAME" |
-| Tool denied (path isolation) | PreToolUse hook | "[PreToolUse] Permission denied: TOOL_NAME" |
-| Path violation | PreToolUse hook | "[PreToolUse] Path violation: TOOL_NAME tried to access..." |
-| Kill initiated | `kill` | "Agent killed" |
-| Process terminated | `kill/merge` | "Terminated Claude process" |
-| Session killed | `kill/merge` | "Killed tmux session" |
-| Branch deleted | `kill/merge` | "Deleted branch agent/X" |
-| Merge completed | `merge` | "Agent merged into BRANCH (N commits)" |
-| Agent resumed | `resume` | "Agent resumed" |
-
-### Archive Structure
-
-When agents are killed/merged/nuked, logs are archived to `.ittybitty/archive/`:
-```
-.ittybitty/archive/
-  20260110-011339-agent-name/
-    output.log           # Full tmux scrollback
-    agent.log            # Timestamped event log
-    meta.json            # Agent config (prompt, model, session_id, manager, etc.)
-    settings.local.json  # Permissions and hooks configuration
-    debug-logs/          # Tmux captures when state was unknown (for test cases)
-```
-
-The teardown order ensures complete logs:
-1. Log all teardown events (kill, session stop, branch delete)
-2. Archive (captures complete log)
-3. Remove agent directory
-
-### Using `ib log` for Debugging
-
-Agents can write to their own log during execution:
-```bash
-ib log "Starting task analysis"
-ib log "Found 5 files to process"
-ib log --quiet "Silent debug info"  # no stdout
-```
-
-### Debugging with tmux Output
-
-For deep debugging, you can capture tmux output to the agent log:
-```bash
-# Capture current visible pane
-tmux capture-pane -t "$SESSION" -p >> "$AGENT_DIR/agent.log"
-
-# Capture full scrollback history
-tmux capture-pane -t "$SESSION" -p -S - >> "$AGENT_DIR/agent.log"
-```
+When agents are killed/merged, logs are archived to `.ittybitty/archive/<timestamp>-<name>/` with `output.log`, `agent.log`, `meta.json`, and `settings.local.json`.
 
 ## Process and Session Management
 
-### Tmux Session Naming and Multi-Repo Isolation
+### Tmux Session Naming
 
-Each repository gets a unique repo ID stored in `.ittybitty/repo-id` (auto-generated on first use). This ID is included in tmux session names to prevent collisions when running `ib` in multiple repositories simultaneously.
-
-**Session naming format:** `ittybitty-<repo-id>-<agent-id>`
-
-Example: `ittybitty-a1b2c3d4-agent-e5f6g7h8`
-
-This ensures:
-- Each repo's agents are isolated in the tmux namespace
-- Orphan detection only targets sessions belonging to the same repo
-- Worktree agents automatically use the main repo's ID (via `get_root_repo()`)
-
-The repo ID is gitignored (inside `.ittybitty/`) so each clone gets its own unique ID.
-
-**Migration note**: Agents created before this change used the format `ittybitty-<agent-id>`. After upgrading, these old sessions will appear as orphaned tmux sessions (not recognized by `ib list`). Clean them up manually with `tmux kill-session -t <session-name>` or `tmux kill-server` if no other tmux sessions are in use.
+Session format: `ittybitty-<repo-id>-<agent-id>`. Each repo gets a unique ID in `.ittybitty/repo-id` to isolate agents across multiple repos.
 
 ### Process Hierarchy
 
@@ -493,35 +288,13 @@ tmux session (ittybitty-<repo-id>-<agent-id>)
         └── claude process (claude_pid)
 ```
 
-### Finding Process IDs
+### Process Management
 
-The `kill_agent_process` function uses two strategies:
-
-1. **Dynamic lookup (preferred)**: Find Claude via tmux pane PID
-   ```bash
-   PANE_PID=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}')
-   CLAUDE_PID=$(pgrep -P "$PANE_PID" -f "claude")
-   ```
-
-2. **Fallback**: Read from `meta.json` (set at startup via start.sh)
-   ```bash
-   PID=$(json_get "$AGENT_DIR/meta.json" "claude_pid")
-   ```
+`kill_agent_process` finds Claude via tmux pane PID (preferred) or falls back to `claude_pid` in `meta.json`.
 
 ### Agent State Detection
 
-The `get_state` function reads recent tmux output to determine state:
-
-| State | Meaning |
-|-------|---------|
-| `stopped` | tmux session doesn't exist |
-| `creating` | Agent starting up, Claude not yet running |
-| `compacting` | Agent is summarizing context |
-| `running` | Actively executing |
-| `rate_limited` | Hit API rate limits |
-| `complete` | Signaled task completion |
-| `waiting` | Idle, may need input |
-| `unknown` | Session exists but state unclear |
+The `get_state` function reads recent tmux output to determine state. See the Agent States table in the `<ittybitty>` block for state meanings.
 
 **Detection priority order** (see `get_state` function for patterns):
 1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
@@ -551,40 +324,7 @@ The `scan_and_kill_orphans` function finds Claude processes whose working direct
 
 ## Claude Startup and Permission Screen
 
-### The Permission Screen Problem
-
-When Claude starts in a new worktree, it may show a "Do you trust the files in this folder?" permission screen. If we send Enter too early or when not needed, it can:
-- Trigger tab-completion if Claude has already started
-- Send an unintended command to Claude's input
-
-### Detection Strategy
-
-The `wait_for_claude_start` function waits for EITHER:
-1. **Logo** ("Claude Code v") - Claude started, no permissions needed
-2. **Permissions screen** ("Enter to confirm" + "trust") - needs acceptance
-
-This is stored in `CLAUDE_STARTED_WITH` global variable.
-
-### Handling Flow
-
-```
-wait_for_claude_start()
-  ├── Logo detected first → Done (no Enter needed)
-  └── Permissions detected → send Enter → wait_for_claude_logo()
-```
-
-The `auto_accept_workspace_trust` function:
-1. Waits for Claude to start (logo OR permissions)
-2. If logo appeared first → return immediately
-3. If permissions screen → send Enter, wait 4s, verify logo appears
-4. Retry up to 5 times if permissions persist
-
-### Key Lessons Learned
-
-1. **Wait before sending Enter**: Always detect what screen is showing first
-2. **Check for logo after permissions**: Verify Claude actually started after accepting
-3. **Use delays between retries**: 4 second delay allows Claude to process
-4. **Don't send Enter blindly**: Only send when permissions screen is confirmed
+Claude may show a "trust files" permission screen in new worktrees. The `wait_for_claude_start` function detects whether logo or permissions screen appears first, then `auto_accept_workspace_trust` sends Enter only when needed and verifies the logo appears afterward. Key: never send Enter blindly—always detect the screen first.
 
 ## Testing
 
@@ -666,224 +406,30 @@ The `ib` script exposes internal functions as `test-*` subcommands for testing:
 | `ib test-load-config FILE` | Config parsing | `ib test-load-config tests/fixtures/load-config/full-config.json` |
 | `ib test-build-settings FILE` | Settings generation | `ib test-build-settings --validate tests/fixtures/build-settings/valid-manager.txt` |
 
-### Writing New Tests
+### Writing Tests
 
-1. **Create a fixture file** with the expected output encoded in the filename:
-   ```bash
-   # For a new running state test
-   echo "⏺ Bash(npm test)
-     ⎿  Running (ctrl+c to interrupt)" > tests/fixtures/running-npm-test.txt
-   ```
+1. Create fixture file with expected output in filename: `{expected}-{description}.txt`
+2. Run `./tests/test-<feature>.sh` to verify
+3. For new test suites, follow the existing `tests/test-*.sh` pattern
 
-2. **Run the test** to verify:
-   ```bash
-   ./tests/test-parse-state.sh
-   # Should show: PASS [running] npm test
-   ```
+**Testability principle**: Extract pure helper functions that can read from files. Expose via `cmd_test_<feature>`. Avoid testing interactive UI, tmux operations, or process management directly.
 
-3. **For new test suites**, create `tests/test-<feature>.sh` following the existing pattern:
-   - Set `FIXTURES_DIR` to the appropriate subdirectory
-   - Loop through fixture files, extract expected value from filename
-   - Call `ib test-<feature>` and compare output
-
-### Writing Testable Code
-
-When adding new features to `ib`, structure code for testability:
-
-**DO: Extract logic into pure helper functions**
-```bash
-# Pure function - easy to test
-format_age() {
-    local seconds="$1"
-    if (( seconds < 60 )); then echo "${seconds}s"
-    elif (( seconds < 3600 )); then echo "$((seconds / 60))m"
-    elif (( seconds < 86400 )); then echo "$((seconds / 3600))h"
-    else echo "$((seconds / 86400))d"
-    fi
-}
-
-# Expose for testing
-cmd_test_format_age() {
-    local input=$(cat "$1")
-    format_age "$input"
-}
-```
-
-**DON'T: Embed logic in interactive code**
-```bash
-# Hard to test - mixes UI with logic
-show_agent_status() {
-    local state=$(get_state "$ID")
-    # If state detection logic were inline here,
-    # you'd need a running tmux session to test it
-    tput setaf 2  # colors
-    echo "State: $state"
-}
-```
-
-**Pattern: File-based testing for complex logic**
-```bash
-# Logic function reads from file or stdin
-parse_tmux_output() {
-    local content
-    if [[ -n "$1" && -f "$1" ]]; then
-        content=$(cat "$1")
-    else
-        content=$(cat)
-    fi
-    # ... detection logic ...
-    echo "$detected_state"
-}
-
-# Called with fixture file for testing
-ib parse-state tests/fixtures/running-bash.txt
-
-# Called with actual tmux output in production
-tmux capture-pane -t "$SESSION" -p | ib parse-state
-```
-
-### What TO Test
-
-Test these types of functions:
-
-| Category | Examples | Why Testable |
-|----------|----------|--------------|
-| **State parsing** | `get_state`, `parse_tmux_output` | Pure text processing, no side effects |
-| **Formatting** | `format_age`, `format_log_entry` | Deterministic input → output |
-| **Permission logic** | `is_tool_allowed`, `check_path_isolation` | Security-critical, well-defined rules |
-| **Config parsing** | `load_config`, `build_settings` | Complex transformations from JSON |
-| **ID resolution** | `resolve_agent_id` | Matching/disambiguation logic |
-| **Relationship logic** | `get_children`, `get_manager` | Graph traversal from JSON data |
-
-### What NOT TO Test
-
-Skip testing these:
-
-| Category | Examples | Why Not Tested |
-|----------|----------|----------------|
-| **Interactive UI** | `ib watch`, `show_dialog` | Requires terminal, visual inspection |
-| **tmux operations** | `send_keys`, `capture_pane` | External process, integration test |
-| **Process management** | `kill_agent_process`, `spawn_agent` | Side effects on system |
-| **Git operations** | `git checkout`, `git merge` | External tool, would need mock repo |
-| **Real agent behavior** | Agent completing tasks | Requires Claude, non-deterministic |
-
-For these, use manual testing:
-```bash
-# Test basic spawn
-ib new-agent --name test "echo hello and exit"
-
-# Test communication
-ib send test "hello"
-ib look test
-
-# Cleanup
-ib kill test --force
-```
-
-### Adding Test Coverage for New Features
-
-When implementing a new feature:
-
-1. **Identify the testable logic** - What pure functions can be extracted?
-2. **Create the `test-*` command** - Add `cmd_test_<feature>` that wraps the logic
-3. **Create fixtures** - Add test cases to `tests/fixtures/`
-4. **Create the test script** - Add `tests/test-<feature>.sh`
-5. **Run tests** - Verify with `./tests/test-all.sh`
-
-Example for adding a new "duration parsing" feature:
-```bash
-# 1. Add the pure function to ib
-parse_duration() {
-    local input="$1"
-    # Convert "5m", "2h", "1d" to seconds
-    ...
-}
-
-cmd_test_parse_duration() {
-    local input=$(cat "$1")
-    parse_duration "$input"
-}
-
-# 2. Add fixtures
-echo "5m" > tests/fixtures/parse-duration/300-5-minutes.txt
-echo "2h" > tests/fixtures/parse-duration/7200-2-hours.txt
-
-# 3. Create test script
-# tests/test-parse-duration.sh (follow existing pattern)
-
-# 4. Run all tests
-./tests/test-all.sh
-```
-
-**Note**: Always use `ib` (not `./ib`) to ensure you run the current version from PATH. This is especially important in worktrees where `./ib` would run a stale checkout.
+**Note**: Use `ib` (not `./ib`) in worktrees to run the current PATH version.
 
 ## Agent Merge Review Checklist
 
-**Before merging any agent's work, thoroughly review for these issues:**
-
-### 1. `set -e` Safety
-
-See the **"Bash Script Behavior (`set -e`)"** section for comprehensive documentation of `set -e` pitfalls and safe patterns.
-
-**Key rule**: Any `[[ ... ]] && ...` pattern MUST have `|| true` appended unless it's inside an `if` block.
-
-### 2. Bash 3.2 Compatibility
-
-See the **"Bash Version Compatibility"** section for the complete list of Bash 4.0+ features to avoid. The script must work on macOS default bash (3.2).
-
-### 3. Helper Function Testing
-
-If new helper functions are added:
-- Must have corresponding `cmd_test_*` command for testing
-- Must have test fixtures in `tests/fixtures/`
-- Must be added to `tests/test-*.sh` suite
-
-### 4. Duplicate Code
-
-Watch for repeated code blocks that should be helper functions:
-- If the same 3+ lines appear twice, consider extracting to a function
-- Helper functions should be pure (no side effects) when possible for testability
-
-### 5. Comments and Clarity
-
-- Complex logic should have explanatory comments
-- `|| true` additions should have a brief comment explaining why (e.g., `# set -e safety`)
-- Function headers should document args, return values, and side effects
-
-### 6. Performance (for `ib watch` hot paths)
-
-- Avoid subprocess spawning in render loops
-- Use bash builtins over external commands when possible
-- Check if changes affect code called at 10+ FPS
-
-### 7. Security
-
-- No command injection vulnerabilities
-- Proper quoting of variables in commands
-- No hardcoded credentials or paths
-
-### Review Command
+Before merging agent work, check:
+- **`set -e` safety**: All `[[ ... ]] && ...` must have `|| true` unless in `if` block
+- **Bash 3.2**: No Bash 4.0+ features (see compatibility table above)
+- **Tests**: New helpers need `cmd_test_*`, fixtures, and test script
+- **No duplication**: Extract repeated code (3+ lines) into helpers
+- **Performance**: No subprocess spawning in render hot paths
+- **Security**: Proper variable quoting, no command injection
 
 ```bash
-# Review agent's diff
-ib diff <agent-id>
-
-# Run tests in agent's worktree (ask agent to run)
-ib send <agent-id> "./tests/test-all.sh"
-
-# Check for set -e issues (look for && without || true)
-git show agent/<id>:ib | grep -n '\[\[.*\]\] &&' | grep -v '|| true'
+ib diff <agent-id>                                              # Review changes
+git show agent/<id>:ib | grep -n '\[\[.*\]\] &&' | grep -v '|| true'  # Check set -e
 ```
-
-## Key Implementation Details
-
-- **State detection**: See "Process and Session Management" section above for detailed `get_state` behavior
-- **Logging**: All commands log to `agent.log`; see "Logging System" section
-- **Permission handling**: See "Claude Startup and Permission Screen" section for startup flow
-- **Session persistence**: Each agent gets a UUID (`session_id` in meta.json) enabling `claude --resume`
-- **Exit handler** (`exit-check.sh`): Prompts for uncommitted changes when agent session ends
-- **Send timing**: Message and Enter key sent separately with 0.1s delay to handle busy agents
-- **Orphan cleanup**: `scan_and_kill_orphans` runs after kill/merge to clean up stray Claude processes
 
 ## Prompt System Architecture
 
