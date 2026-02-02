@@ -18616,47 +18616,37 @@ try {
         # Move cursor to footer row and start dim mode for footer
         printf '\e[%d;1H%s' "$footer_row" "$COLOR_DIM"
 
-        # Build usage info string for right side of row 1 with color coding
+        # Build usage info components for right side of row 1 with color coding
         # Format: "session:57% (44m)  weekly:35% (3d 8h)"
-        local usage_info=""
-        local usage_info_visible_len=0
-        if [[ -n "$USAGE_SESSION_PCT" || -n "$USAGE_WEEKLY_PCT" ]]; then
-            local session_str=""
-            local weekly_str=""
-            if [[ -n "$USAGE_SESSION_PCT" ]]; then
-                format_usage_pct "$USAGE_SESSION_PCT" "session" "$USAGE_SESSION_RESET"
-                session_str="$_FORMAT_USAGE_RESULT"
-                # "session:" + pct + "%" = 8 + len(pct) + 1
-                usage_info_visible_len=$((usage_info_visible_len + 8 + ${#USAGE_SESSION_PCT} + 1))
-                # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
-                if [[ -n "$USAGE_SESSION_RESET" ]]; then
-                    usage_info_visible_len=$((usage_info_visible_len + 2 + ${#USAGE_SESSION_RESET} + 1))
-                fi
+        # Track session and weekly separately so we can conditionally hide them
+        local session_str=""
+        local session_str_len=0
+        local weekly_str=""
+        local weekly_str_len=0
+        if [[ -n "$USAGE_SESSION_PCT" ]]; then
+            format_usage_pct "$USAGE_SESSION_PCT" "session" "$USAGE_SESSION_RESET"
+            session_str="$_FORMAT_USAGE_RESULT"
+            # "session:" + pct + "%" = 8 + len(pct) + 1
+            session_str_len=$((8 + ${#USAGE_SESSION_PCT} + 1))
+            # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
+            if [[ -n "$USAGE_SESSION_RESET" ]]; then
+                session_str_len=$((session_str_len + 2 + ${#USAGE_SESSION_RESET} + 1))
             fi
-            if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
-                format_usage_pct "$USAGE_WEEKLY_PCT" "weekly" "$USAGE_WEEKLY_RESET"
-                weekly_str="$_FORMAT_USAGE_RESULT"
-                if [[ -n "$session_str" ]]; then
-                    usage_info_visible_len=$((usage_info_visible_len + 2))  # "  " separator
-                fi
-                # "weekly:" + pct + "%" = 7 + len(pct) + 1
-                usage_info_visible_len=$((usage_info_visible_len + 7 + ${#USAGE_WEEKLY_PCT} + 1))
-                # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
-                if [[ -n "$USAGE_WEEKLY_RESET" ]]; then
-                    usage_info_visible_len=$((usage_info_visible_len + 2 + ${#USAGE_WEEKLY_RESET} + 1))
-                fi
+        fi
+        if [[ -n "$USAGE_WEEKLY_PCT" ]]; then
+            format_usage_pct "$USAGE_WEEKLY_PCT" "weekly" "$USAGE_WEEKLY_RESET"
+            weekly_str="$_FORMAT_USAGE_RESULT"
+            # "weekly:" + pct + "%" = 7 + len(pct) + 1
+            weekly_str_len=$((7 + ${#USAGE_WEEKLY_PCT} + 1))
+            # Add reset time length if present: " (" + reset + ")" = 2 + len(reset) + 1
+            if [[ -n "$USAGE_WEEKLY_RESET" ]]; then
+                weekly_str_len=$((weekly_str_len + 2 + ${#USAGE_WEEKLY_RESET} + 1))
             fi
-            if [[ -n "$session_str" && -n "$weekly_str" ]]; then
-                usage_info="$session_str  $weekly_str"
-            elif [[ -n "$session_str" ]]; then
-                usage_info="$session_str"
-            else
-                usage_info="$weekly_str"
-            fi
-        elif [[ $USAGE_FETCH_FAILED -eq 1 ]]; then
-            # Fetch was attempted but failed - show unavailable indicator
-            usage_info="session:--  weekly:--"
-            usage_info_visible_len=21  # "session:--  weekly:--" = 21 chars
+        fi
+        # Handle fetch failure case
+        local usage_fetch_failed_str=""
+        if [[ -z "$session_str" && -z "$weekly_str" && $USAGE_FETCH_FAILED -eq 1 ]]; then
+            usage_fetch_failed_str="session:--  weekly:--"
         fi
 
         # Row 1: Navigation keys (left) + Usage stats (right)
@@ -18702,6 +18692,48 @@ try {
             help_text_len=$((55 + badges_suffix_len))
         fi
         [[ $SCROLL_OFFSET -gt 0 ]] && help_text="[+$SCROLL_OFFSET]  $help_text" && help_text_len=$((help_text_len + 5 + ${#SCROLL_OFFSET}))
+
+        # Build usage_info conditionally based on available space
+        # Priority: hide weekly first, then session
+        local usage_info=""
+        local usage_info_visible_len=0
+        local row1_available=$((TERM_COLS - help_text_len - 1))  # At least 1 space padding
+
+        if [[ -n "$usage_fetch_failed_str" ]]; then
+            # Fetch failed case - show if it fits
+            if [[ 21 -le $row1_available ]]; then
+                usage_info="$usage_fetch_failed_str"
+                usage_info_visible_len=21
+            fi
+        elif [[ -n "$session_str" || -n "$weekly_str" ]]; then
+            # Calculate full length with both
+            local full_len=0
+            if [[ -n "$session_str" && -n "$weekly_str" ]]; then
+                full_len=$((session_str_len + 2 + weekly_str_len))  # +2 for "  " separator
+            elif [[ -n "$session_str" ]]; then
+                full_len=$session_str_len
+            else
+                full_len=$weekly_str_len
+            fi
+
+            if [[ $full_len -le $row1_available ]]; then
+                # Full usage info fits
+                if [[ -n "$session_str" && -n "$weekly_str" ]]; then
+                    usage_info="$session_str  $weekly_str"
+                elif [[ -n "$session_str" ]]; then
+                    usage_info="$session_str"
+                else
+                    usage_info="$weekly_str"
+                fi
+                usage_info_visible_len=$full_len
+            elif [[ -n "$session_str" && $session_str_len -le $row1_available ]]; then
+                # Only session fits (hide weekly)
+                usage_info="$session_str"
+                usage_info_visible_len=$session_str_len
+            fi
+            # else: nothing fits, leave usage_info empty
+        fi
+
         local row1_padding=$((TERM_COLS - help_text_len - usage_info_visible_len))
         printf "%s%*s%s\n" "$help_text" "$row1_padding" "" "$usage_info"
 
@@ -18793,9 +18825,44 @@ try {
         fi
 
         local version_str="v$VERSION"
-        printf -v right_info "fps:%2d  %s  %s  %s" "$fps" "$link_text" "$current_time" "$version_str"
-        # Visible length: "fps:XX  " (8) + link (variable) + "  " (2) + time (8) + "  " (2) + version (len)
-        local right_info_visible_len=$((8 + link_visible_len + 2 + 8 + 2 + ${#version_str}))
+
+        # Build right_info conditionally based on available space
+        # Priority for hiding: fps first, then link, then clock (always keep version)
+        # Component lengths:
+        #   fps: "fps:XX  " = 8 chars
+        #   link: link_visible_len + 2 (for "  " separator)
+        #   clock: 8 chars + 2 (for "  " separator)
+        #   version: ${#version_str} (no trailing separator)
+        local fps_len=8
+        local link_total_len=$((link_visible_len + 2))
+        local clock_len=10  # 8 chars + 2 separator
+        local version_len=${#version_str}
+
+        local row2_available=$((TERM_COLS - action_text_visible_len - 1))  # At least 1 space padding
+        local full_len=$((fps_len + link_total_len + clock_len + version_len))
+
+        local right_info=""
+        local right_info_visible_len=0
+
+        if [[ $full_len -le $row2_available ]]; then
+            # Everything fits
+            printf -v right_info "fps:%2d  %s  %s  %s" "$fps" "$link_text" "$current_time" "$version_str"
+            right_info_visible_len=$full_len
+        elif [[ $((link_total_len + clock_len + version_len)) -le $row2_available ]]; then
+            # Hide fps
+            printf -v right_info "%s  %s  %s" "$link_text" "$current_time" "$version_str"
+            right_info_visible_len=$((link_total_len + clock_len + version_len))
+        elif [[ $((clock_len + version_len)) -le $row2_available ]]; then
+            # Hide fps and link
+            printf -v right_info "%s  %s" "$current_time" "$version_str"
+            right_info_visible_len=$((clock_len + version_len))
+        elif [[ $version_len -le $row2_available ]]; then
+            # Hide fps, link, and clock - only show version
+            right_info="$version_str"
+            right_info_visible_len=$version_len
+        fi
+        # else: nothing fits, leave right_info empty
+
         local padding=$((TERM_COLS - action_text_visible_len - right_info_visible_len))
         printf "%s%*s%s%s" "$action_text" "$padding" "" "$right_info" "$COLOR_RESET"
     }
