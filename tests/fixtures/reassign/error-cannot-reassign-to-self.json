@@ -1,0 +1,9 @@
+{
+  "agents": [
+    {"id": "m1", "manager": null, "worker": false}
+  ],
+  "reassign": {
+    "agent": "m1",
+    "new_parent": "m1"
+  }
+}

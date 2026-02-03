@@ -7523,6 +7523,367 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: reassign
+# =============================================================================
+
+# Check if target is a descendant of agent (would create circular dependency)
+# Returns 0 (true) if target is a descendant of agent, 1 (false) otherwise
+# Args: json_content target_id agent_id
+is_descendant_of() {
+    local json="$1"
+    local target="$2"
+    local agent="$3"
+
+    # Walk up from target's manager chain, return true if we hit agent
+    local current="$target"
+    local visited="|"  # Track visited to avoid infinite loops
+    while [[ -n "$current" && "$current" != "null" ]]; do
+        # Check for cycle (shouldn't happen but be safe)
+        if [[ "$visited" == *"|$current|"* ]]; then
+            return 1
+        fi
+        visited="${visited}${current}|"
+
+        # Get parent of current
+        local parent=""
+        # Parse agents array to find current's manager
+        # JSON format: [{"id":"x","manager":"y",...},...]
+        local agents_json
+        agents_json=$(json_get - "agents" "" <<< "$json")
+        if [[ -z "$agents_json" ]]; then
+            return 1
+        fi
+
+        # Extract manager for current agent using regex
+        # Look for pattern: "id":"current",...,"manager":"value" or "manager":"value",...,"id":"current"
+        if [[ "$agents_json" =~ \{[^}]*\"id\"[[:space:]]*:[[:space:]]*\"$current\"[^}]*\} ]]; then
+            local agent_obj="${BASH_REMATCH[0]}"
+            if [[ "$agent_obj" =~ \"manager\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+                parent="${BASH_REMATCH[1]}"
+            elif [[ "$agent_obj" =~ \"manager\"[[:space:]]*:[[:space:]]*null ]]; then
+                parent=""
+            fi
+        fi
+
+        if [[ "$parent" == "$agent" ]]; then
+            return 0  # true: target is descendant of agent
+        fi
+        current="$parent"
+    done
+    return 1  # false: not a descendant
+}
+
+# Pure validation function for reassignment
+# Input: JSON with agents array and reassign object
+# Output: "ok", "noop:reason", or "error:reason"
+validate_reassignment() {
+    local json="$1"
+
+    local agent_id
+    agent_id=$(json_get - "reassign.agent" "" <<< "$json")
+    local new_parent
+    new_parent=$(json_get - "reassign.new_parent" "" <<< "$json")
+
+    # Treat "null" string as empty (for --none case)
+    if [[ "$new_parent" == "null" ]]; then
+        new_parent=""
+    fi
+
+    # 1. Agent must be specified
+    if [[ -z "$agent_id" ]]; then
+        echo "error:agent-not-specified"
+        return 0
+    fi
+
+    # 2. Cannot reassign to self
+    if [[ "$new_parent" == "$agent_id" ]]; then
+        echo "error:cannot-reassign-to-self"
+        return 0
+    fi
+
+    # Get agents array for lookups
+    local agents_json
+    agents_json=$(json_get - "agents" "" <<< "$json")
+
+    # 3. Agent must exist
+    if [[ ! "$agents_json" =~ \"id\"[[:space:]]*:[[:space:]]*\"$agent_id\" ]]; then
+        echo "error:agent-not-found"
+        return 0
+    fi
+
+    # 4. New parent must exist (if specified)
+    if [[ -n "$new_parent" ]]; then
+        if [[ ! "$agents_json" =~ \"id\"[[:space:]]*:[[:space:]]*\"$new_parent\" ]]; then
+            echo "error:new-parent-not-found"
+            return 0
+        fi
+
+        # 5. New parent cannot be a worker
+        # Find the new_parent's worker field
+        if [[ "$agents_json" =~ \{[^}]*\"id\"[[:space:]]*:[[:space:]]*\"$new_parent\"[^}]*\} ]]; then
+            local parent_obj="${BASH_REMATCH[0]}"
+            if [[ "$parent_obj" =~ \"worker\"[[:space:]]*:[[:space:]]*true ]]; then
+                echo "error:worker-cannot-be-parent"
+                return 0
+            fi
+        fi
+
+        # 6. Circular dependency check - new parent cannot be a descendant of agent
+        if is_descendant_of "$json" "$new_parent" "$agent_id"; then
+            echo "error:circular-dependency"
+            return 0
+        fi
+    fi
+
+    # 7. Check for no-op (same parent)
+    local current_parent=""
+    if [[ "$agents_json" =~ \{[^}]*\"id\"[[:space:]]*:[[:space:]]*\"$agent_id\"[^}]*\} ]]; then
+        local agent_obj="${BASH_REMATCH[0]}"
+        if [[ "$agent_obj" =~ \"manager\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+            current_parent="${BASH_REMATCH[1]}"
+        fi
+    fi
+
+    if [[ "$current_parent" == "$new_parent" ]]; then
+        if [[ -n "$new_parent" ]]; then
+            echo "noop:same-parent"
+        else
+            echo "noop:already-root"
+        fi
+        return 0
+    fi
+
+    # Special case: both empty means already root
+    if [[ -z "$new_parent" && -z "$current_parent" ]]; then
+        echo "noop:already-root"
+        return 0
+    fi
+
+    echo "ok"
+}
+
+# Test command for validate_reassignment
+cmd_test_reassign() {
+    local fixture_file="$1"
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: fixture file not found: $fixture_file" >&2
+        return 1
+    fi
+    local json
+    json=$(<"$fixture_file")
+    validate_reassignment "$json"
+}
+
+# Build JSON representation of current agent hierarchy for validation
+build_hierarchy_json() {
+    local agents_dir="$1"
+    local agent_id="$2"
+    local new_parent="$3"  # empty string for --none
+
+    local json='{"agents":['
+    local first=true
+
+    for agent_dir in "$agents_dir"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local meta_file="$agent_dir/meta.json"
+        [[ -f "$meta_file" ]] || continue
+
+        local id="${agent_dir%/}"
+        id="${id##*/}"
+
+        local manager
+        manager=$(read_meta_field "$meta_file" "manager" "")
+        [[ "$manager" == "null" ]] && manager=""
+
+        local worker
+        worker=$(read_meta_field "$meta_file" "worker" "false")
+        [[ "$worker" == "null" ]] && worker="false"
+
+        if [[ "$first" != true ]]; then
+            json="${json},"
+        fi
+        first=false
+
+        # Build agent object
+        if [[ -n "$manager" ]]; then
+            json="${json}{\"id\":\"$id\",\"manager\":\"$manager\",\"worker\":$worker}"
+        else
+            json="${json}{\"id\":\"$id\",\"manager\":null,\"worker\":$worker}"
+        fi
+    done
+
+    json="${json}],\"reassign\":{\"agent\":\"$agent_id\""
+    if [[ -n "$new_parent" ]]; then
+        json="${json},\"new_parent\":\"$new_parent\"}}"
+    else
+        json="${json},\"new_parent\":null}}"
+    fi
+
+    echo "$json"
+}
+
+cmd_reassign() {
+    local ID=""
+    local NEW_PARENT=""
+    local NONE_FLAG=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib reassign <agent-id> <new-parent-id>
+       ib reassign <agent-id> --none
+
+Reassign an agent to a different parent manager.
+
+Arguments:
+  agent-id        The agent to reassign
+  new-parent-id   The new parent manager
+  --none          Make the agent a root manager (no parent)
+
+Examples:
+  ib reassign worker-123 manager-456    # Reassign to manager-456
+  ib reassign worker-123 --none         # Make root manager
+EOF
+                exit 0
+                ;;
+            --none)
+                NONE_FLAG=true
+                shift
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$ID" ]]; then
+                    ID="$1"
+                elif [[ -z "$NEW_PARENT" && "$NONE_FLAG" != true ]]; then
+                    NEW_PARENT="$1"
+                else
+                    echo "Unknown argument: $1" >&2
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ID" ]]; then
+        echo "Error: agent ID required" >&2
+        echo "Usage: ib reassign <agent-id> <new-parent-id>" >&2
+        echo "       ib reassign <agent-id> --none" >&2
+        exit 1
+    fi
+
+    if [[ -z "$NEW_PARENT" && "$NONE_FLAG" != true ]]; then
+        echo "Error: new parent ID or --none required" >&2
+        echo "Usage: ib reassign <agent-id> <new-parent-id>" >&2
+        echo "       ib reassign <agent-id> --none" >&2
+        exit 1
+    fi
+
+    # Require git repo
+    require_git_repo
+
+    # Resolve partial IDs
+    ID=$(resolve_agent_id "$ID") || exit 1
+    if [[ -n "$NEW_PARENT" ]]; then
+        NEW_PARENT=$(resolve_agent_id "$NEW_PARENT") || exit 1
+    fi
+
+    local AGENT_DIR="$AGENTS_DIR/$ID"
+    local META_FILE="$AGENT_DIR/meta.json"
+
+    # Check if agent exists
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        echo "Error: agent '$ID' not found" >&2
+        exit 1
+    fi
+
+    # Build hierarchy JSON and validate
+    local hierarchy_json
+    hierarchy_json=$(build_hierarchy_json "$AGENTS_DIR" "$ID" "$NEW_PARENT")
+
+    local result
+    result=$(validate_reassignment "$hierarchy_json")
+
+    case "$result" in
+        ok)
+            # Proceed with reassignment
+            ;;
+        noop:same-parent)
+            echo "Agent '$ID' already has parent '$NEW_PARENT'" >&2
+            exit 0
+            ;;
+        noop:already-root)
+            echo "Agent '$ID' is already a root manager" >&2
+            exit 0
+            ;;
+        error:cannot-reassign-to-self)
+            echo "Error: cannot reassign agent to itself" >&2
+            exit 1
+            ;;
+        error:new-parent-not-found)
+            echo "Error: new parent '$NEW_PARENT' not found" >&2
+            exit 1
+            ;;
+        error:worker-cannot-be-parent)
+            echo "Error: '$NEW_PARENT' is a worker and cannot be a parent" >&2
+            exit 1
+            ;;
+        error:circular-dependency)
+            echo "Error: '$NEW_PARENT' is a descendant of '$ID' (would create circular dependency)" >&2
+            exit 1
+            ;;
+        *)
+            echo "Error: validation failed: $result" >&2
+            exit 1
+            ;;
+    esac
+
+    # Get old parent for notifications
+    local OLD_PARENT
+    OLD_PARENT=$(read_meta_field "$META_FILE" "manager" "")
+    [[ "$OLD_PARENT" == "null" ]] && OLD_PARENT=""
+
+    # Update meta.json
+    if [[ -n "$NEW_PARENT" ]]; then
+        json_set "$META_FILE" "manager" "$NEW_PARENT"
+    else
+        json_set "$META_FILE" "manager" ":null"
+    fi
+
+    # Log the change
+    local old_desc="root"
+    [[ -n "$OLD_PARENT" ]] && old_desc="'$OLD_PARENT'"
+    local new_desc="root"
+    [[ -n "$NEW_PARENT" ]] && new_desc="'$NEW_PARENT'"
+
+    log_agent "$ID" "Reassigned from $old_desc to $new_desc"
+
+    # Send notifications to affected agents using ib send
+    # cmd_send handles logging to recipient's agent.log
+    # Suppress stdout ("Sent to X") since we print our own confirmation
+
+    # Notify old parent (if exists and running)
+    if [[ -n "$OLD_PARENT" && -d "$AGENTS_DIR/$OLD_PARENT" ]]; then
+        cmd_send "$OLD_PARENT" "[watchdog for $ID]: Agent reassigned to manager '$new_desc'" >/dev/null 2>&1 || true
+    fi
+
+    # Notify new parent (if exists and running)
+    if [[ -n "$NEW_PARENT" && -d "$AGENTS_DIR/$NEW_PARENT" ]]; then
+        cmd_send "$NEW_PARENT" "[watchdog for $ID]: Agent reassigned to you (was under $old_desc)" >/dev/null 2>&1 || true
+    fi
+
+    # Notify the agent itself (if running)
+    cmd_send "$ID" "[watchdog]: You've been reassigned from $old_desc to $new_desc" >/dev/null 2>&1 || true
+
+    echo "Reassigned '$ID' from $old_desc to $new_desc"
+}
+
+# =============================================================================
 # COMMAND: merge
 # =============================================================================
 
@@ -13210,7 +13571,7 @@ EOF
     local RIGHT_PANE_NAMES=("AGENT LOG" "INITIAL PROMPT" "DENIALS" "TREE" "ERRORS" "DIFF" "STATUS" "QUESTIONS")
 
     # Dialog state variables
-    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback, 11=number_input, 12=string_input, 13=perms_edit, 14=answer
+    local DIALOG_MODE=0  # 0=none, 1=send, 2=kill, 3=nuke, 4=new_agent, 5=jump, 6=hooks, 7=merge, 8=ext_diff_tool, 9=cmd_jump, 10=feedback, 11=number_input, 12=string_input, 13=perms_edit, 14=answer, 15=reassign
     local DIALOG_WIDTH=60  # Fixed dialog width (increased from 50 for settings tabs)
 
     # Frame rate control
@@ -13312,6 +13673,11 @@ EOF
     local ANSWER_QUESTION_TEXT=""      # The question text (for display)
     local ANSWER_TEXT=""               # User's response text
     local ANSWER_FOCUS=0               # 0=text, 1=Cancel, 2=Send
+
+    # Reassign dialog state (DIALOG_MODE=15)
+    local -a REASSIGN_OPTIONS=()       # List of possible parent IDs (includes "" for "No parent")
+    local REASSIGN_SELECTED=0          # Currently selected option index
+    local REASSIGN_AGENT_ID=""         # Agent being reassigned
 
     # Errors cache for async agent creation failures
     # Each entry: "TIMESTAMP|TITLE|MESSAGE"
@@ -18569,6 +18935,241 @@ try {
     # End Answer Question Dialog
     # ==========================================================================
 
+    # ==========================================================================
+    # Reassign Dialog (DIALOG_MODE=15)
+    # ==========================================================================
+
+    watch_dialog_init_reassign() {
+        # Initialize reassign dialog for currently selected agent
+        if [[ -z "$_WATCH_SELECTED_ID" ]]; then
+            return 1
+        fi
+
+        REASSIGN_AGENT_ID="$_WATCH_SELECTED_ID"
+        REASSIGN_SELECTED=0
+        REASSIGN_OPTIONS=()
+        _DIALOG_ESC_PENDING=0
+        _DIALOG_DIRTY=1
+
+        # Build list of valid parent options:
+        # 1. "(No parent)" option - to make root manager
+        # 2. All managers (non-workers) except the agent itself and its descendants
+
+        # First, add the "no parent" option (empty string as marker)
+        REASSIGN_OPTIONS+=("")
+
+        # Get current agent's info
+        local agent_meta="$AGENTS_DIR/$REASSIGN_AGENT_ID/meta.json"
+        local current_parent=""
+        if [[ -f "$agent_meta" ]]; then
+            current_parent=$(read_meta_field "$agent_meta" "manager" "")
+            [[ "$current_parent" == "null" ]] && current_parent=""
+        fi
+
+        # Build hierarchy JSON for validation
+        local hierarchy_json
+        hierarchy_json=$(build_hierarchy_json "$AGENTS_DIR" "$REASSIGN_AGENT_ID" "")
+
+        # Find all managers (non-workers) except self
+        for agent_dir in "$AGENTS_DIR"/*/; do
+            [[ -d "$agent_dir" ]] || continue
+            local meta_file="$agent_dir/meta.json"
+            [[ -f "$meta_file" ]] || continue
+
+            local id="${agent_dir%/}"
+            id="${id##*/}"
+
+            # Skip self
+            [[ "$id" == "$REASSIGN_AGENT_ID" ]] && continue
+
+            # Check if it's a worker
+            local is_worker
+            is_worker=$(read_meta_field "$meta_file" "worker" "false")
+            [[ "$is_worker" == "true" ]] && continue
+
+            # Check for circular dependency - skip if this agent is a descendant
+            if is_descendant_of "$hierarchy_json" "$id" "$REASSIGN_AGENT_ID"; then
+                continue
+            fi
+
+            REASSIGN_OPTIONS+=("$id")
+        done
+    }
+
+    watch_dialog_render_reassign() {
+        # Check if a pending escape should close the dialog
+        if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+            DIALOG_MODE=0
+            _DIALOG_ESC_PENDING=0
+            return 0
+        fi
+
+        # Only redraw when dirty
+        [[ "${_DIALOG_DIRTY:-0}" == "1" ]] || return 0
+        _DIALOG_DIRTY=0
+
+        # Get terminal size
+        TERM_LINES=$(tput lines)
+        TERM_COLS=$(tput cols)
+
+        # Calculate dialog position (centered)
+        dialog_calc_position
+        local max_display=8
+        local option_count=${#REASSIGN_OPTIONS[@]}
+        local display_count=$option_count
+        [[ $display_count -gt $max_display ]] && display_count=$max_display
+        local dialog_height=$((5 + display_count + 2))  # title + blank + status + items + blank + hint + border
+        local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
+        [[ $start_row -lt 1 ]] && start_row=1
+
+        local inner_width=$((DIALOG_WIDTH - 4))
+
+        # Clamp REASSIGN_SELECTED to valid range
+        if [[ $option_count -eq 0 ]]; then
+            REASSIGN_SELECTED=0
+        elif [[ $REASSIGN_SELECTED -ge $option_count ]]; then
+            REASSIGN_SELECTED=$((option_count - 1))
+        fi
+
+        # Clear dialog area
+        dialog_clear "$start_row" "$((dialog_height + 2))"
+
+        # Draw dialog box
+        local row=$start_row
+        dialog_draw_hline "$row" "┌" "─" "┐"
+        ((row++))
+
+        # Title
+        local title="Reassign '$REASSIGN_AGENT_ID'"
+        dialog_draw_line "$row" "$title"
+        ((row++))
+
+        # Separator
+        dialog_draw_hline "$row" "├" "─" "┤"
+        ((row++))
+
+        # Status line
+        local status_text="Select new parent:"
+        dialog_draw_line "$row" "$status_text"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Calculate scroll offset to keep selection visible
+        local scroll_offset=0
+        if [[ $option_count -gt $max_display ]]; then
+            if [[ $REASSIGN_SELECTED -gt $((max_display / 2)) ]]; then
+                scroll_offset=$((REASSIGN_SELECTED - max_display / 2))
+                local max_offset=$((option_count - max_display))
+                [[ $scroll_offset -gt $max_offset ]] && scroll_offset=$max_offset
+            fi
+        fi
+
+        # Show options with selection highlighting
+        local i
+        for ((i=0; i<max_display && i<option_count; i++)); do
+            local idx=$((scroll_offset + i))
+            if [[ $idx -lt $option_count ]]; then
+                local option_id="${REASSIGN_OPTIONS[$idx]}"
+                local display_text
+                if [[ -z "$option_id" ]]; then
+                    display_text="(No parent - make root)"
+                else
+                    display_text="$option_id"
+                fi
+
+                if [[ $idx -eq $REASSIGN_SELECTED ]]; then
+                    # Selected item - show with reverse video and > prefix
+                    printf '\e[%d;%dH│ \e[7m>%-*s\e[0m │' "$row" "$_DIALOG_START_COL" "$((inner_width - 1))" " $display_text"
+                else
+                    printf '\e[%d;%dH│  %-*s │' "$row" "$_DIALOG_START_COL" "$((inner_width - 1))" " $display_text"
+                fi
+            else
+                dialog_draw_line "$row" ""
+            fi
+            ((row++))
+        done
+
+        # Bottom border
+        dialog_draw_hline "$row" "└" "─" "┘"
+
+        # Footer hint
+        ((row++))
+        printf '\e[%d;%dH' "$row" "$_DIALOG_START_COL"
+        printf '%*s' "$DIALOG_WIDTH" ''
+        local hint="Enter: select   ↑↓/jk: navigate   Esc: cancel"
+        printf '\e[%d;%dH%s' "$row" "$(( _DIALOG_START_COL + (DIALOG_WIDTH - ${#hint}) / 2 ))" "$hint"
+    }
+
+    watch_dialog_key_reassign() {
+        local key="$1"
+        local option_count=${#REASSIGN_OPTIONS[@]}
+
+        case "$key" in
+            $'\x1e')  # Enter - confirm selection
+                if [[ $option_count -gt 0 ]]; then
+                    local selected_parent="${REASSIGN_OPTIONS[$REASSIGN_SELECTED]}"
+
+                    # Close dialog first
+                    DIALOG_MODE=0
+
+                    # Execute the reassign command
+                    if [[ -z "$selected_parent" ]]; then
+                        # No parent option - use --none
+                        cmd_reassign "$REASSIGN_AGENT_ID" --none 2>&1 || true
+                    else
+                        cmd_reassign "$REASSIGN_AGENT_ID" "$selected_parent" 2>&1 || true
+                    fi
+                fi
+                ;;
+            $'\e')  # Escape - check for sequence or close
+                _DIALOG_ESC_PENDING=1
+                ;;
+            '[')  # Part of escape sequence
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    _DIALOG_ESC_PENDING=2
+                fi
+                ;;
+            'A'|'k')  # Up arrow or k
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" || "$key" == "k" ]]; then
+                    if [[ $option_count -gt 0 ]]; then
+                        REASSIGN_SELECTED=$(( (REASSIGN_SELECTED - 1 + option_count) % option_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'B'|'j')  # Down arrow or j
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" || "$key" == "j" ]]; then
+                    if [[ $option_count -gt 0 ]]; then
+                        REASSIGN_SELECTED=$(( (REASSIGN_SELECTED + 1) % option_count ))
+                    fi
+                    _DIALOG_ESC_PENDING=0
+                    _DIALOG_DIRTY=1
+                fi
+                ;;
+            'C'|'D')  # Left/Right arrows - just consume
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "2" ]]; then
+                    _DIALOG_ESC_PENDING=0
+                fi
+                ;;
+            *)  # Any other key
+                if [[ "${_DIALOG_ESC_PENDING:-0}" == "1" ]]; then
+                    # Escape pressed alone - close dialog
+                    DIALOG_MODE=0
+                    _DIALOG_ESC_PENDING=0
+                fi
+                _DIALOG_ESC_PENDING=0
+                ;;
+        esac
+    }
+
+    # ==========================================================================
+    # End Reassign Dialog
+    # ==========================================================================
+
     # Open external diff tool for an agent
     # Args: $1=agent_id
     watch_open_external_diff() {
@@ -20287,6 +20888,7 @@ try {
                 12) watch_dialog_key_string_input "$key" ;;
                 13) watch_dialog_key_permissions_editor "$key" ;;
                 14) watch_dialog_key_answer "$key" ;;
+                15) watch_dialog_key_reassign "$key" ;;
             esac
             return
         fi
@@ -20521,6 +21123,14 @@ try {
                 watch_dialog_init_setup
                 DIALOG_MODE=6
                 ;;
+            r)
+                _WATCH_ESC_PENDING=0
+                # Open Reassign dialog (if agent selected)
+                if [[ $AGENT_COUNT -gt 0 && -n "$_WATCH_SELECTED_ID" ]]; then
+                    watch_dialog_init_reassign
+                    DIALOG_MODE=15
+                fi
+                ;;
             o)
                 _WATCH_ESC_PENDING=0
                 # Open external diff tool (only when in diff pane and tool is configured)
@@ -20735,6 +21345,7 @@ try {
                 12) watch_dialog_render_string_input ;;
                 13) watch_dialog_render_permissions_editor ;;
                 14) watch_dialog_render_answer ;;
+                15) watch_dialog_render_reassign ;;
             esac
             set -e
         else
@@ -21379,6 +21990,10 @@ case "${1:-help}" in
         shift
         cmd_resume "$@"
         ;;
+    reassign)
+        shift
+        cmd_reassign "$@"
+        ;;
     pause)
         shift
         cmd_pause "$@"
@@ -21408,6 +22023,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-reassign)
+        shift
+        cmd_test_reassign "$@"
         ;;
     test-validate-meta)
         shift
