@@ -7693,11 +7693,11 @@ build_hierarchy_json() {
 
         local manager
         manager=$(read_meta_field "$meta_file" "manager" "")
-        [[ "$manager" == "null" ]] && manager=""
+        [[ "$manager" == "null" ]] && manager="" || true
 
         local worker
         worker=$(read_meta_field "$meta_file" "worker" "false")
-        [[ "$worker" == "null" ]] && worker="false"
+        [[ "$worker" == "null" ]] && worker="false" || true
 
         if [[ "$first" != true ]]; then
             json="${json},"
@@ -7846,7 +7846,7 @@ EOF
     # Get old parent for notifications
     local OLD_PARENT
     OLD_PARENT=$(read_meta_field "$META_FILE" "manager" "")
-    [[ "$OLD_PARENT" == "null" ]] && OLD_PARENT=""
+    [[ "$OLD_PARENT" == "null" ]] && OLD_PARENT="" || true
 
     # Update meta.json
     if [[ -n "$NEW_PARENT" ]]; then
@@ -7857,9 +7857,9 @@ EOF
 
     # Log the change
     local old_desc="root"
-    [[ -n "$OLD_PARENT" ]] && old_desc="'$OLD_PARENT'"
+    [[ -n "$OLD_PARENT" ]] && old_desc="'$OLD_PARENT'" || true
     local new_desc="root"
-    [[ -n "$NEW_PARENT" ]] && new_desc="'$NEW_PARENT'"
+    [[ -n "$NEW_PARENT" ]] && new_desc="'$NEW_PARENT'" || true
 
     log_agent "$ID" "Reassigned from $old_desc to $new_desc"
 
@@ -18963,7 +18963,7 @@ try {
         local current_parent=""
         if [[ -f "$agent_meta" ]]; then
             current_parent=$(read_meta_field "$agent_meta" "manager" "")
-            [[ "$current_parent" == "null" ]] && current_parent=""
+            [[ "$current_parent" == "null" ]] && current_parent="" || true
         fi
 
         # Build hierarchy JSON for validation
@@ -18980,12 +18980,12 @@ try {
             id="${id##*/}"
 
             # Skip self
-            [[ "$id" == "$REASSIGN_AGENT_ID" ]] && continue
+            [[ "$id" == "$REASSIGN_AGENT_ID" ]] && continue || true
 
             # Check if it's a worker
             local is_worker
             is_worker=$(read_meta_field "$meta_file" "worker" "false")
-            [[ "$is_worker" == "true" ]] && continue
+            [[ "$is_worker" == "true" ]] && continue || true
 
             # Check for circular dependency - skip if this agent is a descendant
             if is_descendant_of "$hierarchy_json" "$id" "$REASSIGN_AGENT_ID"; then
@@ -19017,10 +19017,10 @@ try {
         local max_display=8
         local option_count=${#REASSIGN_OPTIONS[@]}
         local display_count=$option_count
-        [[ $display_count -gt $max_display ]] && display_count=$max_display
+        [[ $display_count -gt $max_display ]] && display_count=$max_display || true
         local dialog_height=$((5 + display_count + 2))  # title + blank + status + items + blank + hint + border
         local start_row=$(( (TERM_LINES - dialog_height) / 2 ))
-        [[ $start_row -lt 1 ]] && start_row=1
+        [[ $start_row -lt 1 ]] && start_row=1 || true
 
         local inner_width=$((DIALOG_WIDTH - 4))
 
