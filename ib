@@ -4635,6 +4635,15 @@ META_CACHE_MTIME=()
 META_CACHE_STABLE=()
 META_CACHE_INDEX=""
 
+# Invalidate meta cache (call when meta.json is modified, e.g., by ib reassign)
+invalidate_meta_cache() {
+    META_CACHE_IDS=()
+    META_CACHE_DATA=()
+    META_CACHE_MTIME=()
+    META_CACHE_STABLE=()
+    META_CACHE_INDEX=""
+}
+
 # Session name cache - maps agent_id to tmux_session for O(1) lookup
 # SESSION_NAME_CACHE_INDEX = lookup string "|id1:session1|id2:session2|" for O(1) lookup
 # Populated by build_agent_data_file() when parsing meta.json
@@ -19122,6 +19131,9 @@ try {
                     else
                         cmd_reassign "$REASSIGN_AGENT_ID" "$selected_parent" 2>&1 || true
                     fi
+
+                    # Invalidate meta cache so tree reflects new parent
+                    invalidate_meta_cache
                 fi
                 ;;
             $'\e')  # Escape - check for sequence or close
