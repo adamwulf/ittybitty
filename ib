@@ -3538,6 +3538,102 @@ do_kill() {
     return 0
 }
 
+# Performs the actual nuke operation (kill multiple agents + orphan cleanup)
+# This is the logic function - no argument parsing, no confirmation prompts
+# Args: $@ = list of agent IDs to kill (must be resolved)
+# Sets:
+#   NUKE_STATUS: "ok", "partial", "error"
+#   NUKE_ERROR: Human-readable error message
+#   NUKE_KILLED: Number of agents successfully killed
+#   NUKE_FAILED: Number of agents that failed to kill
+#   NUKE_ORPHANS_KILLED: Number of orphaned tmux sessions cleaned up
+# Returns: Always 0 (callers should check NUKE_STATUS, not return value)
+do_nuke() {
+    # Reset globals
+    NUKE_STATUS=""
+    NUKE_ERROR=""
+    NUKE_KILLED=0
+    NUKE_FAILED=0
+    NUKE_ORPHANS_KILLED=0
+
+    local agents_to_kill=("$@")
+
+    # Get questions file path for updating question status
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+
+    # Kill each agent in the list
+    for id in "${agents_to_kill[@]}"; do
+        [[ -d "$AGENTS_DIR/$id" ]] || continue
+
+        # Remove any questions from this agent
+        remove_agent_questions "$questions_file" "$id"
+
+        # Teardown the agent (quiet mode for batch)
+        if teardown_agent "$id" "--quiet" "Agent nuked"; then
+            NUKE_KILLED=$((NUKE_KILLED + 1))
+        else
+            NUKE_FAILED=$((NUKE_FAILED + 1))
+        fi
+    done
+
+    # Clean up orphaned tmux sessions (sessions without agent directories)
+    local orphans=()
+    local known_ids=()
+
+    # Build list of remaining known agent IDs
+    for agent_dir in "$AGENTS_DIR"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        known_ids+=("$(basename "$agent_dir")")
+    done
+
+    # Check our tmux sessions for orphans (only sessions with our prefix)
+    while IFS= read -r session; do
+        [[ -z "$session" ]] && continue
+        # Skip sessions that don't have our prefix
+        [[ "$session" != "${SESSION_PREFIX}"* ]] && continue
+        # Extract agent ID from session name (strip prefix)
+        local agent_id="${session#${SESSION_PREFIX}}"
+        # Check if this session has a matching agent directory
+        local is_known=false
+        for known_id in "${known_ids[@]}"; do
+            if [[ "$agent_id" == "$known_id" ]]; then
+                is_known=true
+                break
+            fi
+        done
+        if [[ "$is_known" == false ]]; then
+            orphans+=("$session")
+        fi
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+
+    # Kill orphaned sessions if any found
+    if [[ ${#orphans[@]} -gt 0 ]]; then
+        for orphan in "${orphans[@]}"; do
+            if tmux kill-session -t "$orphan" 2>/dev/null; then
+                NUKE_ORPHANS_KILLED=$((NUKE_ORPHANS_KILLED + 1))
+            fi
+        done
+    fi
+
+    # Scan for any orphaned Claude processes after all cleanup
+    if [[ $NUKE_KILLED -gt 0 || $NUKE_ORPHANS_KILLED -gt 0 ]]; then
+        scan_and_kill_orphans
+    fi
+
+    # Set status based on results
+    if [[ $NUKE_FAILED -gt 0 && $NUKE_KILLED -eq 0 ]]; then
+        NUKE_STATUS="error"
+        NUKE_ERROR="All $NUKE_FAILED agent(s) failed to kill"
+    elif [[ $NUKE_FAILED -gt 0 ]]; then
+        NUKE_STATUS="partial"
+        NUKE_ERROR="$NUKE_FAILED agent(s) failed to kill"
+    else
+        NUKE_STATUS="ok"
+    fi
+
+    return 0
+}
+
 # Performs the actual merge operation
 # This is the logic function - no argument parsing, no confirmation prompts
 # Args: $1 = agent_id (must be resolved), $2 = target_branch (optional, auto-detected if empty)
@@ -7562,99 +7658,28 @@ EOF
     if [[ ${#agents_to_kill[@]} -gt 0 ]]; then
         echo "Killing ${#agents_to_kill[@]} agent(s)..."
     fi
-    local killed=0
-    local failed=0
 
-    # Get questions file path for updating question status
-    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    # Call do_nuke to perform the actual nuke
+    do_nuke "${agents_to_kill[@]}"
 
-    # Kill each agent in the list
-    for id in "${agents_to_kill[@]}"; do
-        [[ -d "$AGENTS_DIR/$id" ]] || continue
-
-        echo -n "  Killing $id... "
-
-        # Remove any questions from this agent
-        remove_agent_questions "$questions_file" "$id"
-
-        # Teardown the agent (quiet mode for batch)
-        if teardown_agent "$id" "--quiet" "Agent nuked"; then
-            echo "✓"
-            ((killed++))
-        else
-            echo "✗"
-            ((failed++))
-        fi
-    done
-
-    # Clean up orphaned tmux sessions (sessions without agent directories)
-    local orphans=()
-    local known_ids=()
-
-    # Build list of remaining known agent IDs
-    for agent_dir in "$AGENTS_DIR"/*/; do
-        [[ -d "$agent_dir" ]] || continue
-        known_ids+=("$(basename "$agent_dir")")
-    done
-
-    # Check our tmux sessions for orphans (only sessions with our prefix)
-    while IFS= read -r session; do
-        [[ -z "$session" ]] && continue
-        # Skip sessions that don't have our prefix
-        [[ "$session" != "${SESSION_PREFIX}"* ]] && continue
-        # Extract agent ID from session name (strip prefix)
-        local agent_id="${session#${SESSION_PREFIX}}"
-        # Check if this session has a matching agent directory
-        local is_known=false
-        for known_id in "${known_ids[@]}"; do
-            if [[ "$agent_id" == "$known_id" ]]; then
-                is_known=true
-                break
-            fi
-        done
-        if [[ "$is_known" == false ]]; then
-            orphans+=("$session")
-        fi
-    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-
-    # Kill orphaned sessions if any found
-    local orphans_killed=0
-    if [[ ${#orphans[@]} -gt 0 ]]; then
+    # Print per-agent results
+    if [[ $NUKE_KILLED -gt 0 || $NUKE_ORPHANS_KILLED -gt 0 ]]; then
         echo ""
-        echo "Cleaning up ${#orphans[@]} orphaned tmux session(s)..."
-        for orphan in "${orphans[@]}"; do
-            echo -n "  Killing $orphan... "
-            if tmux kill-session -t "$orphan" 2>/dev/null; then
-                echo "✓"
-                ((orphans_killed++))
-            else
-                echo "✗"
-            fi
-        done
-    fi
-
-    # Scan for any orphaned Claude processes after all cleanup
-    if [[ $killed -gt 0 || $orphans_killed -gt 0 ]]; then
-        echo ""
-        echo "Scanning for orphaned Claude processes..."
-        scan_and_kill_orphans
-    fi
-
-    # Print results
-    if [[ $killed -eq 0 && $orphans_killed -eq 0 ]]; then
-        echo "No agents or orphaned sessions found."
+        if [[ $NUKE_KILLED -gt 0 && $NUKE_ORPHANS_KILLED -gt 0 ]]; then
+            echo "Results: $NUKE_KILLED agent(s) killed, $NUKE_ORPHANS_KILLED orphaned session(s) cleaned up, $NUKE_FAILED failed"
+        elif [[ $NUKE_KILLED -gt 0 ]]; then
+            echo "Results: $NUKE_KILLED agent(s) killed, $NUKE_FAILED failed"
+        elif [[ $NUKE_ORPHANS_KILLED -gt 0 ]]; then
+            echo "Results: $NUKE_ORPHANS_KILLED orphaned session(s) cleaned up"
+        fi
     else
-        echo ""
-        if [[ $killed -gt 0 && $orphans_killed -gt 0 ]]; then
-            echo "Results: $killed agent(s) killed, $orphans_killed orphaned session(s) cleaned up, $failed failed"
-        elif [[ $killed -gt 0 ]]; then
-            echo "Results: $killed agent(s) killed, $failed failed"
-        elif [[ $orphans_killed -gt 0 ]]; then
-            echo "Results: $orphans_killed orphaned session(s) cleaned up"
-        fi
+        echo "No agents or orphaned sessions found."
     fi
 
-    if [[ $failed -gt 0 ]]; then
+    # Convert NUKE_STATUS to exit codes
+    if [[ "$NUKE_STATUS" == "error" ]]; then
+        exit 1
+    elif [[ "$NUKE_STATUS" == "partial" ]]; then
         exit 1
     fi
 }
@@ -15181,9 +15206,17 @@ EOF
                     # Cancel
                     DIALOG_MODE=0
                 elif [[ $NUKE_FOCUS -eq 2 && "$NUKE_TEXT" == "NUKE" ]]; then
-                    # Confirm - execute nuke command
+                    # Confirm - build agents list and execute nuke via do_nuke
                     DIALOG_MODE=0
-                    cmd_nuke --force >/dev/null 2>&1 &
+                    # Build list of all agents (same as cmd_nuke with no TARGET_ID)
+                    local _nuke_agents=()
+                    for _nuke_dir in "$AGENTS_DIR"/*/; do
+                        [[ -d "$_nuke_dir" ]] || continue
+                        [[ -f "$_nuke_dir/meta.json" ]] || continue
+                        _nuke_agents+=("$(basename "$_nuke_dir")")
+                    done
+                    # Run nuke in background
+                    do_nuke "${_nuke_agents[@]}" >/dev/null 2>&1 &
                 fi
                 # If focus is on text input, Enter does nothing
                 ;;
