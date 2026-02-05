@@ -4411,6 +4411,29 @@ get_agent_context_usage() {
     return 1
 }
 
+# Check if agent was created within the last N seconds
+# Used to show "creating" instead of "stopped" for newly spawned agents
+# Args: $1 = agent_id, $2 = threshold_seconds (default: 6)
+# Returns: 0 if recently created, 1 otherwise
+is_agent_recently_created() {
+    local agent_id="$1"
+    local threshold="${2:-6}"
+
+    local meta_file="$AGENTS_DIR/$agent_id/meta.json"
+    [[ ! -f "$meta_file" ]] && return 1
+
+    local created_epoch
+    created_epoch=$(json_get "$meta_file" "created_epoch" "")
+    [[ -z "$created_epoch" ]] && return 1
+
+    local now age
+    now=$(date +%s)
+    age=$((now - created_epoch))
+
+    [[ $age -lt $threshold ]] && return 0
+    return 1
+}
+
 # Detect agent state from tmux
 # States: creating, running, waiting, stopped, complete, compacting, rate_limited, unknown
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
@@ -4457,7 +4480,12 @@ get_state() {
         recent="$LAST_TMUX_CAPTURE"
 
         if [[ -z "$recent" ]]; then
-            echo "stopped"
+            # Check if agent is newly created (< 6 seconds old)
+            if is_agent_recently_created "$id"; then
+                echo "creating"
+            else
+                echo "stopped"
+            fi
             return
         fi
 
@@ -4466,7 +4494,12 @@ get_state() {
     fi
 
     if [[ -z "$recent" ]]; then
-        echo "stopped"
+        # Check if agent is newly created (< 6 seconds old)
+        if is_agent_recently_created "$id"; then
+            echo "creating"
+        else
+            echo "stopped"
+        fi
         return
     fi
 
@@ -21428,9 +21461,14 @@ try {
                 fi
                 # Check if session exists in current sessions list
                 if [[ "$sessions" != *"$tmux_session"* ]]; then
-                    # Session doesn't exist - write stopped state and continue
-                    printf 'stopped' > "$tmux_cache_dir/$agent_id.state.tmp" && \
-                        mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    # Session doesn't exist - check if agent is newly created before marking stopped
+                    if is_agent_recently_created "$agent_id"; then
+                        printf 'creating' > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                            mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    else
+                        printf 'stopped' > "$tmux_cache_dir/$agent_id.state.tmp" && \
+                            mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
+                    fi
                     continue
                 fi
                 # Capture and strip ANSI codes using _strip_ansi (same as capture_tmux)
