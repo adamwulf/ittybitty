@@ -3538,6 +3538,222 @@ do_kill() {
     return 0
 }
 
+# Performs the actual merge operation
+# This is the logic function - no argument parsing, no confirmation prompts
+# Args: $1 = agent_id (must be resolved), $2 = target_branch (optional, auto-detected if empty)
+# Sets:
+#   MERGE_STATUS: "ok" or "error"
+#   MERGE_ERROR: Human-readable error message (if error)
+#   MERGE_COMMIT_COUNT: Number of commits merged (if successful)
+# Returns: Always 0 (callers should check MERGE_STATUS, not return value)
+do_merge() {
+    local agent_id="$1"
+    local target_branch="$2"
+
+    # Reset globals
+    MERGE_STATUS=""
+    MERGE_ERROR=""
+    MERGE_COMMIT_COUNT=0
+
+    local agent_dir="$AGENTS_DIR/$agent_id"
+    local branch_name="agent/$agent_id"
+    local tmux_session
+    tmux_session=$(session_name "$agent_id")
+
+    # Check if agent exists
+    if [[ ! -d "$agent_dir" ]]; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Agent '$agent_id' not found"
+        return 0
+    fi
+
+    # Load config (for PR settings warning - logged only)
+    load_config
+    if [[ "$CONFIG_CREATE_PRS" == "true" ]]; then
+        if ! command -v gh &>/dev/null; then
+            log_agent "$agent_id" "Warning: createPullRequests is enabled but 'gh' CLI is not installed"
+        fi
+        if [[ -z $(git remote 2>/dev/null | head -1) ]]; then
+            log_agent "$agent_id" "Warning: createPullRequests is enabled but no git remote is configured"
+        fi
+    fi
+
+    # Check if worktree exists
+    local worktree_path="$agent_dir/repo"
+    if [[ ! -d "$worktree_path" ]]; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Agent '$agent_id' has no worktree (was created with --no-worktree?)"
+        return 0
+    fi
+
+    # Check if we're trying to merge from within the agent's own worktree
+    local current_dir
+    current_dir=$(pwd)
+    if [[ "$current_dir" == "$worktree_path"* ]]; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Cannot merge agent from within its own worktree"
+        return 0
+    fi
+
+    # Check for uncommitted changes in the worktree
+    if [[ -n $(git -C "$worktree_path" status --porcelain 2>/dev/null) ]]; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Agent '$agent_id' has uncommitted changes"
+        return 0
+    fi
+
+    # Determine target branch if not provided
+    if [[ -z "$target_branch" ]]; then
+        target_branch=$(git branch --show-current 2>/dev/null) || true
+        if [[ -z "$target_branch" ]]; then
+            if git show-ref --verify --quiet refs/heads/main; then
+                target_branch="main"
+            elif git show-ref --verify --quiet refs/heads/master; then
+                target_branch="master"
+            else
+                MERGE_STATUS="error"
+                MERGE_ERROR="Could not determine target branch (detached HEAD with no main/master)"
+                return 0
+            fi
+        fi
+    fi
+
+    # Check if agent branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$branch_name"; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Branch '$branch_name' does not exist"
+        return 0
+    fi
+
+    # Check for uncommitted changes in the current directory (where merge will happen)
+    if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Current directory has uncommitted changes"
+        return 0
+    fi
+
+    # Pre-rebase conflict check
+    local conflict_files
+    if ! conflict_files=$(check_rebase_conflicts "$target_branch" "$branch_name"); then
+        MERGE_STATUS="error"
+        MERGE_ERROR="Rebase conflict detected between '$branch_name' and '$target_branch'"
+        log_agent "$agent_id" "Pre-rebase conflict check failed - conflicts detected with $target_branch"
+        return 0
+    fi
+
+    # Count commits to merge
+    local commit_count
+    commit_count=$(git log "$target_branch..$branch_name" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    MERGE_COMMIT_COUNT=$commit_count
+
+    # Log the start of merge
+    log_agent "$agent_id" "Starting rebase of $branch_name onto $target_branch ($commit_count commits)"
+
+    # Perform the rebase and merge if there are commits
+    if [[ "$commit_count" -gt 0 ]]; then
+        # Rebase agent branch onto target (in the agent's worktree)
+        log_agent "$agent_id" "Rebasing $branch_name onto $target_branch..."
+        local rebase_error
+        if ! rebase_error=$(git -C "$worktree_path" rebase "$target_branch" 2>&1); then
+            MERGE_STATUS="error"
+            MERGE_ERROR="Rebase failed: $rebase_error"
+            log_agent "$agent_id" "ERROR: Rebase failed - $rebase_error"
+            return 0
+        fi
+        log_agent "$agent_id" "Rebase completed successfully"
+
+        # Checkout target branch and merge
+        log_agent "$agent_id" "Checking out $target_branch..."
+        local checkout_error
+        if ! checkout_error=$(git checkout "$target_branch" 2>&1); then
+            MERGE_STATUS="error"
+            MERGE_ERROR="Could not checkout $target_branch: $checkout_error"
+            log_agent "$agent_id" "ERROR: Failed to checkout $target_branch - $checkout_error"
+            return 0
+        fi
+
+        # Use ff-only for agent-to-agent merges, --no-ff for user-to-agent merges
+        local merge_error
+        if is_running_as_agent; then
+            log_agent "$agent_id" "Fast-forwarding $target_branch to $branch_name..."
+            if ! merge_error=$(git merge --ff-only "$branch_name" 2>&1); then
+                MERGE_STATUS="error"
+                MERGE_ERROR="Fast-forward failed: $merge_error"
+                log_agent "$agent_id" "ERROR: Fast-forward failed - $merge_error"
+                return 0
+            fi
+            log_agent "$agent_id" "Fast-forward merge completed successfully"
+        else
+            log_agent "$agent_id" "Merging $branch_name with --no-ff..."
+            if ! merge_error=$(git merge --no-ff "$branch_name" -m "Merge agent $agent_id work" 2>&1); then
+                MERGE_STATUS="error"
+                MERGE_ERROR="Merge failed: $merge_error"
+                log_agent "$agent_id" "ERROR: Merge failed - $merge_error"
+                return 0
+            fi
+            log_agent "$agent_id" "Merge completed successfully"
+        fi
+    fi
+
+    # Capture tmux output BEFORE killing session (so archive has it)
+    log_agent "$agent_id" "Capturing tmux output..."
+    if tmux has-session -t "$tmux_session" 2>/dev/null; then
+        tmux capture-pane -t "$tmux_session" -p -S - > "$agent_dir/output.log" 2>/dev/null || true
+    fi
+
+    # Kill Claude process gracefully before killing tmux session
+    log_agent "$agent_id" "Terminating Claude process..."
+    if kill_agent_process "$agent_id"; then
+        log_agent "$agent_id" "Claude process terminated"
+    else
+        log_agent "$agent_id" "No Claude process found (already stopped?)"
+    fi
+
+    # Kill the agent session if still running
+    log_agent "$agent_id" "Stopping tmux session..."
+    if tmux has-session -t "$tmux_session" 2>/dev/null; then
+        tmux kill-session -t "$tmux_session"
+        log_agent "$agent_id" "Tmux session stopped"
+    else
+        log_agent "$agent_id" "No tmux session found (already stopped?)"
+    fi
+
+    # Cleanup worktree
+    log_agent "$agent_id" "Removing worktree..."
+    if ! git worktree remove "$worktree_path" --force 2>/dev/null; then
+        log_agent "$agent_id" "Warning: could not remove worktree cleanly, removing directory manually"
+        rm -rf "$worktree_path"
+    fi
+    log_agent "$agent_id" "Worktree removed"
+
+    # Delete the branch
+    log_agent "$agent_id" "Deleting branch $branch_name..."
+    if git branch -D "$branch_name" 2>/dev/null; then
+        log_agent "$agent_id" "Branch deleted: $branch_name"
+    else
+        log_agent "$agent_id" "Warning: could not delete branch $branch_name"
+    fi
+
+    # Final log before archive
+    log_agent "$agent_id" "Merge complete - archiving and closing agent"
+
+    # Archive output
+    archive_agent_output "$agent_id"
+
+    # Remove any questions from this agent
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    remove_agent_questions "$questions_file" "$agent_id"
+
+    # Remove agent directory last
+    rm -rf "$agent_dir"
+
+    # Scan for any orphaned Claude processes after cleanup
+    scan_and_kill_orphans
+
+    MERGE_STATUS="ok"
+    return 0
+}
+
 # Ensure .ittybitty directory structure exists
 # Creates .ittybitty/, .ittybitty/agents/, and .ittybitty/archive/ if they don't exist
 # Silent when directories already exist, idempotent (safe to call multiple times)
@@ -8084,7 +8300,7 @@ EOF
 
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local BRANCH_NAME="agent/$ID"
-    local TMUX_SESSION=$(session_name "$ID")
+    local WORKTREE_PATH="$AGENT_DIR/repo"
 
     # Check if agent exists
     if [[ ! -d "$AGENT_DIR" ]]; then
@@ -8104,14 +8320,14 @@ EOF
     fi
 
     # Check if worktree exists
-    local WORKTREE_PATH="$AGENT_DIR/repo"
     if [[ ! -d "$WORKTREE_PATH" ]]; then
         echo "Error: agent '$ID' has no worktree (was created with --no-worktree?)" >&2
         exit 1
     fi
 
     # Check if we're trying to merge from within the agent's own worktree
-    local CURRENT_DIR=$(pwd)
+    local CURRENT_DIR
+    CURRENT_DIR=$(pwd)
     if [[ "$CURRENT_DIR" == "$WORKTREE_PATH"* ]]; then
         echo "Error: Cannot merge agent from within its own worktree. The merge will delete the directory you are currently in. Please run this command from outside the agent worktree." >&2
         exit 1
@@ -8195,7 +8411,8 @@ EOF
     fi
 
     # Show what will be merged
-    local commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    local commit_count
+    commit_count=$(git log "$TARGET_BRANCH..$BRANCH_NAME" --oneline 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$commit_count" -eq 0 ]]; then
         echo "Nothing to merge: $BRANCH_NAME has no new commits relative to $TARGET_BRANCH"
         echo "Proceeding with cleanup..."
@@ -8220,135 +8437,16 @@ EOF
         fi
     fi
 
-    # Log the start of merge
-    log_agent "$ID" "Starting rebase of $BRANCH_NAME onto $TARGET_BRANCH ($commit_count commits)"
+    # Call the logic function to perform the merge
+    do_merge "$ID" "$TARGET_BRANCH"
 
-    # Perform the rebase FIRST (before killing anything)
-    # This ensures we don't leave agents in limbo if rebase fails
-    if [[ "$commit_count" -gt 0 ]]; then
-        # REBASE STRATEGY:
-        # 1. Rebase agent branch onto target (in the agent's worktree)
-        # 2. Merge into target (ff-only for agents, --no-ff for users)
-        log_agent "$ID" "Rebasing $BRANCH_NAME onto $TARGET_BRANCH..."
-        local rebase_error
-        rebase_error=$(git -C "$WORKTREE_PATH" rebase "$TARGET_BRANCH" 2>&1) || {
-            echo "Error: rebase failed" >&2
-            echo "$rebase_error" >&2
-            log_agent "$ID" "ERROR: Rebase failed - $rebase_error"
-            if [[ "$rebase_error" == *"CONFLICT"* ]]; then
-                echo "" >&2
-                echo "IMPORTANT: When resolving conflicts, KEEP BOTH SIDES of the changes." >&2
-                echo "The conflict exists because the manager merged in functionality that" >&2
-                echo "should be preserved alongside your work. Be careful not to discard" >&2
-                echo "either side's changes." >&2
-                echo "" >&2
-                echo "The agent can resolve conflicts with:" >&2
-                echo "  git rebase --continue  # after resolving conflicts" >&2
-                echo "  git rebase --abort     # to cancel rebase" >&2
-                echo "" >&2
-                echo "Or ask the agent to resolve:" >&2
-                echo "  ib send $ID \"Please resolve the rebase conflicts, keeping both sides of changes, then say I HAVE COMPLETED THE GOAL\"" >&2
-                log_agent "$ID" "HINT: Rebase conflicts detected - ask agent to resolve"
-            fi
-            exit 1
-        }
-        log_agent "$ID" "Rebase completed successfully"
-
-        # Now checkout target branch and merge
-        log_agent "$ID" "Checking out $TARGET_BRANCH..."
-        local checkout_error
-        checkout_error=$(git checkout "$TARGET_BRANCH" 2>&1) || {
-            echo "Error: could not checkout $TARGET_BRANCH" >&2
-            echo "$checkout_error" >&2
-            log_agent "$ID" "ERROR: Failed to checkout $TARGET_BRANCH - $checkout_error"
-            if [[ "$checkout_error" == *"already used by worktree"* ]]; then
-                echo "Hint: Branch is checked out in another worktree. Try merging from the root repo." >&2
-                log_agent "$ID" "HINT: Branch is checked out elsewhere - merge from root repo or use --into"
-            fi
-            exit 1
-        }
-
-        # Use ff-only for agent-to-agent merges (manager merging worker)
-        # Use --no-ff for user-to-agent merges (user merging manager) to preserve history
-        local merge_error
-        if is_running_as_agent; then
-            log_agent "$ID" "Fast-forwarding $TARGET_BRANCH to $BRANCH_NAME..."
-            merge_error=$(git merge --ff-only "$BRANCH_NAME" 2>&1) || {
-                echo "Error: fast-forward failed" >&2
-                echo "$merge_error" >&2
-                log_agent "$ID" "ERROR: Fast-forward failed - $merge_error"
-                echo "Hint: This shouldn't happen after a successful rebase. The branch may have diverged." >&2
-                exit 1
-            }
-            log_agent "$ID" "Fast-forward merge completed successfully"
-        else
-            log_agent "$ID" "Merging $BRANCH_NAME with --no-ff..."
-            merge_error=$(git merge --no-ff "$BRANCH_NAME" -m "Merge agent $ID work" 2>&1) || {
-                echo "Error: merge failed" >&2
-                echo "$merge_error" >&2
-                log_agent "$ID" "ERROR: Merge failed - $merge_error"
-                exit 1
-            }
-            log_agent "$ID" "Merge completed successfully"
-        fi
-    fi
-
-    # Capture tmux output BEFORE killing session (so archive has it)
-    log_agent "$ID" "Capturing tmux output..."
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$AGENT_DIR/output.log" 2>/dev/null || true
-    fi
-
-    # Kill Claude process gracefully before killing tmux session
-    log_agent "$ID" "Terminating Claude process..."
-    if kill_agent_process "$ID"; then
-        log_agent "$ID" "Claude process terminated"
+    # Check result and output appropriate message
+    if [[ "$MERGE_STATUS" == "ok" ]]; then
+        echo "Closed agent: $ID"
     else
-        log_agent "$ID" "No Claude process found (already stopped?)"
+        echo "Error: $MERGE_ERROR" >&2
+        exit 1
     fi
-
-    # Kill the agent session if still running
-    log_agent "$ID" "Stopping tmux session..."
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux kill-session -t "$TMUX_SESSION"
-        log_agent "$ID" "Tmux session stopped"
-    else
-        log_agent "$ID" "No tmux session found (already stopped?)"
-    fi
-
-    # Cleanup worktree
-    log_agent "$ID" "Removing worktree..."
-    git worktree remove "$WORKTREE_PATH" --force 2>/dev/null || {
-        log_agent "$ID" "Warning: could not remove worktree cleanly, removing directory manually"
-        rm -rf "$WORKTREE_PATH"
-    }
-    log_agent "$ID" "Worktree removed"
-
-    # Delete the branch
-    log_agent "$ID" "Deleting branch $BRANCH_NAME..."
-    if git branch -D "$BRANCH_NAME" 2>/dev/null; then
-        log_agent "$ID" "Branch deleted: $BRANCH_NAME"
-    else
-        log_agent "$ID" "Warning: could not delete branch $BRANCH_NAME"
-    fi
-
-    # Final log before archive (this is the last log that will be captured)
-    log_agent "$ID" "Merge complete - archiving and closing agent"
-
-    # Archive output (captures complete log including the message above)
-    archive_agent_output "$ID"
-
-    # Remove any questions from this agent
-    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
-    remove_agent_questions "$questions_file" "$ID"
-
-    # Remove agent directory last (no more logging possible after this)
-    rm -rf "$AGENT_DIR"
-
-    echo "Closed agent: $ID"
-
-    # Scan for any orphaned Claude processes after cleanup
-    scan_and_kill_orphans
 }
 
 # =============================================================================
@@ -17426,10 +17524,9 @@ try {
                     watch_dialog_init_send
                     DIALOG_MODE=1
                 elif [[ $MERGE_FOCUS -eq 2 && $MERGE_CAN_MERGE -eq 1 ]]; then
-                    # Merge - execute the merge
+                    # Merge - execute the merge using the logic function directly
                     DIALOG_MODE=0
-                    # Run merge in background
-                    cmd_merge --force "$_WATCH_SELECTED_ID" >/dev/null 2>&1 &
+                    do_merge "$_WATCH_SELECTED_ID" ""
                 fi
                 ;;
             ';')  # Scroll down
