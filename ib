@@ -12440,7 +12440,7 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 
 | Command | Description |
 |---------|-------------|
-| `ib new-agent "goal"` | Spawn agent (returns ID) |
+| `ib new-agent "goal"` | Spawn agent (returns ID, permissions auto-handled) |
 | `ib list` | Show all agents |
 | `ib look <id>` | View agent output |
 | `ib send <id> "msg"` | Send input to agent |
@@ -19124,12 +19124,13 @@ try {
                     # Close dialog first
                     DIALOG_MODE=0
 
-                    # Execute the reassign command
+                    # Execute the reassign command in a subshell to prevent exit calls
+                    # from terminating ib watch (exit only affects the subshell)
                     if [[ -z "$selected_parent" ]]; then
                         # No parent option - use --none
-                        cmd_reassign "$REASSIGN_AGENT_ID" --none 2>&1 || true
+                        (cmd_reassign "$REASSIGN_AGENT_ID" --none) >/dev/null 2>&1
                     else
-                        cmd_reassign "$REASSIGN_AGENT_ID" "$selected_parent" 2>&1 || true
+                        (cmd_reassign "$REASSIGN_AGENT_ID" "$selected_parent") >/dev/null 2>&1
                     fi
 
                     # Invalidate meta cache so tree reflects new parent
