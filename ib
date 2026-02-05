@@ -3371,6 +3371,134 @@ do_merge_check() {
     return 0
 }
 
+# Reassign an agent to a different parent - logic function
+# Sets global variables with results (can be called from anywhere without exit)
+# Args: $1 = agent_id (already resolved), $2 = new_parent (already resolved, empty for root)
+#       $3 = agents_dir (optional, defaults to $AGENTS_DIR)
+# Sets:
+#   REASSIGN_STATUS: "ok", "noop", "error"
+#   REASSIGN_ERROR: Human-readable error message
+#   REASSIGN_RESULT: Detailed result code (e.g., 'same-parent', 'already-root', 'circular-dependency')
+# Returns: Always 0 (callers should check REASSIGN_STATUS, not return value)
+do_reassign() {
+    local agent_id="$1"
+    local new_parent="$2"
+    local agents_dir="${3:-$AGENTS_DIR}"
+
+    # Reset globals
+    REASSIGN_STATUS=""
+    REASSIGN_ERROR=""
+    REASSIGN_RESULT=""
+
+    local agent_dir="$agents_dir/$agent_id"
+    local meta_file="$agent_dir/meta.json"
+
+    # Check if agent exists
+    if [[ ! -d "$agent_dir" ]]; then
+        REASSIGN_STATUS="error"
+        REASSIGN_ERROR="Agent '$agent_id' not found"
+        REASSIGN_RESULT="agent-not-found"
+        return 0
+    fi
+
+    # Build hierarchy JSON and validate
+    local hierarchy_json
+    hierarchy_json=$(build_hierarchy_json "$agents_dir" "$agent_id" "$new_parent")
+
+    local result
+    result=$(validate_reassignment "$hierarchy_json")
+
+    case "$result" in
+        ok)
+            # Proceed with reassignment
+            ;;
+        noop:same-parent)
+            REASSIGN_STATUS="noop"
+            REASSIGN_ERROR="Agent '$agent_id' already has parent '$new_parent'"
+            REASSIGN_RESULT="same-parent"
+            return 0
+            ;;
+        noop:already-root)
+            REASSIGN_STATUS="noop"
+            REASSIGN_ERROR="Agent '$agent_id' is already a root manager"
+            REASSIGN_RESULT="already-root"
+            return 0
+            ;;
+        error:cannot-reassign-to-self)
+            REASSIGN_STATUS="error"
+            REASSIGN_ERROR="Cannot reassign agent to itself"
+            REASSIGN_RESULT="cannot-reassign-to-self"
+            return 0
+            ;;
+        error:new-parent-not-found)
+            REASSIGN_STATUS="error"
+            REASSIGN_ERROR="New parent '$new_parent' not found"
+            REASSIGN_RESULT="new-parent-not-found"
+            return 0
+            ;;
+        error:worker-cannot-be-parent)
+            REASSIGN_STATUS="error"
+            REASSIGN_ERROR="'$new_parent' is a worker and cannot be a parent"
+            REASSIGN_RESULT="worker-cannot-be-parent"
+            return 0
+            ;;
+        error:circular-dependency)
+            REASSIGN_STATUS="error"
+            REASSIGN_ERROR="'$new_parent' is a descendant of '$agent_id' (would create circular dependency)"
+            REASSIGN_RESULT="circular-dependency"
+            return 0
+            ;;
+        *)
+            REASSIGN_STATUS="error"
+            REASSIGN_ERROR="Validation failed: $result"
+            REASSIGN_RESULT="validation-failed"
+            return 0
+            ;;
+    esac
+
+    # Get old parent for notifications
+    local old_parent
+    old_parent=$(read_meta_field "$meta_file" "manager" "")
+    [[ "$old_parent" == "null" ]] && old_parent="" || true
+
+    # Update meta.json
+    if [[ -n "$new_parent" ]]; then
+        json_set "$meta_file" "manager" "$new_parent"
+    else
+        json_set "$meta_file" "manager" ":null"
+    fi
+
+    # Log the change
+    local old_desc="root"
+    [[ -n "$old_parent" ]] && old_desc="'$old_parent'" || true
+    local new_desc="root"
+    [[ -n "$new_parent" ]] && new_desc="'$new_parent'" || true
+
+    log_agent "$agent_id" "Reassigned from $old_desc to $new_desc"
+
+    # Send notifications to affected agents using cmd_send
+    # cmd_send handles logging to recipient's agent.log
+    # Suppress stdout ("Sent to X") since callers may print their own confirmation
+
+    # Notify old parent (if exists and running)
+    if [[ -n "$old_parent" && -d "$agents_dir/$old_parent" ]]; then
+        cmd_send "$old_parent" "[watchdog for $agent_id]: Agent reassigned to manager '$new_desc'" >/dev/null 2>&1 || true
+    fi
+
+    # Notify new parent (if exists and running)
+    if [[ -n "$new_parent" && -d "$agents_dir/$new_parent" ]]; then
+        cmd_send "$new_parent" "[watchdog for $agent_id]: Agent reassigned to you (was under $old_desc)" >/dev/null 2>&1 || true
+    fi
+
+    # Notify the agent itself (if running)
+    cmd_send "$agent_id" "[watchdog]: You've been reassigned from $old_desc to $new_desc" >/dev/null 2>&1 || true
+
+    REASSIGN_STATUS="ok"
+    REASSIGN_ERROR=""
+    REASSIGN_RESULT="reassigned"
+    return 0
+}
+
 # Ensure .ittybitty directory structure exists
 # Creates .ittybitty/, .ittybitty/agents/, and .ittybitty/archive/ if they don't exist
 # Silent when directories already exist, idempotent (safe to call multiple times)
@@ -7802,94 +7930,36 @@ EOF
         NEW_PARENT=$(resolve_agent_id "$NEW_PARENT") || exit 1
     fi
 
-    local AGENT_DIR="$AGENTS_DIR/$ID"
-    local META_FILE="$AGENT_DIR/meta.json"
+    # Call the logic function
+    do_reassign "$ID" "$NEW_PARENT"
 
-    # Check if agent exists
-    if [[ ! -d "$AGENT_DIR" ]]; then
-        echo "Error: agent '$ID' not found" >&2
-        exit 1
-    fi
-
-    # Build hierarchy JSON and validate
-    local hierarchy_json
-    hierarchy_json=$(build_hierarchy_json "$AGENTS_DIR" "$ID" "$NEW_PARENT")
-
-    local result
-    result=$(validate_reassignment "$hierarchy_json")
-
-    case "$result" in
+    # Convert status to exit codes with appropriate messages
+    case "$REASSIGN_STATUS" in
         ok)
-            # Proceed with reassignment
-            ;;
-        noop:same-parent)
-            echo "Agent '$ID' already has parent '$NEW_PARENT'" >&2
+            # Build description for output message
+            local old_parent
+            old_parent=$(read_meta_field "$AGENTS_DIR/$ID/meta.json" "manager" "")
+            [[ "$old_parent" == "null" ]] && old_parent="" || true
+            local new_desc="root"
+            [[ -n "$NEW_PARENT" ]] && new_desc="'$NEW_PARENT'" || true
+            # Note: do_reassign already updated meta.json, so we read the old value indirectly
+            # The log message in do_reassign captures the actual transition
+            echo "Reassigned '$ID' to $new_desc"
             exit 0
             ;;
-        noop:already-root)
-            echo "Agent '$ID' is already a root manager" >&2
+        noop)
+            echo "$REASSIGN_ERROR" >&2
             exit 0
             ;;
-        error:cannot-reassign-to-self)
-            echo "Error: cannot reassign agent to itself" >&2
-            exit 1
-            ;;
-        error:new-parent-not-found)
-            echo "Error: new parent '$NEW_PARENT' not found" >&2
-            exit 1
-            ;;
-        error:worker-cannot-be-parent)
-            echo "Error: '$NEW_PARENT' is a worker and cannot be a parent" >&2
-            exit 1
-            ;;
-        error:circular-dependency)
-            echo "Error: '$NEW_PARENT' is a descendant of '$ID' (would create circular dependency)" >&2
+        error)
+            echo "Error: $REASSIGN_ERROR" >&2
             exit 1
             ;;
         *)
-            echo "Error: validation failed: $result" >&2
+            echo "Error: unexpected status from do_reassign: $REASSIGN_STATUS" >&2
             exit 1
             ;;
     esac
-
-    # Get old parent for notifications
-    local OLD_PARENT
-    OLD_PARENT=$(read_meta_field "$META_FILE" "manager" "")
-    [[ "$OLD_PARENT" == "null" ]] && OLD_PARENT="" || true
-
-    # Update meta.json
-    if [[ -n "$NEW_PARENT" ]]; then
-        json_set "$META_FILE" "manager" "$NEW_PARENT"
-    else
-        json_set "$META_FILE" "manager" ":null"
-    fi
-
-    # Log the change
-    local old_desc="root"
-    [[ -n "$OLD_PARENT" ]] && old_desc="'$OLD_PARENT'" || true
-    local new_desc="root"
-    [[ -n "$NEW_PARENT" ]] && new_desc="'$NEW_PARENT'" || true
-
-    log_agent "$ID" "Reassigned from $old_desc to $new_desc"
-
-    # Send notifications to affected agents using ib send
-    # cmd_send handles logging to recipient's agent.log
-    # Suppress stdout ("Sent to X") since we print our own confirmation
-
-    # Notify old parent (if exists and running)
-    if [[ -n "$OLD_PARENT" && -d "$AGENTS_DIR/$OLD_PARENT" ]]; then
-        cmd_send "$OLD_PARENT" "[watchdog for $ID]: Agent reassigned to manager '$new_desc'" >/dev/null 2>&1 || true
-    fi
-
-    # Notify new parent (if exists and running)
-    if [[ -n "$NEW_PARENT" && -d "$AGENTS_DIR/$NEW_PARENT" ]]; then
-        cmd_send "$NEW_PARENT" "[watchdog for $ID]: Agent reassigned to you (was under $old_desc)" >/dev/null 2>&1 || true
-    fi
-
-    # Notify the agent itself (if running)
-    cmd_send "$ID" "[watchdog]: You've been reassigned from $old_desc to $new_desc" >/dev/null 2>&1 || true
-
-    echo "Reassigned '$ID' from $old_desc to $new_desc"
 }
 
 # =============================================================================
@@ -19124,14 +19194,9 @@ try {
                     # Close dialog first
                     DIALOG_MODE=0
 
-                    # Execute the reassign command in a subshell to prevent exit calls
-                    # from terminating ib watch (exit only affects the subshell)
-                    if [[ -z "$selected_parent" ]]; then
-                        # No parent option - use --none
-                        (cmd_reassign "$REASSIGN_AGENT_ID" --none) >/dev/null 2>&1
-                    else
-                        (cmd_reassign "$REASSIGN_AGENT_ID" "$selected_parent") >/dev/null 2>&1
-                    fi
+                    # Call do_reassign directly (uses return, not exit)
+                    # Empty string for selected_parent means make root (--none)
+                    do_reassign "$REASSIGN_AGENT_ID" "$selected_parent"
 
                     # Invalidate meta cache so tree reflects new parent
                     invalidate_meta_cache
