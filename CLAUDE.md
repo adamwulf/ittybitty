@@ -584,7 +584,7 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 
 | Command | Description |
 |---------|-------------|
-| `ib new-agent "goal"` | Spawn agent (returns ID) |
+| `ib new-agent "goal"` | Spawn agent (returns ID, permissions auto-handled) |
 | `ib list` | Show all agents |
 | `ib look <id>` | View agent output |
 | `ib send <id> "msg"` | Send input to agent |
