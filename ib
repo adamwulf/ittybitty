@@ -3499,6 +3499,45 @@ do_reassign() {
     return 0
 }
 
+# Kill agent logic function - performs the actual kill without prompts
+# Sets global variables with results (can be called from anywhere)
+# Args: $1 = agent_id (already resolved)
+# Sets:
+#   KILL_STATUS: "ok", "error"
+#   KILL_ERROR: Human-readable error message
+# Returns: Always 0 (callers should check KILL_STATUS, not return value)
+do_kill() {
+    local agent_id="$1"
+
+    # Reset globals
+    KILL_STATUS=""
+    KILL_ERROR=""
+
+    local agent_dir="$AGENTS_DIR/$agent_id"
+    local tmux_session
+    tmux_session=$(session_name "$agent_id")
+
+    # Check if agent exists at all
+    if [[ ! -d "$agent_dir" ]] && ! tmux has-session -t "$tmux_session" 2>/dev/null; then
+        KILL_STATUS="error"
+        KILL_ERROR="Agent '$agent_id' not found"
+        return 0
+    fi
+
+    # Remove any questions from this agent
+    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
+    remove_agent_questions "$questions_file" "$agent_id"
+
+    # Teardown the agent (logs, kills, archives, removes)
+    teardown_agent "$agent_id" "" "Agent killed"
+
+    # Scan for any orphaned Claude processes after cleanup
+    scan_and_kill_orphans
+
+    KILL_STATUS="ok"
+    return 0
+}
+
 # Ensure .ittybitty directory structure exists
 # Creates .ittybitty/, .ittybitty/agents/, and .ittybitty/archive/ if they don't exist
 # Silent when directories already exist, idempotent (safe to call multiple times)
@@ -7101,17 +7140,18 @@ EOF
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
-    local AGENT_DIR="$AGENTS_DIR/$ID"
-    local TMUX_SESSION=$(session_name "$ID")
-
-    # Check if agent exists at all
-    if [[ ! -d "$AGENT_DIR" ]] && ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "Error: agent '$ID' not found" >&2
-        exit 1
-    fi
-
-    # Confirm if not forced
+    # Confirm if not forced (check existence first for meaningful error)
     if [[ "$FORCE" != true ]]; then
+        local AGENT_DIR="$AGENTS_DIR/$ID"
+        local TMUX_SESSION
+        TMUX_SESSION=$(session_name "$ID")
+
+        # Check if agent exists at all before prompting
+        if [[ ! -d "$AGENT_DIR" ]] && ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            echo "Error: agent '$ID' not found" >&2
+            exit 1
+        fi
+
         # If running as an agent, error instead of blocking on interactive prompt
         if is_running_as_agent; then
             echo "Error: Cannot prompt for confirmation in non-interactive mode. Use --force to skip confirmation." >&2
@@ -7125,16 +7165,17 @@ EOF
         fi
     fi
 
-    # Remove any questions from this agent
-    local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
-    remove_agent_questions "$questions_file" "$ID"
+    # Call do_kill to perform the actual kill
+    do_kill "$ID"
 
-    # Teardown the agent (logs, kills, archives, removes)
-    teardown_agent "$ID" "" "Agent killed"
-    echo "Closed agent: $ID"
-
-    # Scan for any orphaned Claude processes after cleanup
-    scan_and_kill_orphans
+    # Check result and convert to exit codes
+    if [[ "$KILL_STATUS" == "ok" ]]; then
+        echo "Closed agent: $ID"
+        exit 0
+    else
+        echo "Error: $KILL_ERROR" >&2
+        exit 1
+    fi
 }
 
 # =============================================================================
@@ -14528,10 +14569,10 @@ EOF
                 ;;
             $'\x1e')  # Enter (record separator marker from key reader)
                 if [[ $KILL_FOCUS -eq 1 ]]; then
-                    # Kill confirmed - execute kill command
+                    # Kill confirmed - execute kill via do_kill
                     DIALOG_MODE=0
                     # Run kill in background and refresh
-                    cmd_kill --force "$_WATCH_SELECTED_ID" >/dev/null 2>&1 &
+                    do_kill "$_WATCH_SELECTED_ID" >/dev/null 2>&1 &
                 else
                     # Cancel
                     DIALOG_MODE=0
