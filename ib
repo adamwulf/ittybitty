@@ -19471,23 +19471,11 @@ try {
         local branch_head
         branch_head=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
 
-        # Temporarily restore terminal to normal state
-        tput rmcup 2>/dev/null || true  # Exit alternate screen
-        tput cnorm 2>/dev/null || true  # Show cursor
-        stty sane 2>/dev/null || true   # Reset terminal
-
-        # Execute the external diff tool
-        # The tool is expected to be something like 'opendiff' or a custom script
+        # Execute the external diff tool in background
+        # The tool is expected to be a GUI app like 'opendiff' or a custom script
         # We pass merge_base and branch_head as arguments
-        eval "$CONFIG_EXTERNAL_DIFF_TOOL" '"$merge_base"' '"$branch_head"' 2>/dev/null || true
-
-        # Re-enter alternate screen and hide cursor
-        tput smcup 2>/dev/null || true  # Enter alternate screen
-        tput civis 2>/dev/null || true  # Hide cursor
-        stty -echo -icanon 2>/dev/null || true
-
-        # Force redraw
-        tput clear 2>/dev/null || true
+        # Run in background to avoid blocking watch and terminal state issues
+        (eval "$CONFIG_EXTERNAL_DIFF_TOOL" '"$merge_base"' '"$branch_head"' &>/dev/null &) &
     }
 
     # Render footer with help text, timing, and clock (2 lines)
