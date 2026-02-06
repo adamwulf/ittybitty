@@ -19474,8 +19474,8 @@ try {
         # Execute the external diff tool in background
         # The tool is expected to be a GUI app like 'opendiff' or a custom script
         # We pass merge_base and branch_head as arguments
-        # Run in background to avoid blocking watch and terminal state issues
-        (eval "$CONFIG_EXTERNAL_DIFF_TOOL" '"$merge_base"' '"$branch_head"' &>/dev/null &) &
+        # Detach from terminal to avoid blocking watch
+        eval "$CONFIG_EXTERNAL_DIFF_TOOL \"$merge_base\" \"$branch_head\"" </dev/null >/dev/null 2>&1 &
     }
 
     # Render footer with help text, timing, and clock (2 lines)
