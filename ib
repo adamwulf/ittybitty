@@ -21415,8 +21415,8 @@ try {
                 ;;
             o)
                 _WATCH_ESC_PENDING=0
-                # Open external diff tool (only when in diff pane and tool is configured)
-                if [[ $RIGHT_PANE_MODE -eq 5 && -n "$CONFIG_EXTERNAL_DIFF_TOOL" && -n "$_WATCH_SELECTED_ID" ]]; then
+                # Open external diff tool (when tool is configured and agent is selected)
+                if [[ -n "$CONFIG_EXTERNAL_DIFF_TOOL" && -n "$_WATCH_SELECTED_ID" ]]; then
                     watch_open_external_diff "$_WATCH_SELECTED_ID"
                 fi
                 ;;
