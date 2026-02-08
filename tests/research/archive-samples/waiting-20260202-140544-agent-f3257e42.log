@@ -1,0 +1,237 @@
+
+────────────────────────────────────────────────────────────
+ Do you trust the files in this folder?
+
+ /Users/adamwulf/Developer/muse/muse-ios/.ittybitty/agents/
+ agent-f3257e42/repo
+
+ Claude Code may read, write, or execute files contained in
+  this directory. This can pose security risks, so only use
+  files, hooks, and bash commands from trusted sources.
+
+ Execution allowed by:
+
+   • .claude/settings.local.json
+
+ Learn more
+
+ ❯ 1. Yes, proceed
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────
+ Allow external CLAUDE.md file imports?
+
+ This project's CLAUDE.md imports files outside the current
+  working directory. Never allow this for third-party
+ repositories.
+
+ External imports:
+   /Users/adamwulf/Developer/muse/muse-ios/.ittybitty/STATU
+ S.md
+
+ Important: Only use Claude Code with files you trust.
+ Accessing untrusted files may pose security risks
+ https://code.claude.com/docs/en/security
+
+ ❯ 1. Yes, allow external imports
+   2. No, disable external imports
+
+ Enter to confirm · Esc to disable external includes
+
+ ▐▛███▜▌   Claude Code v2.1.19
+▝▜█████▛▘  Opus 4.5 · Claude Max
+  ▘▘ ▝▝    ~/…/.ittybitty/agents/agent-f3257e42/repo
+
+❯ <ittybitty>You are an IttyBitty worker
+  agent.</ittybitty>
+
+  [AGENT CONTEXT]
+  You are running as agent agent-f3257e42 in a git
+  worktree on branch agent/agent-f3257e42, forked from
+  agent/fumble.
+  Your manager agent is: fumble
+
+  PATH ISOLATION:
+  You are isolated to your worktree at:
+  /Users/adamwulf/Developer/muse/muse-ios/.ittybitty/ag
+  ents/agent-f3257e42/repo
+  - You CAN access: Your worktree, ~/.claude, /tmp, and
+  general system paths
+  - You CANNOT access: The main repo at
+  /Users/adamwulf/Developer/muse/muse-ios, other
+  agents' worktrees
+  - If you get "Access denied" or "Path violation"
+  errors, you're trying to access a forbidden path
+  - Do NOT try to cd into the main repo - work only in
+  your worktree
+
+  GIT WORKTREE CONTEXT:
+  You are in a git worktree, which shares the same
+  repository as the main checkout.
+  - Your branch: agent/agent-f3257e42
+  - Forked from: agent/fumble
+  - All branches are LOCAL - no need for 'git fetch
+  origin'
+  - To merge latest changes from your parent: 'git
+  merge agent/fumble' (not 'git fetch origin; git merge
+  origin/...')
+  - Other agents' branches are visible as local
+  branches (agent/*)
+  - Your worktree is a separate checkout, but commits
+  are shared across all worktrees
+
+  You are a worker agent focused on your specific task.
+  IMPORTANT: Always use 'ib' (not './ib') to ensure you
+  use the current version from PATH.
+
+  To communicate with your manager: ib send fumble
+  "your message"
+
+  Use this to:
+  - Report completion or progress
+  - Ask questions if requirements are unclear
+  - Share important findings
+
+  If you get stuck or encounter a blocker:
+  1. Describe the specific problem you're facing
+  2. Send a message to your manager: ib send fumble
+  "[STUCK] <description of problem>"
+  3. Enter WAITING state - a watchdog monitors you and
+  will notify your manager that you need help
+
+  SELF-INSPECTION:
+  Before completing, verify your work:
+  ib diff         Check your changes vs base branch
+  ib status       See your commits
+
+  State Management:
+  - Whenever you stop working and are idle, you must
+  end your message with either:
+  - 'WAITING' - if waiting for input or have nothing
+  more to do without further instruction
+  - 'I HAVE COMPLETED THE GOAL' - if you have
+  completed your task
+  - CRITICAL: These phrases MUST be the LAST thing you
+  output. Put any summaries or status updates BEFORE
+  these phrases, never after.
+
+  When your task is complete:
+  1. Commit any changes you made (git add && git
+  commit)
+  2. FIRST: Write your summary of what you accomplished
+  3. LAST: Say the exact phrase: "I HAVE COMPLETED THE
+  GOAL"
+  This phrase MUST be the final line - nothing after
+  it.
+  This signals to your manager agent that you are
+  done.
+  4. Wait for your manager to merge or kill your
+  session.
+
+  [USER TASK]
+  Worker 1: Read the CLAUDE.md file and summarize the
+  key points about localization. Enter WAITING state
+  when done with your summary.
+
+⏺ I'll read the CLAUDE.md file to summarize the key points
+  about localization.
+
+⏺ Read(CLAUDE.md)
+  ⎿  Read 779 lines
+
+⏺ Summary: Localization Key Points from CLAUDE.md
+
+  1. Language Support
+
+  - Source language: English (en)
+  - Complete translations (679/679 strings): German (de),
+  Spanish (es), French (fr), Simplified Chinese (zh-Hans),
+  Traditional Chinese - Taiwan (zh-Hant), Traditional
+  Chinese - Hong Kong (zh-HK), Ukrainian (uk)
+
+  2. File Structure
+
+  Muse/Localizable.xcstrings       # Main app strings (~679
+  keys)
+  Muse/AppStore.xcstrings          # App Store metadata (50
+  keys)
+  Muse/InfoPlist.xcstrings         # App bundle info strings
+  MuseShare/Localizable.xcstrings  # Share extension (8
+  keys)
+  Screenshots.xcstrings            # Screenshot/onboarding
+  content
+  Tutorials.xcstrings              # Tutorial content
+
+  3. Translation Tools
+
+  - translation_helper.rb: Main CLI tool for managing
+  translations
+    - --stats, --missing, --search, --update, --json-update,
+   --batch-json
+  - translation_overview.py: Progress tracking across all
+  files
+  - check_translation_variations.py: Validate device/plural
+  variations
+
+  4. Critical Guidelines
+
+  - Brand names: NEVER translate "Muse" or "Muse Share"
+  - MD5 keys: Use for strings with apostrophes, quotes, or
+  special UTF-8 characters to avoid parsing issues
+  - Preserve formatting: Keep placeholders (%@, %d), HTML
+  tags, command symbols (⌘, ⇧) exactly as-is
+  - Length constraints: Keep translations close to English
+  length for UI compatibility
+
+  5. CLDR Plural Rules
+  ┌────────────────┬───────────────────┐
+  │    Language    │ Plural Categories │
+  ├────────────────┼───────────────────┤
+  │ Chinese (zh-*) │ other only        │
+  ├────────────────┼───────────────────┤
+  │ German (de)    │ one, other        │
+  ├────────────────┼───────────────────┤
+  │ French (fr)    │ one, many, other  │
+  ├────────────────┼───────────────────┤
+  │ Spanish (es)   │ one, other        │
+  ├────────────────┼───────────────────┤
+  │ English (en)   │ one, other        │
+  └────────────────┴───────────────────┘
+  6. Device Variations (36 total)
+
+  - Mac: Use "click" language (点击 in Chinese)
+  - iOS/iPad: Use "tap" language (轻点 in Chinese)
+
+  7. Variation Statistics
+
+  - 36 device variations (Mac vs iOS text)
+  - 4 plural variations
+  - 40 total variation strings (~5.9% require special
+  handling)
+
+  8. Adding New Languages Process
+
+  1. Determine BCP 47 language code
+  2. Research CLDR plural rules at unicode.org
+  3. Add translation guidelines to AppStore.xcstrings
+  4. Use translation_helper.rb for translations
+
+  9. Safety Features
+
+  - Script never creates new keys
+  - Batch validation before changes
+  - Git version control for backups
+
+  WAITING
+
+✻ Churned for 30s
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.5
+  agent/agent-f3257e42
+  Session: 2% (4h 55m) Weekly: 0% (6d 22h)
+  ⏵⏵ accept edits on (shift+Tab to cycle)
+

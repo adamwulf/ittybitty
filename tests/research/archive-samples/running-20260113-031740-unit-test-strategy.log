@@ -1,0 +1,256 @@
+
+────────────────────────────────────────────────────────────
+ Do you trust the files in this folder?
+
+ /Users/adamwulf/Developer/muse/muse-ios/.ittybitty/agents/
+ unit-test-strategy/repo
+
+ Claude Code may read, write, or execute files contained in
+  this directory. This can pose security risks, so only use
+  files, hooks, and bash commands from trusted sources.
+
+ Execution allowed by:
+
+   • .claude/settings.local.json
+
+ Learn more
+
+ ❯ 1. Yes, proceed
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────
+ Allow external CLAUDE.md file imports?
+
+ This project's CLAUDE.md imports files outside the current
+  working directory. Never allow this for third-party
+ repositories.
+
+ External imports:
+   /Users/adamwulf/Developer/muse/muse-ios/.ittybitty/STATU
+ S.md
+
+ Important: Only use Claude Code with files you trust.
+ Accessing untrusted files may pose security risks
+ https://code.claude.com/docs/en/security
+
+ ❯ 1. Yes, allow external imports
+   2. No, disable external imports
+
+ Enter to confirm · Esc to disable external includes
+
+ ▐▛███▜▌   Claude Code v2.1.6
+▝▜█████▛▘  Sonnet 4.5 · Claude Max
+  ▘▘ ▝▝    ~/…/.ittybitty/agents/unit-test-strategy/repo
+
+❯ <ittybitty>You are an IttyBitty manager
+  agent.</ittybitty>
+
+  [AGENT CONTEXT]
+  You are running as agent unit-test-strategy in a git
+  worktree on branch agent/unit-test-strategy.
+
+
+  You have access to the 'ib' tool for multi-agent
+  coordination.
+  IMPORTANT: Always use 'ib' (not './ib') to ensure you
+  use the current version from PATH.
+
+  ib new-agent --manager unit-test-strategy --worker
+  "task"   Spawn a worker sub-agent (focused worker, no
+  sub-agents)
+  ib list --manager unit-test-strategy
+  List your sub-agents
+  ib look <agent-id>                             Read
+  an agent's output
+  ib send <agent-id> "message"                  Send
+  input to an agent
+  ib status <agent-id>
+  Check agent's git commits
+  ib merge <agent-id>
+  Merge agent's work and close it
+  ib kill <agent-id>                             Stop
+  an agent without merging
+  ib ask "question"                              Ask
+  the user a question (top-level managers only)
+
+  TASK SIZING STRATEGY:
+  When you receive a task, think about what is needed
+  to accomplish it, then decide:
+
+  SMALL TASK (do yourself)
+  - One agent can finish quickly
+  - Just do the task yourself - don't spawn
+  sub-agents unnecessarily
+
+  MEDIUM TASK (2-3 parallel worker agents)
+  - Can be split into 2-3 independent subtasks
+  - Spawn WORKER agents to work in parallel (always
+  use --worker unless sub-agent needs to manage its
+  own sub-agents)
+  - After spawning them, enter WAITING mode -
+  you'll be notified when they complete
+
+  LARGE TASK (multiple stages)
+  - Requires multiple stages that must run serially
+  - Use TodoWrite tool to track stages
+  - For each stage, spawn WORKER agents to work in
+  parallel (always use --worker)
+  - After spawning agents for a stage, enter
+  WAITING mode
+  - When notified of completion, review work and
+  move to next stage
+
+  AUTOMATIC NOTIFICATIONS:
+  - A watchdog monitors each sub-agent you spawn
+  - You will be notified when sub-agents complete OR
+  when they need help
+  - Once you've created agents to work, enter WAITING
+  mode - don't poll 'ib list'
+  - The watchdog ensures you're woken up when action
+  is needed
+
+  If `ib merge` fails due to conflicts, choose the best
+  strategy:
+  1. Resolve the merge yourself: edit conflicting
+  files, `git add <files> && git commit`, then clean up
+  with `git worktree remove <path> --force && git
+  branch -D agent/<id>`
+  2. Spawn a WORKER sub-agent to handle the merge
+  resolution, then monitor it to completion
+  3. If the merge is no longer needed, skip it and note
+  this in your final report
+
+  ASKING THE USER QUESTIONS:
+  As a top-level manager, you can ask the user
+  questions using `ib ask "question"`.
+  After asking, enter WAITING mode - you'll be notified
+  when the user responds.
+  Use this when you need clarification on requirements
+  or approval for a decision.
+
+  State Management:
+  - Whenever you stop working and are idle, you must
+  end your message with either:
+  - 'WAITING' - if waiting for next monitoring cycle
+  or have nothing more to do
+  - 'I HAVE COMPLETED THE GOAL' - if you have
+  completed your primary goal
+  - CRITICAL: These phrases MUST be the LAST thing you
+  output. Put any summaries or status updates BEFORE
+  these phrases, never after.
+
+  Your workflow:
+  CRITICAL: Before spawning ANY sub-agents, you MUST
+  define clear, objective completion criteria for each
+  task.
+  You need these criteria to judge whether a sub-agent
+  has truly completed its work when it signals
+  completion.
+
+  1. Break down the goal into specific tasks with
+  measurable completion criteria
+  - What files should be changed? What should the
+  output look like?
+  - What specific conditions define "done"? (tests
+  pass, specific files exist, specific content present,
+  etc.)
+  - Track these tasks and criteria in your Claude
+  Code tasks tracker (TodoWrite tool)
+  2. Spawn WORKER sub-agents (--worker) for each
+  independent task
+  - Provide the specific task AND the clear
+  completion criteria in the prompt
+  - Default to --worker unless the sub-agent itself
+  needs to coordinate multiple parallel sub-agents
+  3. Enter WAITING mode - watchdogs will notify you
+  when sub-agents need attention
+  4. When notified, review sub-agent work against your
+  predefined completion criteria:
+  - Use `ib look <agent-id>` to see what the agent
+  reports
+  - Use `ib status <agent-id>` to see the agent's
+  commits
+  - Use `ib diff <agent-id>` to verify the actual
+  changes match your criteria
+  - If criteria met: `ib merge <agent-id>` or `ib
+  kill <agent-id>` (if no changes needed)
+  - If criteria NOT met: `ib send <agent-id>
+  "message"` explaining what's missing and how to fix
+  it
+  - If a sub-agent is `stopped`, STOP and notify the
+  user immediately
+  5. When merging successful agents, commit any changes
+  you made directly (git add && git commit).
+  6. BEFORE completing: You MUST merge or kill ALL
+  sub-agents. Use `ib list` to verify no children
+  remain in running, waiting, or complete state.
+
+  Once you have completed your primary goal by merging
+  in successful agents, double check that you have
+  completed the goal.
+  If so, say the exact phrase: "I HAVE COMPLETED THE
+  GOAL"
+  This phrase signals to the orchestrator that you are
+  done.
+  Your work is on branch `agent/unit-test-strategy` for
+  review.
+
+  [USER TASK]
+  Please look over th Muse codebase, and help define a
+  straegy to modularize it into SwiftPackages for
+  pieces that can be pulled out.
+
+  LogDriver and LastWriteMerge have done this for the
+  database layer. these also have strong unit test
+  support.
+
+  I'd like to find candidates in the Muse codebase to
+  compartmentallize and make packages. then i wan tto
+  write tests for thes epackages so we can increase our
+  code coverage and strategy.
+
+  there's going to be lots of work to do, thi s is a 5+
+  year codebase. it was built by a small team trying
+  to go far with not much money, so we weren't always
+  able to separate business lgoic from UI, or have
+  clean separations when we need them.
+
+  we do have some tests for MuseApplication separation,
+  which alllows testing of sync beteween devices. i
+  would love t get the SyncNetwork into a package
+  somehow,but i think its very dependant on the muse
+  codebase broadly.
+  Please spend compreheensive time looking  at our
+  options from a variety of perspectives to see hw we
+  could better mardularizeand test the codebase.
+
+⏺ I'll analyze the Muse codebase to develop a comprehensive
+modularization and testing strategy. This is a substantial r
+esearch task that requires examining the codebase from multi
+ple angles.
+
+  Let me break this down into parallel research efforts:
+
+⏺ Now I'll spawn specialized worker agents to research diffe
+rent aspects of the codebase in parallel. Each will have cle
+ar completion criteria:
+
+⏺ Bash(ib new-agent --manager unit-test-strategy --worker
+      "Research Task: Analyze the current package structure
+      of LogDriver and LastWriteMerge to understand the
+      patte…)
+  ⎿  Waiting…
+
+✻ Meandering… (ctrl+c to interrupt)
+  ⎿  Next: Analyze current package structure (LogDriver,
+     LastWriteMerge)
+
+────────────────────────────────────────────────────────────
+❯ Try "how does <filepath> work?"
+────────────────────────────────────────────────────────────
+  repo | Sonnet 4.5
+  agent/unit-test-strategy
+  Session: 31% (2h 42m) Weekly: 20% (5d 17h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+
