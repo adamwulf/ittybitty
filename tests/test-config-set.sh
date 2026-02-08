@@ -26,6 +26,11 @@ FAILED=0
 TEST_DIR=$(mktemp -d)
 trap "rm -rf $TEST_DIR" EXIT
 
+# Use a fake HOME to avoid reading the user's real ~/.ittybitty.json
+FAKE_HOME="$TEST_DIR/home"
+mkdir -p "$FAKE_HOME"
+export HOME="$FAKE_HOME"
+
 cd "$TEST_DIR"
 
 pass() {
