@@ -4311,13 +4311,15 @@ parse_state() {
 
     # Check for ACTIVE running indicators in very recent output
     # These indicate something is definitely executing RIGHT NOW:
-    # - "(esc to interrupt)" / "(ctrl+c to interrupt)" - shown during tool execution (in parens)
+    # - "(Esc to interrupt" / "(esc to interrupt" / "(ctrl+c to interrupt" - shown during tool/thinking
+    #   Modern format: "(Esc to interrupt · 31s · thought for 1s)" has extra content after "interrupt"
+    #   Old format: "(ctrl+c to interrupt)" or "(esc to interrupt)" with closing paren immediately
+    #   We match the opening paren + "to interrupt" prefix, allowing any trailing content
     # - "⎿  Running" - explicit running status indicator
-    # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Active indicators in the last 5 lines override completion because the
     # agent may have resumed work after saying they completed
-    # Note: We require parentheses around interrupt phrases to distinguish from discussion text
-    if [[ "$very_recent" =~ \(esc\ to\ interrupt\)|\(ctrl\+c\ to\ interrupt\)|⎿\ \ Running ]]; then
+    # Note: We require opening parenthesis to distinguish from discussion text
+    if [[ "$very_recent" =~ \([Ee]sc\ to\ interrupt|\(ctrl\+c\ to\ interrupt|⎿\ \ Running ]]; then
         echo "running"
         return
     fi
@@ -4414,6 +4416,19 @@ parse_state() {
         if [[ "$last_lines" == *"Do you trust the files"* ]] || \
            [[ "$last_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
             echo "creating"
+            return
+        fi
+    fi
+
+    # Last resort: check a broader window (last 20 lines) for active spinners
+    # This catches cases where a spinner is still active but queued messages
+    # (e.g., from manager or watchdog) pushed it beyond the 15-line window
+    # Only spinners with interrupt markers qualify (excludes completion time indicators)
+    local broader_lines
+    broader_lines=$(printf '%s' "$input" | tail -20)
+    if [[ "$broader_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
+        if [[ "$broader_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+            echo "running"
             return
         fi
     fi
@@ -9092,14 +9107,14 @@ EOF
         last_lines=$(echo "$input" | tail -15)
 
         # Check for ACTIVE running indicators FIRST in very recent output
-        # Note: We require parentheses around interrupt phrases to distinguish from discussion text
-        if [[ "$very_recent" =~ \(esc\ to\ interrupt\) ]]; then
-            echo "running (matched: (esc to interrupt) in last 5 lines)"
+        # Note: We require opening parenthesis to distinguish from discussion text
+        if [[ "$very_recent" =~ \([Ee]sc\ to\ interrupt ]]; then
+            echo "running (matched: (Esc to interrupt in last 5 lines)"
             return
         fi
 
-        if [[ "$very_recent" =~ \(ctrl\+c\ to\ interrupt\) ]]; then
-            echo "running (matched: (ctrl+c to interrupt) in last 5 lines)"
+        if [[ "$very_recent" =~ \(ctrl\+c\ to\ interrupt ]]; then
+            echo "running (matched: (ctrl+c to interrupt in last 5 lines)"
             return
         fi
 
@@ -9145,6 +9160,16 @@ EOF
         if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
             echo "running (matched: ⏺ ToolName()"
             return
+        fi
+
+        # Broader window (last 20 lines) for spinners pushed out by queued messages
+        local broader_lines
+        broader_lines=$(echo "$input" | tail -20)
+        if [[ "$broader_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
+            if [[ "$broader_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+                echo "running (matched: active spinner in broader 20-line window)"
+                return
+            fi
         fi
 
         echo "unknown (no patterns matched)"
