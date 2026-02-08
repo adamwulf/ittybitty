@@ -19461,7 +19461,7 @@ try {
     # End Reassign Dialog
     # ==========================================================================
 
-    # Open agent worktree directory in Finder
+    # Open agent worktree directory in file manager (macOS Finder or Linux xdg-open)
     # Args: $1=agent_id
     watch_open_worktree() {
         local agent_id="$1"
@@ -19469,7 +19469,15 @@ try {
 
         # Check if worktree directory exists
         if [[ -d "$worktree_path" ]]; then
-            open "$worktree_path" </dev/null >/dev/null 2>&1 &
+            local open_cmd=""
+            if command -v open >/dev/null 2>&1; then
+                open_cmd="open"
+            elif command -v xdg-open >/dev/null 2>&1; then
+                open_cmd="xdg-open"
+            fi
+            if [[ -n "$open_cmd" ]]; then
+                "$open_cmd" "$worktree_path" </dev/null >/dev/null 2>&1 &
+            fi
         fi
     }
 
