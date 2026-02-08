@@ -19481,6 +19481,8 @@ try {
         fi
     }
 
+    # Open external diff tool for an agent
+    # Args: $1=agent_id
     watch_open_external_diff() {
         local agent_id="$1"
         local branch_name="agent/$agent_id"
