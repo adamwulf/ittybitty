@@ -17007,6 +17007,7 @@ try {
         "nuke:cmd:3:Terminate all agents"
         "new:cmd:4:Create new agent"
         "setup:cmd:6:Open setup dialog"
+        "worktree:cmd:8:Open worktree in Finder"
     )
     _CMD_JUMP_PANELS=(
         "log:panel:0:Agent Log - live tmux output"
@@ -17161,6 +17162,7 @@ try {
                         nuke) key_hint="[!]" ;;
                         new) key_hint="[a]" ;;
                         setup) key_hint="[h]" ;;
+                        worktree) key_hint="[w]" ;;
                         *) key_hint="   " ;;
                     esac
                 else
@@ -17241,6 +17243,13 @@ try {
                             4) watch_dialog_init_new_agent; DIALOG_MODE=4 ;;
                             6) watch_dialog_init_setup; DIALOG_MODE=6 ;;
                             7) watch_dialog_init_merge; DIALOG_MODE=7 ;;
+                            8)
+                                # Open worktree in Finder (no dialog needed)
+                                if [[ -n "$_WATCH_SELECTED_ID" ]]; then
+                                    watch_open_worktree "$_WATCH_SELECTED_ID"
+                                fi
+                                DIALOG_MODE=0
+                                ;;
                             *) DIALOG_MODE=0 ;;
                         esac
                     elif [[ "$item_type" == "panel" ]]; then
@@ -19452,8 +19461,18 @@ try {
     # End Reassign Dialog
     # ==========================================================================
 
-    # Open external diff tool for an agent
+    # Open agent worktree directory in Finder
     # Args: $1=agent_id
+    watch_open_worktree() {
+        local agent_id="$1"
+        local worktree_path="$AGENTS_DIR/$agent_id/repo"
+
+        # Check if worktree directory exists
+        if [[ -d "$worktree_path" ]]; then
+            open "$worktree_path" </dev/null >/dev/null 2>&1 &
+        fi
+    }
+
     watch_open_external_diff() {
         local agent_id="$1"
         local branch_name="agent/$agent_id"
@@ -21399,6 +21418,13 @@ try {
                 if [[ $AGENT_COUNT -gt 0 && -n "$_WATCH_SELECTED_ID" ]]; then
                     watch_dialog_init_reassign
                     DIALOG_MODE=15
+                fi
+                ;;
+            w)
+                _WATCH_ESC_PENDING=0
+                # Open agent worktree in Finder (when agent is selected)
+                if [[ -n "$_WATCH_SELECTED_ID" ]]; then
+                    watch_open_worktree "$_WATCH_SELECTED_ID"
                 fi
                 ;;
             o)
