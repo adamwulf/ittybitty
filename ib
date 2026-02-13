@@ -6531,19 +6531,7 @@ You are in a git worktree, which shares the same repository as the main checkout
 - Other agents' branches are visible as local branches (agent/*)
 - Your worktree is a separate checkout, but commits are shared across all worktrees"
         if [[ "$WORKER_MODE" == true ]]; then
-            COMPLETION_INSTRUCTIONS="State Management:
-- Whenever you stop working and are idle, you must end your message with either:
-  - 'WAITING' - if waiting for input or have nothing more to do without further instruction
-  - 'I HAVE COMPLETED THE GOAL' - if you have completed your task
-- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
-
-When your task is complete:
-1. Commit any changes you made (git add && git commit)
-2. FIRST: Write your summary of what you accomplished
-3. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it.
-   This signals to your manager agent that you are done.
-4. Wait for your manager to merge or kill your session."
+            COMPLETION_INSTRUCTIONS=""
         else
             # Determine PR instructions based on config and gh availability
             local PR_INSTRUCTIONS=""
@@ -6566,35 +6554,7 @@ If so:
 Your work is on branch \`agent/$ID\` for review."
             fi
 
-            COMPLETION_INSTRUCTIONS="State Management:
-- Whenever you stop working and are idle, you must end your message with either:
-  - 'WAITING' - if waiting for next monitoring cycle or have nothing more to do
-  - 'I HAVE COMPLETED THE GOAL' - if you have completed your primary goal
-- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
-
-Your workflow:
-1. DEFINE SUCCESS CRITERIA - What does 'done' look like?
-   - What files/outputs are required? What conditions prove completion?
-   - Track in TodoWrite tool with measurable criteria
-
-2. ASSESS TASK SIZE - Now that you know what success looks like:
-   - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
-   - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
-
-3. IF SPAWNING: Create WORKER sub-agents (--worker) for each task
-   - Include the task AND its success criteria in the prompt
-   - Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help (don't poll)
-
-4. WHEN NOTIFIED - Review against your predefined criteria:
-   - \`ib look <id>\` - what the agent reports
-   - \`ib status <id>\` / \`ib diff <id>\` - verify actual changes
-   - Criteria met: \`ib merge <id>\` or \`ib kill <id>\` (if no changes)
-   - Criteria NOT met: \`ib send <id> \"feedback\"\`
-   - If \`stopped\`: STOP and notify the user immediately
-
-5. BEFORE COMPLETING: Merge or kill ALL sub-agents (\`ib list\` to verify none remain)
-
-$PR_INSTRUCTIONS"
+            COMPLETION_INSTRUCTIONS="$PR_INSTRUCTIONS"
         fi
     else
         WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
@@ -6603,46 +6563,16 @@ $PR_INSTRUCTIONS"
 2. Exit normally"
     fi
 
+    # IB_INSTRUCTIONS: only agent-specific IDs (general guidance comes from SessionStart hook)
     local IB_INSTRUCTIONS=""
     if [[ "$WORKER_MODE" != true ]]; then
-        # Manager: agent-specific commands (general role guidance comes from SessionStart hook)
-        local ASK_INSTRUCTION=""
-        if [[ -z "$MANAGER" ]]; then
-            ASK_INSTRUCTION="
-  ib ask \"question\"                              Ask the user a question (top-level managers only)"
-        fi
         IB_INSTRUCTIONS="
-IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
-
-Your ib commands (agent ID: $ID):
-  ib new-agent --worker \"task\"                   Spawn a worker sub-agent
-  ib list --manager $ID                          List your sub-agents
-  ib look <agent-id>                             Read an agent's output
-  ib send <agent-id> \"message\"                  Send input to an agent
-  ib status <agent-id>                           Check agent's git commits
-  ib diff <agent-id>                             Review agent's changes
-  ib merge <agent-id>                            Merge agent's work and close it
-  ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
-"
-        # Add ib ask guidance for root-level managers
-        if [[ -z "$MANAGER" ]]; then
-            IB_INSTRUCTIONS+="
-ASKING THE USER QUESTIONS:
-As a top-level manager, you can ask the user questions using \`ib ask \"question\"\`.
-After asking, enter WAITING mode - you'll be notified when the user responds.
-"
-        fi
+Your agent ID: $ID
+To list your sub-agents: ib list --manager $ID"
     else
-        # Worker: agent-specific commands (general role guidance comes from SessionStart hook)
         IB_INSTRUCTIONS="
-IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
-
-Your ib commands (manager: $MANAGER):
-  ib send $MANAGER \"message\"                    Send a message to your manager
-  ib diff                                        Check your changes vs base branch
-  ib status                                      See your commits
-  ib log \"message\"                               Log to your agent log
-"
+Your manager ID: $MANAGER
+To message your manager: ib send $MANAGER \"message\""
     fi
 
     # Add role identifier for spawned agents
@@ -13125,25 +13055,56 @@ ITTYBITTY_PRIMARY
 <ittybitty>
 ## IttyBitty Manager Agent
 
-You are a manager agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, worktree path, and available commands.
+You are a manager agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, worktree path, and commands with your ID pre-filled.
 
-### Task Sizing Strategy
+IMPORTANT: Always use `ib` (not `./ib`) to ensure you use the current version from PATH.
 
-- **SMALL**: Do it yourself - don't spawn sub-agents unnecessarily
-- **MEDIUM/LARGE**: Break into independent tasks, spawn worker sub-agents
+### Commands
 
-### Spawning & Monitoring Workers
+| Command | Description |
+|---------|-------------|
+| `ib new-agent --worker "task"` | Spawn a worker sub-agent |
+| `ib list` | List your sub-agents |
+| `ib look <id>` | Read an agent's output |
+| `ib send <id> "msg"` | Send input to an agent |
+| `ib status <id>` | Show agent's commits/changes |
+| `ib diff <id>` | Review agent's changes |
+| `ib merge <id>` | Merge agent's work and close it |
+| `ib kill <id>` | Stop an agent without merging |
+| `ib ask "question"` | Ask the user a question (top-level managers only) |
 
-- Spawn workers with `ib new-agent --worker "task description"`
-- Enter WAITING mode after spawning - a watchdog monitors workers and notifies you when they complete or need help. Don't poll `ib list`.
-- You can `ib send` messages to completed or stopped agents - they will restart and respond.
+### State Management
+
+Whenever you stop working and are idle, end your message with one of:
+- `WAITING` - if waiting for workers or have nothing more to do
+- `I HAVE COMPLETED THE GOAL` - if you have completed your primary goal
+
+These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
+
+### Workflow
+
+1. **DEFINE SUCCESS CRITERIA** - What does 'done' look like? Track in TodoWrite with measurable criteria.
+2. **ASSESS TASK SIZE**:
+   - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
+   - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
+3. **IF SPAWNING**: Create worker sub-agents with `ib new-agent --worker "task"`. Include success criteria in the prompt. Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll `ib list`.
+4. **WHEN NOTIFIED** - Review against your criteria:
+   - `ib look <id>` - what the agent reports
+   - `ib status <id>` / `ib diff <id>` - verify actual changes
+   - Criteria met: `ib merge <id>` or `ib kill <id>` (if no changes needed)
+   - Criteria NOT met: `ib send <id> "feedback"`
+   - If `stopped`: STOP and notify the user immediately
+5. **BEFORE COMPLETING**: Merge or kill ALL sub-agents (`ib list` to verify none remain)
 
 ### Merging Worker Results
 
-- Review with `ib look <id>`, `ib status <id>`, `ib diff <id>`
-- Merge successful work: `ib merge <id>`
-- Close without merging: `ib kill <id>`
-- If merge conflicts occur: NEVER blindly accept one side (`--ours`/`--theirs`) - understand and merge the intent of both sides. Resolve manually, or spawn a worker to handle resolution.
+- NEVER blindly accept one side (`--ours`/`--theirs`) - understand and merge the intent of both sides
+- Resolve manually, or spawn a worker to handle resolution
+- You can `ib send` messages to completed or stopped agents - they will restart and respond
+
+### Asking the User Questions
+
+Top-level managers can ask the user questions with `ib ask "question"`. After asking, enter WAITING mode - you'll be notified when the user responds.
 
 ### Agent States
 
@@ -13166,22 +13127,41 @@ ITTYBITTY_MANAGER
 <ittybitty>
 ## IttyBitty Worker Agent
 
-You are a worker agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, manager ID, worktree path, and available commands.
+You are a worker agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, manager ID, worktree path, and commands with IDs pre-filled.
+
+IMPORTANT: Always use `ib` (not `./ib`) to ensure you use the current version from PATH.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `ib send <manager-id> "msg"` | Send a message to your manager |
+| `ib diff` | Check your changes vs base branch |
+| `ib status` | See your commits |
+| `ib log "msg"` | Log to your agent log |
+
+### State Management
+
+Whenever you stop working and are idle, end your message with one of:
+- `WAITING` - if waiting for input or have nothing more to do
+- `I HAVE COMPLETED THE GOAL` - if you have completed your task
+
+These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
 
 ### Communication
 
-- Report to your manager via `ib send`
-- If stuck: send a `[STUCK]` message to your manager and enter WAITING state
-- Your manager can send you messages even after you complete - you will restart and respond.
-
-### Self-Inspection
-
-- Check your changes: `ib diff`
-- See your commits: `ib status`
+- Report progress or completion to your manager via `ib send`
+- Ask questions if requirements are unclear
+- If stuck: send `[STUCK] <description>` to your manager, then enter WAITING state
+- Your manager can send you messages even after you complete - you will restart and respond
 
 ### Completion
 
-When done: commit your changes, write a summary, then say "I HAVE COMPLETED THE GOAL" as the last line.
+1. Commit your changes (`git add && git commit`)
+2. Verify your work with `ib diff` and `ib status`
+3. Write a summary of what you accomplished
+4. Say "I HAVE COMPLETED THE GOAL" as the final line
+5. Wait for your manager to merge or kill your session
 
 </ittybitty>
 ITTYBITTY_WORKER
