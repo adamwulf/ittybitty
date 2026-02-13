@@ -6605,37 +6605,24 @@ $PR_INSTRUCTIONS"
 
     local IB_INSTRUCTIONS=""
     if [[ "$WORKER_MODE" != true ]]; then
-        # Build base manager instructions
+        # Manager: agent-specific commands (general role guidance comes from SessionStart hook)
         local ASK_INSTRUCTION=""
         if [[ -z "$MANAGER" ]]; then
-            # Root-level managers can ask questions to the user
             ASK_INSTRUCTION="
   ib ask \"question\"                              Ask the user a question (top-level managers only)"
         fi
         IB_INSTRUCTIONS="
-You have access to the 'ib' tool for multi-agent coordination.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
 
-  ib new-agent --manager $ID --worker \"task\"   Spawn a worker sub-agent (focused worker, no sub-agents)
+Your ib commands (agent ID: $ID):
+  ib new-agent --worker \"task\"                   Spawn a worker sub-agent
   ib list --manager $ID                          List your sub-agents
   ib look <agent-id>                             Read an agent's output
   ib send <agent-id> \"message\"                  Send input to an agent
   ib status <agent-id>                           Check agent's git commits
+  ib diff <agent-id>                             Review agent's changes
   ib merge <agent-id>                            Merge agent's work and close it
   ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
-
-WATCHDOGS: Each sub-agent you spawn is monitored. Enter WAITING mode after spawning - you'll be notified when they complete or need help. Don't poll \`ib list\`.
-
-If \`ib merge\` fails due to conflicts, choose the best strategy:
-1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
-2. Spawn a WORKER sub-agent to handle the merge resolution, then monitor it to completion
-3. If the merge is no longer needed, skip it and note this in your final report
-
-MERGE CONFLICT RESOLUTION:
-- NEVER blindly accept one side (\`git checkout --ours/theirs .\`) - both sides represent real work
-- Understand what each side was trying to accomplish, then merge the INTENT
-- If unclear, ASK your manager (or \`ib ask\` if top-level)
-- After: \`git add <files> && git commit\`, then cleanup: \`git worktree remove <path> --force && git branch -D agent/<id>\`
 "
         # Add ib ask guidance for root-level managers
         if [[ -z "$MANAGER" ]]; then
@@ -6643,31 +6630,18 @@ MERGE CONFLICT RESOLUTION:
 ASKING THE USER QUESTIONS:
 As a top-level manager, you can ask the user questions using \`ib ask \"question\"\`.
 After asking, enter WAITING mode - you'll be notified when the user responds.
-Use this when you need clarification on requirements or approval for a decision.
 "
         fi
     else
-        # Worker agents: simple communication with manager only
+        # Worker: agent-specific commands (general role guidance comes from SessionStart hook)
         IB_INSTRUCTIONS="
-You are a worker agent focused on your specific task.
 IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
 
-To communicate with your manager: ib send $MANAGER \"your message\"
-
-Use this to:
-- Report completion or progress
-- Ask questions if requirements are unclear
-- Share important findings
-
-If you get stuck or encounter a blocker:
-1. Describe the specific problem you're facing
-2. Send a message to your manager: ib send $MANAGER \"[STUCK] <description of problem>\"
-3. Enter WAITING state - a watchdog monitors you and will notify your manager that you need help
-
-SELF-INSPECTION:
-Before completing, verify your work:
-  ib diff         Check your changes vs base branch
-  ib status       See your commits
+Your ib commands (manager: $MANAGER):
+  ib send $MANAGER \"message\"                    Send a message to your manager
+  ib diff                                        Check your changes vs base branch
+  ib status                                      See your commits
+  ib log \"message\"                               Log to your agent log
 "
     fi
 
@@ -13169,7 +13143,7 @@ You are a manager agent in the ittybitty multi-agent orchestration system. Your 
 - Review with `ib look <id>`, `ib status <id>`, `ib diff <id>`
 - Merge successful work: `ib merge <id>`
 - Close without merging: `ib kill <id>`
-- If merge conflicts occur: resolve manually or spawn a worker to handle resolution
+- If merge conflicts occur: NEVER blindly accept one side (`--ours`/`--theirs`) - understand and merge the intent of both sides. Resolve manually, or spawn a worker to handle resolution.
 
 ### Agent States
 
