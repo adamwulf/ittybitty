@@ -4539,15 +4539,34 @@ parse_state() {
         return
     fi
 
+    # Check for explicit waiting message
+    # Look for WAITING as a standalone word (not in instruction text)
+    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
+    # NOTE: This is checked BEFORE weak running indicators (spinners, thinking, tool
+    # invocations) because those can appear in completion time lines after WAITING
+    # (e.g., "✽ Verifying… (5m · ↓ 2.7k tokens)" or "· Fermenting… (2m · thinking)")
+    # and would cause false "running" detection, triggering infinite nudge loops.
+    # The stale WAITING guard (⏺ after WAITING) is sufficient to detect when an agent
+    # has actually resumed work after a previous WAITING state.
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+        # Check if agent produced output after the last WAITING (stale WAITING)
+        # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
+        local after_waiting="${last_lines##*WAITING}"
+        if [[ "$after_waiting" == *"⏺"* ]]; then
+            echo "running"
+            return
+        fi
+        echo "waiting"
+        return
+    fi
+
     # Check for other running indicators in recent window
     # These may appear in discussions about Claude but are less definitive:
     # - "ctrl+b ctrl+b" - tmux passthrough indicator
     # - "thinking)" - model thinking indicator
     # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Only checked in last 15 lines to avoid matching historical text
-    # NOTE: These are checked BEFORE waiting because a stale WAITING signal can
-    # persist in the 15-line window after the agent receives input and resumes work.
-    # Any running indicator means the agent has resumed, overriding stale WAITING.
     if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
         echo "running"
         return
@@ -4583,26 +4602,6 @@ parse_state() {
     # it suggests the agent might still be processing
     if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
         echo "running"
-        return
-    fi
-
-    # Check for explicit waiting message
-    # Look for WAITING as a standalone word (not in instruction text)
-    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
-    # NOTE: This is checked AFTER weak running indicators so that a stale WAITING
-    # from a previous state doesn't override evidence that the agent has resumed work.
-    # Additionally, if WAITING is present but agent output (⏺) appears AFTER the last
-    # WAITING, the agent has resumed work and WAITING is stale.
-    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
-       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
-        # Check if agent produced output after the last WAITING (stale WAITING)
-        # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
-        local after_waiting="${last_lines##*WAITING}"
-        if [[ "$after_waiting" == *"⏺"* ]]; then
-            echo "running"
-            return
-        fi
-        echo "waiting"
         return
     fi
 
@@ -9179,8 +9178,24 @@ EOF
             return
         fi
 
-        # Other running indicators in last 15 lines (checked before WAITING so
-        # stale WAITING from a previous state doesn't override resumed work)
+        # Check for explicit waiting message (before weak running indicators)
+        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+           [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+            # Check if agent produced output after the last WAITING (stale WAITING)
+            local after_waiting="${last_lines##*WAITING}"
+            if [[ "$after_waiting" == *"⏺"* ]]; then
+                echo "running (matched: agent output ⏺ after stale WAITING)"
+                return
+            fi
+            if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
+                echo "waiting (matched: standalone WAITING)"
+            else
+                echo "waiting (matched: ⏺...WAITING)"
+            fi
+            return
+        fi
+
+        # Other running indicators in last 15 lines
         if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b ]]; then
             echo "running (matched: ctrl+b ctrl+b)"
             return
@@ -9211,23 +9226,6 @@ EOF
         # Weak running indicator (tool invocation without strong indicator)
         if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
             echo "running (matched: ⏺ ToolName()"
-            return
-        fi
-
-        # Check for explicit waiting message (after running indicators)
-        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
-           [[ "$last_lines" =~ ⏺.*WAITING ]]; then
-            # Check if agent produced output after the last WAITING (stale WAITING)
-            local after_waiting="${last_lines##*WAITING}"
-            if [[ "$after_waiting" == *"⏺"* ]]; then
-                echo "running (matched: agent output ⏺ after stale WAITING)"
-                return
-            fi
-            if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
-                echo "waiting (matched: standalone WAITING)"
-            else
-                echo "waiting (matched: ⏺...WAITING)"
-            fi
             return
         fi
 

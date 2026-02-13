@@ -1,0 +1,11 @@
+⏺ I've spawned all workers and I'm entering waiting mode.
+
+  WAITING
+
+· Fermenting… (2m 10s · thinking)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-b8f0b8c8
