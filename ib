@@ -6495,94 +6495,35 @@ EOF
     fi
 
     # Build prompt with context prefix
-    local MANAGER_INFO=""
-    if [[ -n "$MANAGER" ]]; then
-        MANAGER_INFO="Your manager agent is: $MANAGER"
-    fi
+    # Most agent context (identity, path isolation, git worktree, commands, workflow)
+    # is provided by the SessionStart hook via get_ittybitty_instructions().
+    # build_agent_prompt() only provides: role marker, config-dependent instructions
+    # (PR creation), custom prompts, and the user's task.
 
-    local WORKTREE_INFO=""
-    local PATH_ISOLATION=""
-    local GIT_WORKTREE_CONTEXT=""
+    # PR instructions for managers (depends on runtime config, gh availability)
     local COMPLETION_INSTRUCTIONS=""
-    if [[ "$USE_WORKTREE" == true ]]; then
-        # Determine parent branch for context
-        local PARENT_BRANCH="main"
-        if [[ -n "$MANAGER" ]]; then
-            PARENT_BRANCH="agent/$MANAGER"
+    if [[ "$USE_WORKTREE" == true && "$WORKER_MODE" != true ]]; then
+        local HAS_GH=$(command -v gh &>/dev/null && echo "true" || echo "false")
+        local HAS_REMOTE=$(git remote 2>/dev/null | head -1)
+
+        if [[ "$CONFIG_CREATE_PRS" == "true" && "$HAS_GH" == "true" && -n "$HAS_REMOTE" ]]; then
+            COMPLETION_INSTRUCTIONS="
+When completing: after merging all sub-agents, create a pull request with \`gh pr create --title \"<title>\" --body \"<description>\"\`."
         fi
-
-        WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID, forked from $PARENT_BRANCH."
-
-        PATH_ISOLATION="
-PATH ISOLATION:
-You are isolated to your worktree at: $AGENT_DIR/repo
-- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
-- You CANNOT access: The main repo at $ROOT_REPO_PATH, other agents' worktrees
-- If you get \"Access denied\" or \"Path violation\" errors, you're trying to access a forbidden path
-- Do NOT try to cd into the main repo - work only in your worktree"
-
-        GIT_WORKTREE_CONTEXT="
-GIT WORKTREE CONTEXT:
-You are in a git worktree, which shares the same repository as the main checkout.
-- Your branch: agent/$ID
-- Forked from: $PARENT_BRANCH
-- All branches are LOCAL - no need for 'git fetch origin'
-- To merge latest changes from your parent: 'git merge $PARENT_BRANCH' (not 'git fetch origin; git merge origin/...')
-- Other agents' branches are visible as local branches (agent/*)
-- Your worktree is a separate checkout, but commits are shared across all worktrees"
-        if [[ "$WORKER_MODE" == true ]]; then
-            COMPLETION_INSTRUCTIONS=""
-        else
-            # Determine PR instructions based on config and gh availability
-            local PR_INSTRUCTIONS=""
-            local HAS_GH=$(command -v gh &>/dev/null && echo "true" || echo "false")
-            local HAS_REMOTE=$(git remote 2>/dev/null | head -1)
-
-            if [[ "$CONFIG_CREATE_PRS" == "true" && "$HAS_GH" == "true" && -n "$HAS_REMOTE" ]]; then
-                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
-If so:
-1. Create a pull request with \`gh pr create --title \"<title>\" --body \"<description>\"\`
-2. FIRST: Write any final summary or notes
-3. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it."
-            else
-                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
-If so:
-1. FIRST: Write any final summary or notes
-2. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it.
-Your work is on branch \`agent/$ID\` for review."
-            fi
-
-            COMPLETION_INSTRUCTIONS="$PR_INSTRUCTIONS"
-        fi
-    else
-        WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
-        COMPLETION_INSTRUCTIONS="When your task is complete:
+    elif [[ "$USE_WORKTREE" != true ]]; then
+        COMPLETION_INSTRUCTIONS="You are running as agent $ID in the main repository (no worktree).
+When your task is complete:
 1. Commit any changes you made (git add && git commit)
 2. Exit normally"
     fi
 
-    # IB_INSTRUCTIONS: only agent-specific IDs (general guidance comes from SessionStart hook)
-    local IB_INSTRUCTIONS=""
-    if [[ "$WORKER_MODE" != true ]]; then
-        IB_INSTRUCTIONS="
-Your agent ID: $ID
-To list your sub-agents: ib list --manager $ID"
-    else
-        IB_INSTRUCTIONS="
-Your manager ID: $MANAGER
-To message your manager: ib send $MANAGER \"message\""
-    fi
-
-    # Add role identifier for spawned agents
+    # Role marker
     local ROLE_MARKER=""
     local CUSTOM_ROLE_PROMPT=""
     if [[ "$WORKER_MODE" == true ]]; then
         ROLE_MARKER="<ittybitty>You are an IttyBitty worker agent.</ittybitty>
 
 "
-        # Add custom worker prompt if configured
         if [[ -n "$CONFIG_PROMPT_WORKER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM WORKER INSTRUCTIONS]
 $CONFIG_PROMPT_WORKER
@@ -6593,7 +6534,6 @@ $CONFIG_PROMPT_WORKER
         ROLE_MARKER="<ittybitty>You are an IttyBitty manager agent.</ittybitty>
 
 "
-        # Add custom manager prompt if configured
         if [[ -n "$CONFIG_PROMPT_MANAGER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM MANAGER INSTRUCTIONS]
 $CONFIG_PROMPT_MANAGER
@@ -6602,7 +6542,7 @@ $CONFIG_PROMPT_MANAGER
         fi
     fi
 
-    # Add custom all-agents prompt if configured
+    # Custom all-agents prompt
     local CUSTOM_ALL_PROMPT=""
     if [[ -n "$CONFIG_PROMPT_ALL" ]]; then
         CUSTOM_ALL_PROMPT="[CUSTOM INSTRUCTIONS]
@@ -6611,15 +6551,8 @@ $CONFIG_PROMPT_ALL
 "
     fi
 
-    local PROMPT_PREFIX="${ROLE_MARKER}[AGENT CONTEXT]
-$WORKTREE_INFO
-$MANAGER_INFO
-$PATH_ISOLATION
-$GIT_WORKTREE_CONTEXT
-$IB_INSTRUCTIONS
-$COMPLETION_INSTRUCTIONS
-${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}
-[USER TASK]
+    local PROMPT_PREFIX="${ROLE_MARKER}${COMPLETION_INSTRUCTIONS:+${COMPLETION_INSTRUCTIONS}
+}${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}[USER TASK]
 $PROMPT"
 
     # Save the full prompt (with prefix) for reference
@@ -12863,6 +12796,7 @@ EOF
 #   - Primary Claude: cwd is NOT in an agent worktree
 #   - Manager agent: cwd is in an agent worktree, worker=false in meta.json
 #   - Worker agent: cwd is in an agent worktree, worker=true in meta.json
+# For agent roles, reads meta.json to get agent-specific context (IDs, paths, etc.)
 cmd_hooks_session_start() {
     # Read JSON from stdin
     local stdin_json=""
@@ -12881,27 +12815,45 @@ cmd_hooks_session_start() {
         cwd=$(pwd)
     fi
 
-    # Determine role based on cwd
+    # Determine role and read agent context from meta.json
     local role="primary"
+    local agent_id="" agent_manager="" agent_parent_branch=""
+    local agent_dir="" agent_worktree="" root_repo_path=""
+
     if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
-        # Find meta.json - go up from repo dir to agent dir
-        local agent_dir="${cwd%/repo*}"
+        agent_dir="${cwd%/repo*}"
+        agent_worktree="${agent_dir}/repo"
         local meta_file="$agent_dir/meta.json"
 
-        # Check if this is a worker agent
+        # Derive root repo path: strip .ittybitty/agents/<id> from agent_dir
+        root_repo_path="${agent_dir%/.ittybitty/agents/*}"
+
         role="manager"
         if [[ -f "$meta_file" ]]; then
+            agent_id=$(json_get "$meta_file" "id" "")
+            agent_manager=$(json_get "$meta_file" "manager" "")
             local worker_val
             worker_val=$(json_get "$meta_file" "worker" "false")
             if [[ "$worker_val" == "true" ]]; then
                 role="worker"
             fi
         fi
+
+        # Derive parent branch
+        if [[ -n "$agent_manager" && "$agent_manager" != "null" ]]; then
+            agent_parent_branch="agent/$agent_manager"
+        else
+            agent_parent_branch="main"
+            # Clear null manager
+            if [[ "$agent_manager" == "null" ]]; then
+                agent_manager=""
+            fi
+        fi
     fi
 
     # Get instructions and output as JSON with additionalContext
     local instructions
-    instructions=$(get_ittybitty_instructions "$role")
+    instructions=$(get_ittybitty_instructions "$role" "$agent_id" "$agent_manager" "$agent_parent_branch" "$agent_worktree" "$root_repo_path")
     local escaped_instructions
     escaped_instructions=$(json_escape_string "$instructions")
 
@@ -12997,9 +12949,18 @@ EOF
 # COMMAND: setup ib-instructions install
 # =============================================================================
 
-# The ittybitty instructions content to add to CLAUDE.md
+# The ittybitty instructions content
+# Usage:
+#   get_ittybitty_instructions "primary"
+#   get_ittybitty_instructions "manager" "$id" "$manager" "$parent_branch" "$worktree" "$root_repo"
+#   get_ittybitty_instructions "worker"  "$id" "$manager" "$parent_branch" "$worktree" "$root_repo"
 get_ittybitty_instructions() {
     local mode="${1:-primary}"
+    local agent_id="$2"
+    local agent_manager="$3"
+    local parent_branch="$4"
+    local worktree_path="$5"
+    local root_repo_path="$6"
 
     case "$mode" in
         primary)
@@ -13051,33 +13012,67 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 ITTYBITTY_PRIMARY
             ;;
         manager)
-            cat << 'ITTYBITTY_MANAGER'
+            # Manager uses variable interpolation for agent-specific context
+            local ask_line=""
+            if [[ -z "$agent_manager" ]]; then
+                ask_line="| \`ib ask \"question\"\` | Ask the user a question (top-level managers only) |"
+            fi
+            local ask_section=""
+            if [[ -z "$agent_manager" ]]; then
+                ask_section="
+### Asking the User Questions
+
+Top-level managers can ask the user questions with \`ib ask \"question\"\`. After asking, enter WAITING mode - you'll be notified when the user responds."
+            fi
+            local manager_info=""
+            if [[ -n "$agent_manager" ]]; then
+                manager_info="Your manager agent is: $agent_manager"
+            fi
+            cat << ITTYBITTY_MANAGER
 <ittybitty>
 ## IttyBitty Manager Agent
 
-You are a manager agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, worktree path, and commands with your ID pre-filled.
+You are manager agent \`$agent_id\` in the ittybitty multi-agent orchestration system.
+You are running in a git worktree on branch \`agent/$agent_id\`, forked from \`$parent_branch\`.
+${manager_info}
 
-IMPORTANT: Always use `ib` (not `./ib`) to ensure you use the current version from PATH.
+IMPORTANT: Always use \`ib\` (not \`./ib\`) to ensure you use the current version from PATH.
+
+### Path Isolation
+
+You are isolated to your worktree at: $worktree_path
+- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
+- You CANNOT access: The main repo at $root_repo_path, other agents' worktrees
+- If you get "Access denied" or "Path violation" errors, you're trying to access a forbidden path
+
+### Git Worktree Context
+
+You are in a git worktree, which shares the same repository as the main checkout.
+- Your branch: \`agent/$agent_id\`
+- Forked from: \`$parent_branch\`
+- All branches are LOCAL - no need for \`git fetch origin\`
+- To merge latest changes from your parent: \`git merge $parent_branch\`
+- Other agents' branches are visible as local branches (\`agent/*\`)
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `ib new-agent --worker "task"` | Spawn a worker sub-agent |
-| `ib list` | List your sub-agents |
-| `ib look <id>` | Read an agent's output |
-| `ib send <id> "msg"` | Send input to an agent |
-| `ib status <id>` | Show agent's commits/changes |
-| `ib diff <id>` | Review agent's changes |
-| `ib merge <id>` | Merge agent's work and close it |
-| `ib kill <id>` | Stop an agent without merging |
-| `ib ask "question"` | Ask the user a question (top-level managers only) |
+| \`ib new-agent --worker "task"\` | Spawn a worker sub-agent |
+| \`ib list --manager $agent_id\` | List your sub-agents |
+| \`ib look <id>\` | Read an agent's output |
+| \`ib send <id> "msg"\` | Send input to an agent |
+| \`ib status <id>\` | Show agent's commits/changes |
+| \`ib diff <id>\` | Review agent's changes |
+| \`ib merge <id>\` | Merge agent's work and close it |
+| \`ib kill <id>\` | Stop an agent without merging |
+$ask_line
 
 ### State Management
 
 Whenever you stop working and are idle, end your message with one of:
-- `WAITING` - if waiting for workers or have nothing more to do
-- `I HAVE COMPLETED THE GOAL` - if you have completed your primary goal
+- \`WAITING\` - if waiting for workers or have nothing more to do
+- \`I HAVE COMPLETED THE GOAL\` - if you have completed your primary goal
 
 These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
 
@@ -13087,78 +13082,94 @@ These phrases MUST be the LAST thing you output. Put summaries or status updates
 2. **ASSESS TASK SIZE**:
    - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
    - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
-3. **IF SPAWNING**: Create worker sub-agents with `ib new-agent --worker "task"`. Include success criteria in the prompt. Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll `ib list`.
+3. **IF SPAWNING**: Create worker sub-agents with \`ib new-agent --worker "task"\`. Include success criteria in the prompt. Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll \`ib list\`.
 4. **WHEN NOTIFIED** - Review against your criteria:
-   - `ib look <id>` - what the agent reports
-   - `ib status <id>` / `ib diff <id>` - verify actual changes
-   - Criteria met: `ib merge <id>` or `ib kill <id>` (if no changes needed)
-   - Criteria NOT met: `ib send <id> "feedback"`
-   - If `stopped`: STOP and notify the user immediately
-5. **BEFORE COMPLETING**: Merge or kill ALL sub-agents (`ib list` to verify none remain)
+   - \`ib look <id>\` - what the agent reports
+   - \`ib status <id>\` / \`ib diff <id>\` - verify actual changes
+   - Criteria met: \`ib merge <id>\` or \`ib kill <id>\` (if no changes needed)
+   - Criteria NOT met: \`ib send <id> "feedback"\`
+   - If \`stopped\`: STOP and notify the user immediately
+5. **BEFORE COMPLETING**: Merge or kill ALL sub-agents (\`ib list\` to verify none remain)
 
 ### Merging Worker Results
 
-- NEVER blindly accept one side (`--ours`/`--theirs`) - understand and merge the intent of both sides
+- NEVER blindly accept one side (\`--ours\`/\`--theirs\`) - understand and merge the intent of both sides
 - Resolve manually, or spawn a worker to handle resolution
-- You can `ib send` messages to completed or stopped agents - they will restart and respond
-
-### Asking the User Questions
-
-Top-level managers can ask the user questions with `ib ask "question"`. After asking, enter WAITING mode - you'll be notified when the user responds.
+- You can \`ib send\` messages to completed or stopped agents - they will restart and respond
+$ask_section
 
 ### Agent States
 
 | State | Meaning |
 |-------|---------|
-| `creating` | Starting up |
-| `running` | Actively working |
-| `compacting` | Summarizing context |
-| `waiting` | Idle, may need input |
-| `complete` | Signaled done |
-| `rate_limited` | Hit API rate limits |
-| `stopped` | Session ended |
-| `unknown` | State unclear |
+| \`creating\` | Starting up |
+| \`running\` | Actively working |
+| \`compacting\` | Summarizing context |
+| \`waiting\` | Idle, may need input |
+| \`complete\` | Signaled done |
+| \`rate_limited\` | Hit API rate limits |
+| \`stopped\` | Session ended |
+| \`unknown\` | State unclear |
 
 </ittybitty>
 ITTYBITTY_MANAGER
             ;;
         worker)
-            cat << 'ITTYBITTY_WORKER'
+            # Worker uses variable interpolation for agent-specific context
+            cat << ITTYBITTY_WORKER
 <ittybitty>
 ## IttyBitty Worker Agent
 
-You are a worker agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, manager ID, worktree path, and commands with IDs pre-filled.
+You are worker agent \`$agent_id\` in the ittybitty multi-agent orchestration system.
+You are running in a git worktree on branch \`agent/$agent_id\`, forked from \`$parent_branch\`.
+Your manager agent is: $agent_manager
 
-IMPORTANT: Always use `ib` (not `./ib`) to ensure you use the current version from PATH.
+IMPORTANT: Always use \`ib\` (not \`./ib\`) to ensure you use the current version from PATH.
+
+### Path Isolation
+
+You are isolated to your worktree at: $worktree_path
+- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
+- You CANNOT access: The main repo at $root_repo_path, other agents' worktrees
+- If you get "Access denied" or "Path violation" errors, you're trying to access a forbidden path
+
+### Git Worktree Context
+
+You are in a git worktree, which shares the same repository as the main checkout.
+- Your branch: \`agent/$agent_id\`
+- Forked from: \`$parent_branch\`
+- All branches are LOCAL - no need for \`git fetch origin\`
+- To merge latest changes from your parent: \`git merge $parent_branch\`
+- Other agents' branches are visible as local branches (\`agent/*\`)
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `ib send <manager-id> "msg"` | Send a message to your manager |
-| `ib diff` | Check your changes vs base branch |
-| `ib status` | See your commits |
-| `ib log "msg"` | Log to your agent log |
+| \`ib send $agent_manager "msg"\` | Send a message to your manager |
+| \`ib diff\` | Check your changes vs base branch |
+| \`ib status\` | See your commits |
+| \`ib log "msg"\` | Log to your agent log |
 
 ### State Management
 
 Whenever you stop working and are idle, end your message with one of:
-- `WAITING` - if waiting for input or have nothing more to do
-- `I HAVE COMPLETED THE GOAL` - if you have completed your task
+- \`WAITING\` - if waiting for input or have nothing more to do
+- \`I HAVE COMPLETED THE GOAL\` - if you have completed your task
 
 These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
 
 ### Communication
 
-- Report progress or completion to your manager via `ib send`
+- Report progress or completion to your manager: \`ib send $agent_manager "message"\`
 - Ask questions if requirements are unclear
-- If stuck: send `[STUCK] <description>` to your manager, then enter WAITING state
+- If stuck: \`ib send $agent_manager "[STUCK] description"\`, then enter WAITING state
 - Your manager can send you messages even after you complete - you will restart and respond
 
 ### Completion
 
-1. Commit your changes (`git add && git commit`)
-2. Verify your work with `ib diff` and `ib status`
+1. Commit your changes (\`git add && git commit\`)
+2. Verify your work with \`ib diff\` and \`ib status\`
 3. Write a summary of what you accomplished
 4. Say "I HAVE COMPLETED THE GOAL" as the final line
 5. Wait for your manager to merge or kill your session
