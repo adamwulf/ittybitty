@@ -886,7 +886,8 @@ build_settings_json() {
             .hooks //= {} |
             .hooks.Stop = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-status \($agent_id)" }] }] |
             .hooks.PermissionRequest = [{ matcher: "*", hooks: [{ type: "command", command: $hook_cmd }] }] |
-            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }]
+            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }] |
+            .hooks.SessionStart = [{ hooks: [{ type: "command", command: "ib hooks session-start" }] }]
         ' 2>/dev/null || true
     else
         local base_b64
@@ -948,6 +949,10 @@ base.hooks.PermissionRequest = [{
 base.hooks.PreToolUse = [{
     matcher: '*',
     hooks: [{ type: 'command', command: 'ib hook-check-path $agent_id' }]
+}];
+
+base.hooks.SessionStart = [{
+    hooks: [{ type: 'command', command: 'ib hooks session-start' }]
 }];
 
 JSON.stringify(base, null, 2);
@@ -1927,6 +1932,179 @@ try {
             }
         }
         // Clean up empty hooks object
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Check if session-start hook is installed in settings JSON
+# Checks for SessionStart hook with ib hooks session-start
+# Usage: json_has_session_start_hook "settings_json_or_file"
+# Returns: 0 if hook found, 1 if not found
+json_has_session_start_hook() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            if .hooks.SessionStart then
+                [.hooks.SessionStart[].hooks[]? | select(.command | contains("ib hooks session-start"))] | length > 0 |
+                if . then "true" else "false" end
+            else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks || !hooks.SessionStart || !Array.isArray(hooks.SessionStart)) {
+        'false';
+    } else {
+        var found = false;
+        for (var i = 0; i < hooks.SessionStart.length; i++) {
+            var entry = hooks.SessionStart[i];
+            if (entry.hooks && Array.isArray(entry.hooks)) {
+                for (var j = 0; j < entry.hooks.length; j++) {
+                    var hook = entry.hooks[j];
+                    if (hook.command && hook.command.indexOf('ib hooks session-start') !== -1) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        found ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+    fi
+
+    [[ "$result" == "true" ]]
+}
+
+# Add session-start hook to settings JSON
+# Usage: json_add_session_start_hook "settings_json"
+# Outputs: modified JSON with SessionStart hook added
+json_add_session_start_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.SessionStart //= [] |
+            .hooks.SessionStart += [{ hooks: [{ type: "command", command: "ib hooks session-start" }] }]
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.SessionStart) obj.hooks.SessionStart = [];
+
+    var sessionStartHook = {
+        hooks: [{type: 'command', command: 'ib hooks session-start'}]
+    };
+    obj.hooks.SessionStart.push(sessionStartHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Remove session-start hook from settings JSON
+# Usage: json_remove_session_start_hook "settings_json"
+# Outputs: modified JSON with SessionStart hook removed
+json_remove_session_start_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            if .hooks.SessionStart then
+                .hooks.SessionStart |= map(select(.hooks | all(.command | contains("ib hooks session-start") | not))) |
+                if .hooks.SessionStart | length == 0 then del(.hooks.SessionStart) else . end
+            else . end |
+            if .hooks | keys | length == 0 then del(.hooks) else . end
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (obj.hooks && obj.hooks.SessionStart && Array.isArray(obj.hooks.SessionStart)) {
+        obj.hooks.SessionStart = obj.hooks.SessionStart.filter(function(entry) {
+            if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+            return entry.hooks.every(function(hook) {
+                return !hook.command || hook.command.indexOf('ib hooks session-start') === -1;
+            });
+        });
+
+        if (obj.hooks.SessionStart.length === 0) {
+            delete obj.hooks.SessionStart;
+        }
         if (Object.keys(obj.hooks).length === 0) {
             delete obj.hooks;
         }
@@ -6317,190 +6495,35 @@ EOF
     fi
 
     # Build prompt with context prefix
-    local MANAGER_INFO=""
-    if [[ -n "$MANAGER" ]]; then
-        MANAGER_INFO="Your manager agent is: $MANAGER"
-    fi
+    # Most agent context (identity, path isolation, git worktree, commands, workflow)
+    # is provided by the SessionStart hook via get_ittybitty_instructions().
+    # build_agent_prompt() only provides: role marker, config-dependent instructions
+    # (PR creation), custom prompts, and the user's task.
 
-    local WORKTREE_INFO=""
-    local PATH_ISOLATION=""
-    local GIT_WORKTREE_CONTEXT=""
+    # PR instructions for managers (depends on runtime config, gh availability)
     local COMPLETION_INSTRUCTIONS=""
-    if [[ "$USE_WORKTREE" == true ]]; then
-        # Determine parent branch for context
-        local PARENT_BRANCH="main"
-        if [[ -n "$MANAGER" ]]; then
-            PARENT_BRANCH="agent/$MANAGER"
+    if [[ "$USE_WORKTREE" == true && "$WORKER_MODE" != true ]]; then
+        local HAS_GH=$(command -v gh &>/dev/null && echo "true" || echo "false")
+        local HAS_REMOTE=$(git remote 2>/dev/null | head -1)
+
+        if [[ "$CONFIG_CREATE_PRS" == "true" && "$HAS_GH" == "true" && -n "$HAS_REMOTE" ]]; then
+            COMPLETION_INSTRUCTIONS="
+When completing: after merging all sub-agents, create a pull request with \`gh pr create --title \"<title>\" --body \"<description>\"\`."
         fi
-
-        WORKTREE_INFO="You are running as agent $ID in a git worktree on branch agent/$ID, forked from $PARENT_BRANCH."
-
-        PATH_ISOLATION="
-PATH ISOLATION:
-You are isolated to your worktree at: $AGENT_DIR/repo
-- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
-- You CANNOT access: The main repo at $ROOT_REPO_PATH, other agents' worktrees
-- If you get \"Access denied\" or \"Path violation\" errors, you're trying to access a forbidden path
-- Do NOT try to cd into the main repo - work only in your worktree"
-
-        GIT_WORKTREE_CONTEXT="
-GIT WORKTREE CONTEXT:
-You are in a git worktree, which shares the same repository as the main checkout.
-- Your branch: agent/$ID
-- Forked from: $PARENT_BRANCH
-- All branches are LOCAL - no need for 'git fetch origin'
-- To merge latest changes from your parent: 'git merge $PARENT_BRANCH' (not 'git fetch origin; git merge origin/...')
-- Other agents' branches are visible as local branches (agent/*)
-- Your worktree is a separate checkout, but commits are shared across all worktrees"
-        if [[ "$WORKER_MODE" == true ]]; then
-            COMPLETION_INSTRUCTIONS="State Management:
-- Whenever you stop working and are idle, you must end your message with either:
-  - 'WAITING' - if waiting for input or have nothing more to do without further instruction
-  - 'I HAVE COMPLETED THE GOAL' - if you have completed your task
-- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
-
+    elif [[ "$USE_WORKTREE" != true ]]; then
+        COMPLETION_INSTRUCTIONS="You are running as agent $ID in the main repository (no worktree).
 When your task is complete:
-1. Commit any changes you made (git add && git commit)
-2. FIRST: Write your summary of what you accomplished
-3. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it.
-   This signals to your manager agent that you are done.
-4. Wait for your manager to merge or kill your session."
-        else
-            # Determine PR instructions based on config and gh availability
-            local PR_INSTRUCTIONS=""
-            local HAS_GH=$(command -v gh &>/dev/null && echo "true" || echo "false")
-            local HAS_REMOTE=$(git remote 2>/dev/null | head -1)
-
-            if [[ "$CONFIG_CREATE_PRS" == "true" && "$HAS_GH" == "true" && -n "$HAS_REMOTE" ]]; then
-                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
-If so:
-1. Create a pull request with \`gh pr create --title \"<title>\" --body \"<description>\"\`
-2. FIRST: Write any final summary or notes
-3. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it."
-            else
-                PR_INSTRUCTIONS="Once you have completed your primary goal by merging in successful agents, double check that you have completed the goal.
-If so:
-1. FIRST: Write any final summary or notes
-2. LAST: Say the exact phrase: \"I HAVE COMPLETED THE GOAL\"
-   This phrase MUST be the final line - nothing after it.
-Your work is on branch \`agent/$ID\` for review."
-            fi
-
-            COMPLETION_INSTRUCTIONS="State Management:
-- Whenever you stop working and are idle, you must end your message with either:
-  - 'WAITING' - if waiting for next monitoring cycle or have nothing more to do
-  - 'I HAVE COMPLETED THE GOAL' - if you have completed your primary goal
-- CRITICAL: These phrases MUST be the LAST thing you output. Put any summaries or status updates BEFORE these phrases, never after.
-
-Your workflow:
-1. DEFINE SUCCESS CRITERIA - What does 'done' look like?
-   - What files/outputs are required? What conditions prove completion?
-   - Track in TodoWrite tool with measurable criteria
-
-2. ASSESS TASK SIZE - Now that you know what success looks like:
-   - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
-   - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
-
-3. IF SPAWNING: Create WORKER sub-agents (--worker) for each task
-   - Include the task AND its success criteria in the prompt
-   - Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help (don't poll)
-
-4. WHEN NOTIFIED - Review against your predefined criteria:
-   - \`ib look <id>\` - what the agent reports
-   - \`ib status <id>\` / \`ib diff <id>\` - verify actual changes
-   - Criteria met: \`ib merge <id>\` or \`ib kill <id>\` (if no changes)
-   - Criteria NOT met: \`ib send <id> \"feedback\"\`
-   - If \`stopped\`: STOP and notify the user immediately
-
-5. BEFORE COMPLETING: Merge or kill ALL sub-agents (\`ib list\` to verify none remain)
-
-$PR_INSTRUCTIONS"
-        fi
-    else
-        WORKTREE_INFO="You are running as agent $ID in the main repository (no worktree)."
-        COMPLETION_INSTRUCTIONS="When your task is complete:
 1. Commit any changes you made (git add && git commit)
 2. Exit normally"
     fi
 
-    local IB_INSTRUCTIONS=""
-    if [[ "$WORKER_MODE" != true ]]; then
-        # Build base manager instructions
-        local ASK_INSTRUCTION=""
-        if [[ -z "$MANAGER" ]]; then
-            # Root-level managers can ask questions to the user
-            ASK_INSTRUCTION="
-  ib ask \"question\"                              Ask the user a question (top-level managers only)"
-        fi
-        IB_INSTRUCTIONS="
-You have access to the 'ib' tool for multi-agent coordination.
-IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
-
-  ib new-agent --manager $ID --worker \"task\"   Spawn a worker sub-agent (focused worker, no sub-agents)
-  ib list --manager $ID                          List your sub-agents
-  ib look <agent-id>                             Read an agent's output
-  ib send <agent-id> \"message\"                  Send input to an agent
-  ib status <agent-id>                           Check agent's git commits
-  ib merge <agent-id>                            Merge agent's work and close it
-  ib kill <agent-id>                             Stop an agent without merging$ASK_INSTRUCTION
-
-WATCHDOGS: Each sub-agent you spawn is monitored. Enter WAITING mode after spawning - you'll be notified when they complete or need help. Don't poll \`ib list\`.
-
-If \`ib merge\` fails due to conflicts, choose the best strategy:
-1. Resolve the merge yourself: edit conflicting files, \`git add <files> && git commit\`, then clean up with \`git worktree remove <path> --force && git branch -D agent/<id>\`
-2. Spawn a WORKER sub-agent to handle the merge resolution, then monitor it to completion
-3. If the merge is no longer needed, skip it and note this in your final report
-
-MERGE CONFLICT RESOLUTION:
-- NEVER blindly accept one side (\`git checkout --ours/theirs .\`) - both sides represent real work
-- Understand what each side was trying to accomplish, then merge the INTENT
-- If unclear, ASK your manager (or \`ib ask\` if top-level)
-- After: \`git add <files> && git commit\`, then cleanup: \`git worktree remove <path> --force && git branch -D agent/<id>\`
-"
-        # Add ib ask guidance for root-level managers
-        if [[ -z "$MANAGER" ]]; then
-            IB_INSTRUCTIONS+="
-ASKING THE USER QUESTIONS:
-As a top-level manager, you can ask the user questions using \`ib ask \"question\"\`.
-After asking, enter WAITING mode - you'll be notified when the user responds.
-Use this when you need clarification on requirements or approval for a decision.
-"
-        fi
-    else
-        # Worker agents: simple communication with manager only
-        IB_INSTRUCTIONS="
-You are a worker agent focused on your specific task.
-IMPORTANT: Always use 'ib' (not './ib') to ensure you use the current version from PATH.
-
-To communicate with your manager: ib send $MANAGER \"your message\"
-
-Use this to:
-- Report completion or progress
-- Ask questions if requirements are unclear
-- Share important findings
-
-If you get stuck or encounter a blocker:
-1. Describe the specific problem you're facing
-2. Send a message to your manager: ib send $MANAGER \"[STUCK] <description of problem>\"
-3. Enter WAITING state - a watchdog monitors you and will notify your manager that you need help
-
-SELF-INSPECTION:
-Before completing, verify your work:
-  ib diff         Check your changes vs base branch
-  ib status       See your commits
-"
-    fi
-
-    # Add role identifier for spawned agents
+    # Role marker
     local ROLE_MARKER=""
     local CUSTOM_ROLE_PROMPT=""
     if [[ "$WORKER_MODE" == true ]]; then
         ROLE_MARKER="<ittybitty>You are an IttyBitty worker agent.</ittybitty>
 
 "
-        # Add custom worker prompt if configured
         if [[ -n "$CONFIG_PROMPT_WORKER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM WORKER INSTRUCTIONS]
 $CONFIG_PROMPT_WORKER
@@ -6511,7 +6534,6 @@ $CONFIG_PROMPT_WORKER
         ROLE_MARKER="<ittybitty>You are an IttyBitty manager agent.</ittybitty>
 
 "
-        # Add custom manager prompt if configured
         if [[ -n "$CONFIG_PROMPT_MANAGER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM MANAGER INSTRUCTIONS]
 $CONFIG_PROMPT_MANAGER
@@ -6520,7 +6542,7 @@ $CONFIG_PROMPT_MANAGER
         fi
     fi
 
-    # Add custom all-agents prompt if configured
+    # Custom all-agents prompt
     local CUSTOM_ALL_PROMPT=""
     if [[ -n "$CONFIG_PROMPT_ALL" ]]; then
         CUSTOM_ALL_PROMPT="[CUSTOM INSTRUCTIONS]
@@ -6529,15 +6551,8 @@ $CONFIG_PROMPT_ALL
 "
     fi
 
-    local PROMPT_PREFIX="${ROLE_MARKER}[AGENT CONTEXT]
-$WORKTREE_INFO
-$MANAGER_INFO
-$PATH_ISOLATION
-$GIT_WORKTREE_CONTEXT
-$IB_INSTRUCTIONS
-$COMPLETION_INSTRUCTIONS
-${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}
-[USER TASK]
+    local PROMPT_PREFIX="${ROLE_MARKER}${COMPLETION_INSTRUCTIONS:+${COMPLETION_INSTRUCTIONS}
+}${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}[USER TASK]
 $PROMPT"
 
     # Save the full prompt (with prefix) for reference
@@ -8703,6 +8718,9 @@ cmd_hooks() {
         agent-path)
             cmd_hooks_agent_path "$@"
             ;;
+        session-start)
+            cmd_hooks_session_start "$@"
+            ;;
         main-path)
             cmd_hooks_main_path "$@"
             ;;
@@ -8724,16 +8742,20 @@ Usage: ib hooks <subcommand> [options]
 
 Subcommands:
   status       Check if main repo hooks are installed (returns: installed, partial, not-installed)
-  install      Install hooks to main repo (path isolation + status injection)
+  install      Install hooks to main repo (path isolation + status injection + session-start)
   uninstall    Remove all ib hooks from main repo
 
 The 'install' command adds:
   - PreToolUse hook: blocks cd into agent worktrees
   - UserPromptSubmit hook: injects full status at conversation start
   - PostToolUse hook: injects status updates after Bash/Task tools
+  - SessionStart hook: provides role-specific ittybitty instructions
 
 Status injection hooks:
   inject-status       Output agent status for Claude Code hook injection
+
+Session hooks:
+  session-start       Output role-specific ittybitty instructions on session start
 
 Agent hooks (internal, used by spawned agents):
   agent-status <id>   Stop hook - nudges agent, notifies managers
@@ -12393,9 +12415,10 @@ cmd_hooks_status() {
         exit 0
     fi
 
-    # Check if both hook types are installed
+    # Check if all hook types are installed
     local has_main_path=false
     local has_status=false
+    local has_session_start=false
 
     if json_has_main_path_hook "$SETTINGS_FILE"; then
         has_main_path=true
@@ -12405,10 +12428,14 @@ cmd_hooks_status() {
         has_status=true
     fi
 
-    # Return installed only if both are present
-    if [[ "$has_main_path" == "true" && "$has_status" == "true" ]]; then
+    if json_has_session_start_hook "$SETTINGS_FILE"; then
+        has_session_start=true
+    fi
+
+    # Return installed only if all are present
+    if [[ "$has_main_path" == "true" && "$has_status" == "true" && "$has_session_start" == "true" ]]; then
         echo "installed"
-    elif [[ "$has_main_path" == "true" || "$has_status" == "true" ]]; then
+    elif [[ "$has_main_path" == "true" || "$has_status" == "true" || "$has_session_start" == "true" ]]; then
         echo "partial"
     else
         echo "not-installed"
@@ -12437,6 +12464,7 @@ cmd_hooks_install() {
 
     local installed_main_path=false
     local installed_status=false
+    local installed_session_start=false
 
     # Add main-path hook if not present
     if ! json_has_main_path_hook "$settings"; then
@@ -12450,8 +12478,14 @@ cmd_hooks_install() {
         installed_status=true
     fi
 
+    # Add session-start hook if not present
+    if ! json_has_session_start_hook "$settings"; then
+        settings=$(json_add_session_start_hook "$settings")
+        installed_session_start=true
+    fi
+
     # Check if anything was installed
-    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" ]]; then
+    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" && "$installed_session_start" == "false" ]]; then
         echo "Hooks already installed"
         exit 0
     fi
@@ -12460,13 +12494,7 @@ cmd_hooks_install() {
     echo "$settings" > "$SETTINGS_FILE"
 
     # Report what was installed
-    if [[ "$installed_main_path" == "true" && "$installed_status" == "true" ]]; then
-        echo "Hooks installed to $SETTINGS_FILE"
-    elif [[ "$installed_main_path" == "true" ]]; then
-        echo "Main-path hook installed to $SETTINGS_FILE"
-    else
-        echo "Status hooks installed to $SETTINGS_FILE"
-    fi
+    echo "Hooks installed to $SETTINGS_FILE"
 }
 
 # =============================================================================
@@ -12485,9 +12513,10 @@ cmd_hooks_uninstall() {
     local settings
     settings=$(<"$SETTINGS_FILE")
 
-    # Remove both hook types
+    # Remove all hook types
     settings=$(json_remove_main_path_hook "$settings")
     settings=$(json_remove_status_hooks "$settings")
+    settings=$(json_remove_session_start_hook "$settings")
 
     # Write settings (or delete file if empty)
     if json_is_empty "$settings"; then
@@ -12759,12 +12788,183 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: hooks session-start
+# =============================================================================
+
+# SessionStart hook - outputs role-specific ittybitty instructions
+# Detects session type from cwd:
+#   - Primary Claude: cwd is NOT in an agent worktree
+#   - Manager agent: cwd is in an agent worktree, worker=false in meta.json
+#   - Worker agent: cwd is in an agent worktree, worker=true in meta.json
+# For agent roles, reads meta.json to get agent-specific context (IDs, paths, etc.)
+cmd_hooks_session_start() {
+    # Read JSON from stdin
+    local stdin_json=""
+    if [[ ! -t 0 ]]; then
+        stdin_json=$(cat)
+    fi
+
+    # Extract cwd from stdin JSON
+    local cwd=""
+    if [[ -n "$stdin_json" ]]; then
+        cwd=$(echo "$stdin_json" | json_get "-" "cwd" "")
+    fi
+
+    # Fall back to pwd if no cwd provided
+    if [[ -z "$cwd" ]]; then
+        cwd=$(pwd)
+    fi
+
+    # Determine role and read agent context from meta.json
+    local role="primary"
+    local agent_id="" agent_manager="" agent_parent_branch=""
+    local agent_dir="" agent_worktree="" root_repo_path=""
+
+    if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
+        agent_dir="${cwd%/repo*}"
+        agent_worktree="${agent_dir}/repo"
+        local meta_file="$agent_dir/meta.json"
+
+        # Derive root repo path: strip .ittybitty/agents/<id> from agent_dir
+        root_repo_path="${agent_dir%/.ittybitty/agents/*}"
+
+        role="manager"
+        if [[ -f "$meta_file" ]]; then
+            agent_id=$(json_get "$meta_file" "id" "")
+            agent_manager=$(json_get "$meta_file" "manager" "")
+            local worker_val
+            worker_val=$(json_get "$meta_file" "worker" "false")
+            if [[ "$worker_val" == "true" ]]; then
+                role="worker"
+            fi
+        fi
+
+        # Derive parent branch
+        if [[ -n "$agent_manager" && "$agent_manager" != "null" ]]; then
+            agent_parent_branch="agent/$agent_manager"
+        else
+            agent_parent_branch="main"
+            # Clear null manager
+            if [[ "$agent_manager" == "null" ]]; then
+                agent_manager=""
+            fi
+        fi
+    fi
+
+    # Get instructions and output as JSON with additionalContext
+    local instructions
+    instructions=$(get_ittybitty_instructions "$role" "$agent_id" "$agent_manager" "$agent_parent_branch" "$agent_worktree" "$root_repo_path")
+    local escaped_instructions
+    escaped_instructions=$(json_escape_string "$instructions")
+
+    printf '{\n'
+    printf '  "hookSpecificOutput": {\n'
+    printf '    "hookEventName": "SessionStart",\n'
+    printf '    "additionalContext": "%s"\n' "$escaped_instructions"
+    printf '  }\n'
+    printf '}\n'
+}
+
+# Test session-start hook detection logic
+# Fixture JSON format:
+# {
+#   "cwd": "/path/to/check",
+#   "meta_json": "/path/to/meta.json" (optional, for agent fixtures)
+# }
+# Expected output is encoded in filename: primary-*, manager-*, worker-*
+cmd_test_session_start() {
+    local input_file=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-session-start <fixture-file>
+
+Test the session-start hook detection logic.
+
+Fixture JSON format:
+  {
+    "cwd": "/path/to/check",
+    "meta_json": "/path/to/meta.json"  (optional)
+  }
+
+Output: "primary", "manager", or "worker"
+EOF
+                exit 0
+                ;;
+            *)
+                input_file="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if [[ -z "$input_file" || ! -f "$input_file" ]]; then
+        echo "Error: fixture file required" >&2
+        exit 1
+    fi
+
+    local cwd
+    cwd=$(json_get "$input_file" "cwd" "")
+
+    if [[ -z "$cwd" ]]; then
+        echo "Error: fixture must have 'cwd' field" >&2
+        exit 1
+    fi
+
+    # Check if cwd is in an agent worktree
+    if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
+        # Check for meta_json field in fixture
+        local meta_file
+        meta_file=$(json_get "$input_file" "meta_json" "")
+
+        # Resolve relative meta_json paths relative to fixture directory
+        if [[ -n "$meta_file" && ! "$meta_file" =~ ^/ ]]; then
+            local fixture_dir
+            fixture_dir=$(dirname "$input_file")
+            meta_file="$fixture_dir/$meta_file"
+        fi
+
+        local is_worker="false"
+        if [[ -n "$meta_file" && -f "$meta_file" ]]; then
+            local worker_val
+            worker_val=$(json_get "$meta_file" "worker" "false")
+            if [[ "$worker_val" == "true" ]]; then
+                is_worker="true"
+            fi
+        fi
+
+        if [[ "$is_worker" == "true" ]]; then
+            echo "worker"
+        else
+            echo "manager"
+        fi
+    else
+        echo "primary"
+    fi
+}
+
+# =============================================================================
 # COMMAND: setup ib-instructions install
 # =============================================================================
 
-# The ittybitty instructions content to add to CLAUDE.md
+# The ittybitty instructions content
+# Usage:
+#   get_ittybitty_instructions "primary"
+#   get_ittybitty_instructions "manager" "$id" "$manager" "$parent_branch" "$worktree" "$root_repo"
+#   get_ittybitty_instructions "worker"  "$id" "$manager" "$parent_branch" "$worktree" "$root_repo"
 get_ittybitty_instructions() {
-    cat << 'ITTYBITTY_CONTENT'
+    local mode="${1:-primary}"
+    local agent_id="$2"
+    local agent_manager="$3"
+    local parent_branch="$4"
+    local worktree_path="$5"
+    local root_repo_path="$6"
+
+    case "$mode" in
+        primary)
+            cat << 'ITTYBITTY_PRIMARY'
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
@@ -12793,6 +12993,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 
 **Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically.
 
+**Completed/stopped agents:** You can `ib send` messages to completed or stopped agents - they will restart and respond to the message.
+
 ### Agent States
 
 | State | Meaning |
@@ -12807,7 +13009,175 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `unknown` | State unclear |
 
 </ittybitty>
-ITTYBITTY_CONTENT
+ITTYBITTY_PRIMARY
+            ;;
+        manager)
+            # Manager uses variable interpolation for agent-specific context
+            local ask_line=""
+            if [[ -z "$agent_manager" ]]; then
+                ask_line="| \`ib ask \"question\"\` | Ask the user a question (top-level managers only) |"
+            fi
+            local ask_section=""
+            if [[ -z "$agent_manager" ]]; then
+                ask_section="
+### Asking the User Questions
+
+Top-level managers can ask the user questions with \`ib ask \"question\"\`. After asking, enter WAITING mode - you'll be notified when the user responds."
+            fi
+            local manager_info=""
+            if [[ -n "$agent_manager" ]]; then
+                manager_info="Your manager agent is: $agent_manager"
+            fi
+            cat << ITTYBITTY_MANAGER
+<ittybitty>
+## IttyBitty Manager Agent
+
+You are manager agent \`$agent_id\` in the ittybitty multi-agent orchestration system.
+You are running in a git worktree on branch \`agent/$agent_id\`, forked from \`$parent_branch\`.
+${manager_info}
+
+IMPORTANT: Always use \`ib\` (not \`./ib\`) to ensure you use the current version from PATH.
+
+### Path Isolation
+
+You are isolated to your worktree at: $worktree_path
+- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
+- You CANNOT access: The main repo at $root_repo_path, other agents' worktrees
+- If you get "Access denied" or "Path violation" errors, you're trying to access a forbidden path
+
+### Git Worktree Context
+
+You are in a git worktree, which shares the same repository as the main checkout.
+- Your branch: \`agent/$agent_id\`
+- Forked from: \`$parent_branch\`
+- All branches are LOCAL - no need for \`git fetch origin\`
+- To merge latest changes from your parent: \`git merge $parent_branch\`
+- Other agents' branches are visible as local branches (\`agent/*\`)
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| \`ib new-agent --worker "task"\` | Spawn a worker sub-agent |
+| \`ib list --manager $agent_id\` | List your sub-agents |
+| \`ib look <id>\` | Read an agent's output |
+| \`ib send <id> "msg"\` | Send input to an agent |
+| \`ib status <id>\` | Show agent's commits/changes |
+| \`ib diff <id>\` | Review agent's changes |
+| \`ib merge <id>\` | Merge agent's work and close it |
+| \`ib kill <id>\` | Stop an agent without merging |
+$ask_line
+
+### State Management
+
+Whenever you stop working and are idle, end your message with one of:
+- \`WAITING\` - if waiting for workers or have nothing more to do
+- \`I HAVE COMPLETED THE GOAL\` - if you have completed your primary goal
+
+These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
+
+### Workflow
+
+1. **DEFINE SUCCESS CRITERIA** - What does 'done' look like? Track in TodoWrite with measurable criteria.
+2. **ASSESS TASK SIZE**:
+   - SMALL: Do it yourself - don't spawn sub-agents unnecessarily
+   - MEDIUM/LARGE: Break into independent tasks, each with clear success criteria
+3. **IF SPAWNING**: Create worker sub-agents with \`ib new-agent --worker "task"\`. Include success criteria in the prompt. Enter WAITING mode - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll \`ib list\`.
+4. **WHEN NOTIFIED** - Review against your criteria:
+   - \`ib look <id>\` - what the agent reports
+   - \`ib status <id>\` / \`ib diff <id>\` - verify actual changes
+   - Criteria met: \`ib merge <id>\` or \`ib kill <id>\` (if no changes needed)
+   - Criteria NOT met: \`ib send <id> "feedback"\`
+   - If \`stopped\`: STOP and notify the user immediately
+5. **BEFORE COMPLETING**: Merge or kill ALL sub-agents (\`ib list\` to verify none remain)
+
+### Merging Worker Results
+
+- NEVER blindly accept one side (\`--ours\`/\`--theirs\`) - understand and merge the intent of both sides
+- Resolve manually, or spawn a worker to handle resolution
+- You can \`ib send\` messages to completed or stopped agents - they will restart and respond
+$ask_section
+
+### Agent States
+
+| State | Meaning |
+|-------|---------|
+| \`creating\` | Starting up |
+| \`running\` | Actively working |
+| \`compacting\` | Summarizing context |
+| \`waiting\` | Idle, may need input |
+| \`complete\` | Signaled done |
+| \`rate_limited\` | Hit API rate limits |
+| \`stopped\` | Session ended |
+| \`unknown\` | State unclear |
+
+</ittybitty>
+ITTYBITTY_MANAGER
+            ;;
+        worker)
+            # Worker uses variable interpolation for agent-specific context
+            cat << ITTYBITTY_WORKER
+<ittybitty>
+## IttyBitty Worker Agent
+
+You are worker agent \`$agent_id\` in the ittybitty multi-agent orchestration system.
+You are running in a git worktree on branch \`agent/$agent_id\`, forked from \`$parent_branch\`.
+Your manager agent is: $agent_manager
+
+IMPORTANT: Always use \`ib\` (not \`./ib\`) to ensure you use the current version from PATH.
+
+### Path Isolation
+
+You are isolated to your worktree at: $worktree_path
+- You CAN access: Your worktree, ~/.claude, /tmp, and general system paths
+- You CANNOT access: The main repo at $root_repo_path, other agents' worktrees
+- If you get "Access denied" or "Path violation" errors, you're trying to access a forbidden path
+
+### Git Worktree Context
+
+You are in a git worktree, which shares the same repository as the main checkout.
+- Your branch: \`agent/$agent_id\`
+- Forked from: \`$parent_branch\`
+- All branches are LOCAL - no need for \`git fetch origin\`
+- To merge latest changes from your parent: \`git merge $parent_branch\`
+- Other agents' branches are visible as local branches (\`agent/*\`)
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| \`ib send $agent_manager "msg"\` | Send a message to your manager |
+| \`ib diff\` | Check your changes vs base branch |
+| \`ib status\` | See your commits |
+| \`ib log "msg"\` | Log to your agent log |
+
+### State Management
+
+Whenever you stop working and are idle, end your message with one of:
+- \`WAITING\` - if waiting for input or have nothing more to do
+- \`I HAVE COMPLETED THE GOAL\` - if you have completed your task
+
+These phrases MUST be the LAST thing you output. Put summaries or status updates BEFORE them.
+
+### Communication
+
+- Report progress or completion to your manager: \`ib send $agent_manager "message"\`
+- Ask questions if requirements are unclear
+- If stuck: \`ib send $agent_manager "[STUCK] description"\`, then enter WAITING state
+- Your manager can send you messages even after you complete - you will restart and respond
+
+### Completion
+
+1. Commit your changes (\`git add && git commit\`)
+2. Verify your work with \`ib diff\` and \`ib status\`
+3. Write a summary of what you accomplished
+4. Say "I HAVE COMPLETED THE GOAL" as the final line
+5. Wait for your manager to merge or kill your session
+
+</ittybitty>
+ITTYBITTY_WORKER
+            ;;
+    esac
 }
 
 # Install <ittybitty> block to CLAUDE.md
@@ -13971,11 +14341,10 @@ EOF
 
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
-    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection)
-    local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
+    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection + session-start)
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
-    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=gitignore, 3=config file, 4=ext diff, 5=Close
+    local SETUP_FOCUS=0  # 0=hooks, 1=gitignore, 2=config file, 3=ext diff, 4=Close
 
     # Settings dialog tabs (expanded setup dialog)
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
@@ -14063,22 +14432,6 @@ EOF
         fi
     }
 
-    # Check if <ittybitty>...</ittybitty> block exists in CLAUDE.md
-    watch_check_ib_instructions() {
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            local content
-            content=$(cat "$claude_md")
-            if check_claude_md_has_ittybitty_block "$content"; then
-                SETUP_IB_INSTRUCTIONS=1
-            else
-                SETUP_IB_INSTRUCTIONS=2
-            fi
-        else
-            SETUP_IB_INSTRUCTIONS=2
-        fi
-    }
-
     # Check if .ittybitty is in .gitignore
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
@@ -14108,7 +14461,6 @@ EOF
     # Check all setup items on startup
     watch_check_all_setup() {
         watch_check_hooks_status
-        watch_check_ib_instructions
         watch_check_gitignore
         watch_check_config_file
     }
@@ -16069,27 +16421,15 @@ EOF
         ((row++))
 
         # Description for safety hooks
-        dialog_draw_line "$row" "  Block cd into worktrees + inject agent status"
+        dialog_draw_line "$row" "  Block cd into worktrees + inject status + session context"
         ((row++))
 
         # Blank line
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 2: ib instructions
-        dialog_draw_checkbox "$row" "$SETUP_IB_INSTRUCTIONS" "ib instructions" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
-        ((row++))
-
-        # Description for ib instructions
-        dialog_draw_line "$row" "  Add <ittybitty> block to CLAUDE.md"
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Option 3: Gitignore
-        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)"
+        # Option 2: Gitignore
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -16100,8 +16440,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 4: Config file (shows checkmark when exists, can't be removed)
-        local config_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
+        # Option 3: Config file (shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)
         local config_checkbox config_disabled=0
         if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
             config_checkbox="[+]"
@@ -16137,8 +16477,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 5: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Option 4: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -16169,7 +16509,7 @@ EOF
         ((row++))
 
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -16475,7 +16815,7 @@ try {
         # Get the current focus variable and item count based on tab
         local current_focus item_count
         case $SETTINGS_TAB in
-            0) current_focus=$SETUP_FOCUS; item_count=7 ;;
+            0) current_focus=$SETUP_FOCUS; item_count=6 ;;
             1) current_focus=$SETTINGS_FOCUS_PROJECT; item_count=$SETTINGS_ITEMS_COUNT ;;
             2) current_focus=$SETTINGS_FOCUS_USER; item_count=$SETTINGS_ITEMS_COUNT ;;
         esac
@@ -16494,16 +16834,7 @@ try {
                                 watch_check_hooks_status
                                 _DIALOG_DIRTY=1
                                 ;;
-                            1)  # ib instructions
-                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
-                                else
-                                    cmd_setup_ib_instructions_install >/dev/null 2>&1
-                                fi
-                                watch_check_ib_instructions
-                                _DIALOG_DIRTY=1
-                                ;;
-                            2)  # Gitignore
+                            1)  # Gitignore
                                 if [[ $SETUP_GITIGNORE -eq 1 ]]; then
                                     cmd_setup_gitignore_uninstall >/dev/null 2>&1
                                 else
@@ -16512,7 +16843,7 @@ try {
                                 watch_check_gitignore
                                 _DIALOG_DIRTY=1
                                 ;;
-                            3)  # Config file (only create, not remove)
+                            2)  # Config file (only create, not remove)
                                 if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
                                     cmd_setup_config_file_install >/dev/null 2>&1
                                     watch_check_config_file
@@ -16520,11 +16851,11 @@ try {
                                 fi
                                 # If file already exists, do nothing (can't remove via UI)
                                 ;;
-                            4)  # External diff tool - open input dialog
+                            3)  # External diff tool - open input dialog
                                 watch_dialog_init_ext_diff_tool
                                 DIALOG_MODE=8
                                 ;;
-                            5)  # Close button
+                            4)  # Close button
                                 DIALOG_MODE=0
                                 ;;
                         esac
@@ -16594,7 +16925,7 @@ try {
 
         case $SETTINGS_TAB in
             0)
-                item_count=7
+                item_count=6
                 SETUP_FOCUS=$(( (SETUP_FOCUS + direction + item_count) % item_count ))
                 ;;
             1)
@@ -19753,7 +20084,7 @@ try {
             action_text="@: jump to agent    /: commands    a: new agent"
             action_text_visible_len=${#action_text}
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
-            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
+            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
                 action_text="$action_text    ${COLOR_YELLOW}h: setup${COLOR_RESET}${COLOR_DIM}"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
@@ -22406,6 +22737,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-session-start)
+        shift
+        cmd_test_session_start "$@"
         ;;
     test-reassign)
         shift
