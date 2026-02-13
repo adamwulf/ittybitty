@@ -13158,7 +13158,7 @@ You are a manager agent in the ittybitty multi-agent orchestration system.
 
 ### Spawning Workers
 
-Use `ib new-agent --manager <your-id> --worker "task description"` to spawn focused worker agents.
+Use `ib new-agent --worker "task description"` to spawn focused worker agents.
 Enter WAITING mode after spawning - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll `ib list`.
 
 ### Merging Worker Results
