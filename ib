@@ -6626,6 +6626,9 @@ EXITSCRIPT
 # Add git repo root to PATH so 'ib' is available
 export PATH="$GIT_ROOT:\$PATH"
 
+# Clear Claude Code nesting detection so agents can start their own claude process
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+
 # Start Claude in background and capture PID
 claude --session-id "$SESSION_UUID" $CLAUDE_ARGS "\$(cat '$ABS_PROMPT_FILE')" &
 CLAUDE_PID=\$!
@@ -7959,6 +7962,9 @@ EOF
 #!/bin/bash
 # Add git repo root to PATH so 'ib' is available
 export PATH="$GIT_ROOT:\$PATH"
+
+# Clear Claude Code nesting detection so agents can start their own claude process
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 
 # Start Claude in background and capture PID
 claude --resume "$SESSION_UUID" $CLAUDE_ARGS &
