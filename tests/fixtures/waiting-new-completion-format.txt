@@ -1,0 +1,15 @@
+  Fix: Call pickUpAndMove immediately after
+  incrementGestureCountAndBeginDrag on line 823 of
+  DragHandler.swift, in the same panChanged invocation.
+
+  WAITING
+
+· Photosynthesizing… (3m 29s · thought for 120s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-b8f0b8c8
+  Session: 46% (3h 39m) Weekly: 4% (6d 22h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
