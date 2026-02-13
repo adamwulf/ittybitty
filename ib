@@ -886,7 +886,8 @@ build_settings_json() {
             .hooks //= {} |
             .hooks.Stop = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-status \($agent_id)" }] }] |
             .hooks.PermissionRequest = [{ matcher: "*", hooks: [{ type: "command", command: $hook_cmd }] }] |
-            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }]
+            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }] |
+            .hooks.SessionStart = [{ hooks: [{ type: "command", command: "ib hooks session-start" }] }]
         ' 2>/dev/null || true
     else
         local base_b64
@@ -948,6 +949,10 @@ base.hooks.PermissionRequest = [{
 base.hooks.PreToolUse = [{
     matcher: '*',
     hooks: [{ type: 'command', command: 'ib hook-check-path $agent_id' }]
+}];
+
+base.hooks.SessionStart = [{
+    hooks: [{ type: 'command', command: 'ib hooks session-start' }]
 }];
 
 JSON.stringify(base, null, 2);
@@ -1927,6 +1932,179 @@ try {
             }
         }
         // Clean up empty hooks object
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Check if session-start hook is installed in settings JSON
+# Checks for SessionStart hook with ib hooks session-start
+# Usage: json_has_session_start_hook "settings_json_or_file"
+# Returns: 0 if hook found, 1 if not found
+json_has_session_start_hook() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            if .hooks.SessionStart then
+                [.hooks.SessionStart[].hooks[]? | select(.command | contains("ib hooks session-start"))] | length > 0 |
+                if . then "true" else "false" end
+            else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks || !hooks.SessionStart || !Array.isArray(hooks.SessionStart)) {
+        'false';
+    } else {
+        var found = false;
+        for (var i = 0; i < hooks.SessionStart.length; i++) {
+            var entry = hooks.SessionStart[i];
+            if (entry.hooks && Array.isArray(entry.hooks)) {
+                for (var j = 0; j < entry.hooks.length; j++) {
+                    var hook = entry.hooks[j];
+                    if (hook.command && hook.command.indexOf('ib hooks session-start') !== -1) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        found ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+    fi
+
+    [[ "$result" == "true" ]]
+}
+
+# Add session-start hook to settings JSON
+# Usage: json_add_session_start_hook "settings_json"
+# Outputs: modified JSON with SessionStart hook added
+json_add_session_start_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.SessionStart //= [] |
+            .hooks.SessionStart += [{ hooks: [{ type: "command", command: "ib hooks session-start" }] }]
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.SessionStart) obj.hooks.SessionStart = [];
+
+    var sessionStartHook = {
+        hooks: [{type: 'command', command: 'ib hooks session-start'}]
+    };
+    obj.hooks.SessionStart.push(sessionStartHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Remove session-start hook from settings JSON
+# Usage: json_remove_session_start_hook "settings_json"
+# Outputs: modified JSON with SessionStart hook removed
+json_remove_session_start_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            if .hooks.SessionStart then
+                .hooks.SessionStart |= map(select(.hooks | all(.command | contains("ib hooks session-start") | not))) |
+                if .hooks.SessionStart | length == 0 then del(.hooks.SessionStart) else . end
+            else . end |
+            if .hooks | keys | length == 0 then del(.hooks) else . end
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (obj.hooks && obj.hooks.SessionStart && Array.isArray(obj.hooks.SessionStart)) {
+        obj.hooks.SessionStart = obj.hooks.SessionStart.filter(function(entry) {
+            if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+            return entry.hooks.every(function(hook) {
+                return !hook.command || hook.command.indexOf('ib hooks session-start') === -1;
+            });
+        });
+
+        if (obj.hooks.SessionStart.length === 0) {
+            delete obj.hooks.SessionStart;
+        }
         if (Object.keys(obj.hooks).length === 0) {
             delete obj.hooks;
         }
@@ -8703,6 +8881,9 @@ cmd_hooks() {
         agent-path)
             cmd_hooks_agent_path "$@"
             ;;
+        session-start)
+            cmd_hooks_session_start "$@"
+            ;;
         main-path)
             cmd_hooks_main_path "$@"
             ;;
@@ -8724,16 +8905,20 @@ Usage: ib hooks <subcommand> [options]
 
 Subcommands:
   status       Check if main repo hooks are installed (returns: installed, partial, not-installed)
-  install      Install hooks to main repo (path isolation + status injection)
+  install      Install hooks to main repo (path isolation + status injection + session-start)
   uninstall    Remove all ib hooks from main repo
 
 The 'install' command adds:
   - PreToolUse hook: blocks cd into agent worktrees
   - UserPromptSubmit hook: injects full status at conversation start
   - PostToolUse hook: injects status updates after Bash/Task tools
+  - SessionStart hook: provides role-specific ittybitty instructions
 
 Status injection hooks:
   inject-status       Output agent status for Claude Code hook injection
+
+Session hooks:
+  session-start       Output role-specific ittybitty instructions on session start
 
 Agent hooks (internal, used by spawned agents):
   agent-status <id>   Stop hook - nudges agent, notifies managers
@@ -12393,9 +12578,10 @@ cmd_hooks_status() {
         exit 0
     fi
 
-    # Check if both hook types are installed
+    # Check if all hook types are installed
     local has_main_path=false
     local has_status=false
+    local has_session_start=false
 
     if json_has_main_path_hook "$SETTINGS_FILE"; then
         has_main_path=true
@@ -12405,10 +12591,14 @@ cmd_hooks_status() {
         has_status=true
     fi
 
-    # Return installed only if both are present
-    if [[ "$has_main_path" == "true" && "$has_status" == "true" ]]; then
+    if json_has_session_start_hook "$SETTINGS_FILE"; then
+        has_session_start=true
+    fi
+
+    # Return installed only if all are present
+    if [[ "$has_main_path" == "true" && "$has_status" == "true" && "$has_session_start" == "true" ]]; then
         echo "installed"
-    elif [[ "$has_main_path" == "true" || "$has_status" == "true" ]]; then
+    elif [[ "$has_main_path" == "true" || "$has_status" == "true" || "$has_session_start" == "true" ]]; then
         echo "partial"
     else
         echo "not-installed"
@@ -12437,6 +12627,7 @@ cmd_hooks_install() {
 
     local installed_main_path=false
     local installed_status=false
+    local installed_session_start=false
 
     # Add main-path hook if not present
     if ! json_has_main_path_hook "$settings"; then
@@ -12450,8 +12641,14 @@ cmd_hooks_install() {
         installed_status=true
     fi
 
+    # Add session-start hook if not present
+    if ! json_has_session_start_hook "$settings"; then
+        settings=$(json_add_session_start_hook "$settings")
+        installed_session_start=true
+    fi
+
     # Check if anything was installed
-    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" ]]; then
+    if [[ "$installed_main_path" == "false" && "$installed_status" == "false" && "$installed_session_start" == "false" ]]; then
         echo "Hooks already installed"
         exit 0
     fi
@@ -12460,13 +12657,7 @@ cmd_hooks_install() {
     echo "$settings" > "$SETTINGS_FILE"
 
     # Report what was installed
-    if [[ "$installed_main_path" == "true" && "$installed_status" == "true" ]]; then
-        echo "Hooks installed to $SETTINGS_FILE"
-    elif [[ "$installed_main_path" == "true" ]]; then
-        echo "Main-path hook installed to $SETTINGS_FILE"
-    else
-        echo "Status hooks installed to $SETTINGS_FILE"
-    fi
+    echo "Hooks installed to $SETTINGS_FILE"
 }
 
 # =============================================================================
@@ -12485,9 +12676,10 @@ cmd_hooks_uninstall() {
     local settings
     settings=$(<"$SETTINGS_FILE")
 
-    # Remove both hook types
+    # Remove all hook types
     settings=$(json_remove_main_path_hook "$settings")
     settings=$(json_remove_status_hooks "$settings")
+    settings=$(json_remove_session_start_hook "$settings")
 
     # Write settings (or delete file if empty)
     if json_is_empty "$settings"; then
@@ -12759,12 +12951,155 @@ EOF
 }
 
 # =============================================================================
+# COMMAND: hooks session-start
+# =============================================================================
+
+# SessionStart hook - outputs role-specific ittybitty instructions
+# Detects session type from cwd:
+#   - Primary Claude: cwd is NOT in an agent worktree
+#   - Manager agent: cwd is in an agent worktree, worker=false in meta.json
+#   - Worker agent: cwd is in an agent worktree, worker=true in meta.json
+cmd_hooks_session_start() {
+    # Read JSON from stdin
+    local stdin_json=""
+    if [[ ! -t 0 ]]; then
+        stdin_json=$(cat)
+    fi
+
+    # Extract cwd from stdin JSON
+    local cwd=""
+    if [[ -n "$stdin_json" ]]; then
+        cwd=$(echo "$stdin_json" | json_get "-" "cwd" "")
+    fi
+
+    # Fall back to pwd if no cwd provided
+    if [[ -z "$cwd" ]]; then
+        cwd=$(pwd)
+    fi
+
+    # Check if cwd is in an agent worktree
+    # Pattern: .ittybitty/agents/<id>/repo
+    if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
+        local agent_id="${BASH_REMATCH[1]}"
+
+        # Find meta.json - go up from repo dir to agent dir
+        local agent_dir="${cwd%%/repo*}"
+        if [[ "$cwd" =~ /repo ]]; then
+            agent_dir="${cwd%/repo*}"
+        fi
+        local meta_file="$agent_dir/meta.json"
+
+        # Check if this is a worker agent
+        local is_worker="false"
+        if [[ -f "$meta_file" ]]; then
+            local worker_val
+            worker_val=$(json_get "$meta_file" "worker" "false")
+            if [[ "$worker_val" == "true" ]]; then
+                is_worker="true"
+            fi
+        fi
+
+        if [[ "$is_worker" == "true" ]]; then
+            get_ittybitty_instructions "worker"
+        else
+            get_ittybitty_instructions "manager"
+        fi
+    else
+        get_ittybitty_instructions "primary"
+    fi
+}
+
+# Test session-start hook detection logic
+# Fixture JSON format:
+# {
+#   "cwd": "/path/to/check",
+#   "meta_json": "/path/to/meta.json" (optional, for agent fixtures)
+# }
+# Expected output is encoded in filename: primary-*, manager-*, worker-*
+cmd_test_session_start() {
+    local input_file=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-session-start <fixture-file>
+
+Test the session-start hook detection logic.
+
+Fixture JSON format:
+  {
+    "cwd": "/path/to/check",
+    "meta_json": "/path/to/meta.json"  (optional)
+  }
+
+Output: "primary", "manager", or "worker"
+EOF
+                exit 0
+                ;;
+            *)
+                input_file="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if [[ -z "$input_file" || ! -f "$input_file" ]]; then
+        echo "Error: fixture file required" >&2
+        exit 1
+    fi
+
+    local cwd
+    cwd=$(json_get "$input_file" "cwd" "")
+
+    if [[ -z "$cwd" ]]; then
+        echo "Error: fixture must have 'cwd' field" >&2
+        exit 1
+    fi
+
+    # Check if cwd is in an agent worktree
+    if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
+        # Check for meta_json field in fixture
+        local meta_file
+        meta_file=$(json_get "$input_file" "meta_json" "")
+
+        # Resolve relative meta_json paths relative to fixture directory
+        if [[ -n "$meta_file" && ! "$meta_file" =~ ^/ ]]; then
+            local fixture_dir
+            fixture_dir=$(dirname "$input_file")
+            meta_file="$fixture_dir/$meta_file"
+        fi
+
+        local is_worker="false"
+        if [[ -n "$meta_file" && -f "$meta_file" ]]; then
+            local worker_val
+            worker_val=$(json_get "$meta_file" "worker" "false")
+            if [[ "$worker_val" == "true" ]]; then
+                is_worker="true"
+            fi
+        fi
+
+        if [[ "$is_worker" == "true" ]]; then
+            echo "worker"
+        else
+            echo "manager"
+        fi
+    else
+        echo "primary"
+    fi
+}
+
+# =============================================================================
 # COMMAND: setup ib-instructions install
 # =============================================================================
 
 # The ittybitty instructions content to add to CLAUDE.md
 get_ittybitty_instructions() {
-    cat << 'ITTYBITTY_CONTENT'
+    local mode="${1:-primary}"
+
+    case "$mode" in
+        primary)
+            cat << 'ITTYBITTY_PRIMARY'
 <ittybitty>
 ## Multi-Agent Orchestration (ittybitty)
 
@@ -12807,7 +13142,74 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 | `unknown` | State unclear |
 
 </ittybitty>
-ITTYBITTY_CONTENT
+ITTYBITTY_PRIMARY
+            ;;
+        manager)
+            cat << 'ITTYBITTY_MANAGER'
+<ittybitty>
+## IttyBitty Manager Agent
+
+You are a manager agent in the ittybitty multi-agent orchestration system.
+
+### Task Sizing Strategy
+
+- **SMALL**: Do it yourself - don't spawn sub-agents unnecessarily
+- **MEDIUM/LARGE**: Break into independent tasks, spawn worker sub-agents
+
+### Spawning Workers
+
+Use `ib new-agent --manager <your-id> --worker "task description"` to spawn focused worker agents.
+Enter WAITING mode after spawning - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll `ib list`.
+
+### Merging Worker Results
+
+- Review with `ib look <id>`, `ib status <id>`, `ib diff <id>`
+- Merge successful work: `ib merge <id>`
+- Close without merging: `ib kill <id>`
+- If merge conflicts occur: resolve manually or spawn a worker to handle resolution
+
+### Agent States
+
+| State | Meaning |
+|-------|---------|
+| `creating` | Starting up |
+| `running` | Actively working |
+| `compacting` | Summarizing context |
+| `waiting` | Idle, may need input |
+| `complete` | Signaled done |
+| `rate_limited` | Hit API rate limits |
+| `stopped` | Session ended |
+| `unknown` | State unclear |
+
+</ittybitty>
+ITTYBITTY_MANAGER
+            ;;
+        worker)
+            cat << 'ITTYBITTY_WORKER'
+<ittybitty>
+## IttyBitty Worker Agent
+
+You are a worker agent in the ittybitty multi-agent orchestration system.
+
+### Communication
+
+- Report to your manager: `ib send <manager-id> "message"`
+- If stuck: `ib send <manager-id> "[STUCK] description of problem"`
+- Then enter WAITING state for help
+
+### Self-Inspection
+
+- Check your changes: `ib diff`
+- See your commits: `ib status`
+
+### Completion
+
+When done: commit your changes, write a summary, then say "I HAVE COMPLETED THE GOAL" as the last line.
+
+</ittybitty>
+ITTYBITTY_WORKER
+            ;;
+    esac
 }
 
 # Install <ittybitty> block to CLAUDE.md
@@ -13971,11 +14373,10 @@ EOF
 
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
-    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection)
-    local SETUP_IB_INSTRUCTIONS=0     # <ittybitty>...</ittybitty> block in CLAUDE.md
+    local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection + session-start)
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
-    local SETUP_FOCUS=0  # 0=hooks, 1=ib instructions, 2=gitignore, 3=config file, 4=ext diff, 5=Close
+    local SETUP_FOCUS=0  # 0=hooks, 1=gitignore, 2=config file, 3=ext diff, 4=Close
 
     # Settings dialog tabs (expanded setup dialog)
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
@@ -14063,22 +14464,6 @@ EOF
         fi
     }
 
-    # Check if <ittybitty>...</ittybitty> block exists in CLAUDE.md
-    watch_check_ib_instructions() {
-        local claude_md="$ROOT_REPO_PATH/CLAUDE.md"
-        if [[ -f "$claude_md" ]]; then
-            local content
-            content=$(cat "$claude_md")
-            if check_claude_md_has_ittybitty_block "$content"; then
-                SETUP_IB_INSTRUCTIONS=1
-            else
-                SETUP_IB_INSTRUCTIONS=2
-            fi
-        else
-            SETUP_IB_INSTRUCTIONS=2
-        fi
-    }
-
     # Check if .ittybitty is in .gitignore
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
@@ -14108,7 +14493,6 @@ EOF
     # Check all setup items on startup
     watch_check_all_setup() {
         watch_check_hooks_status
-        watch_check_ib_instructions
         watch_check_gitignore
         watch_check_config_file
     }
@@ -16069,27 +16453,15 @@ EOF
         ((row++))
 
         # Description for safety hooks
-        dialog_draw_line "$row" "  Block cd into worktrees + inject agent status"
+        dialog_draw_line "$row" "  Block cd into worktrees + inject status + session context"
         ((row++))
 
         # Blank line
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 2: ib instructions
-        dialog_draw_checkbox "$row" "$SETUP_IB_INSTRUCTIONS" "ib instructions" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
-        ((row++))
-
-        # Description for ib instructions
-        dialog_draw_line "$row" "  Add <ittybitty> block to CLAUDE.md"
-        ((row++))
-
-        # Blank line
-        dialog_draw_line "$row" ""
-        ((row++))
-
-        # Option 3: Gitignore
-        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)"
+        # Option 2: Gitignore
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -16100,8 +16472,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 4: Config file (shows checkmark when exists, can't be removed)
-        local config_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
+        # Option 3: Config file (shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)
         local config_checkbox config_disabled=0
         if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
             config_checkbox="[+]"
@@ -16137,8 +16509,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 5: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Option 4: External diff tool (text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -16169,7 +16541,7 @@ EOF
         ((row++))
 
         # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
+        local close_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -16475,7 +16847,7 @@ try {
         # Get the current focus variable and item count based on tab
         local current_focus item_count
         case $SETTINGS_TAB in
-            0) current_focus=$SETUP_FOCUS; item_count=7 ;;
+            0) current_focus=$SETUP_FOCUS; item_count=6 ;;
             1) current_focus=$SETTINGS_FOCUS_PROJECT; item_count=$SETTINGS_ITEMS_COUNT ;;
             2) current_focus=$SETTINGS_FOCUS_USER; item_count=$SETTINGS_ITEMS_COUNT ;;
         esac
@@ -16494,16 +16866,7 @@ try {
                                 watch_check_hooks_status
                                 _DIALOG_DIRTY=1
                                 ;;
-                            1)  # ib instructions
-                                if [[ $SETUP_IB_INSTRUCTIONS -eq 1 ]]; then
-                                    cmd_setup_ib_instructions_uninstall >/dev/null 2>&1
-                                else
-                                    cmd_setup_ib_instructions_install >/dev/null 2>&1
-                                fi
-                                watch_check_ib_instructions
-                                _DIALOG_DIRTY=1
-                                ;;
-                            2)  # Gitignore
+                            1)  # Gitignore
                                 if [[ $SETUP_GITIGNORE -eq 1 ]]; then
                                     cmd_setup_gitignore_uninstall >/dev/null 2>&1
                                 else
@@ -16512,7 +16875,7 @@ try {
                                 watch_check_gitignore
                                 _DIALOG_DIRTY=1
                                 ;;
-                            3)  # Config file (only create, not remove)
+                            2)  # Config file (only create, not remove)
                                 if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
                                     cmd_setup_config_file_install >/dev/null 2>&1
                                     watch_check_config_file
@@ -16520,11 +16883,11 @@ try {
                                 fi
                                 # If file already exists, do nothing (can't remove via UI)
                                 ;;
-                            4)  # External diff tool - open input dialog
+                            3)  # External diff tool - open input dialog
                                 watch_dialog_init_ext_diff_tool
                                 DIALOG_MODE=8
                                 ;;
-                            5)  # Close button
+                            4)  # Close button
                                 DIALOG_MODE=0
                                 ;;
                         esac
@@ -16594,7 +16957,7 @@ try {
 
         case $SETTINGS_TAB in
             0)
-                item_count=7
+                item_count=6
                 SETUP_FOCUS=$(( (SETUP_FOCUS + direction + item_count) % item_count ))
                 ;;
             1)
@@ -19753,7 +20116,7 @@ try {
             action_text="@: jump to agent    /: commands    a: new agent"
             action_text_visible_len=${#action_text}
             # Add setup indicator (yellow if any setup item not installed, normal if all installed)
-            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_IB_INSTRUCTIONS -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
+            if [[ $SETUP_HOOKS_INSTALLED -ne 1 || $SETUP_GITIGNORE -ne 1 ]]; then
                 # At least one setup item is not installed - show in yellow, then restore dim
                 action_text="$action_text    ${COLOR_YELLOW}h: setup${COLOR_RESET}${COLOR_DIM}"
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
@@ -22406,6 +22769,10 @@ case "${1:-help}" in
     test-pretooluse)
         shift
         cmd_test_pretooluse "$@"
+        ;;
+    test-session-start)
+        shift
+        cmd_test_session_start "$@"
         ;;
     test-reassign)
         shift
