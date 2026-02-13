@@ -1,0 +1,9 @@
+✳ Photosynthesizing… (10m 57s · thought for 254s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-f4926f76
+  Session: 17% (4h 38m) Weekly: 8% (5d 22h)
+  ⏵⏵ accept edits on (shift+tab to cycle)

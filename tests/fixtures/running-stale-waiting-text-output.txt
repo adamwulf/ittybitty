@@ -1,0 +1,12 @@
+⏺ All 3 workers are running. I'll enter waiting mode while
+  they investigate.
+
+  WAITING
+
+✻ Sautéed for 1m 10s
+
+❯ [sent by agent agent-50526510]: [watchdog]: Your
+  subtask agent-7886c46a state is unknown - may need
+  attention
+
+⏺ Let me check on worker 1's status:

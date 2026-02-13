@@ -1,0 +1,6 @@
+⏺ Bash(ib list)
+  ⎿  agent-abc123  running  5m  opus
+
+❯ When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary. If you are waiting for input, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'.
+
+⏺ I understand. Let me continue working on the task.

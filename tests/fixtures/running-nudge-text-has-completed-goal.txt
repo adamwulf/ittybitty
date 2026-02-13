@@ -1,0 +1,9 @@
+⏺ Bash(ib list)
+  ⎿  agent-abc123  running  5m  opus
+
+❯ When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it.
+
+⏺ I understand. Let me continue working on the task.
+
+⏺ Bash(ib look agent-abc123)
+  ⎿  Worker is still processing the build.

@@ -1,0 +1,22 @@
+⏺ Both workers are initializing. Entering WAITING mode for
+  the watchdog to notify me when they complete.
+
+  WAITING
+
+✻ Crunched for 3m 29s
+
+❯ When you stop working, you must always end your
+  message with either 'WAITING' or 'I HAVE COMPLETED
+  THE GOAL'. IMPORTANT: Write your summary or status
+  update FIRST, then put the status phrase as your
+  FINAL line - nothing should come after it. If you are
+   waiting for input or have nothing more to do without
+   further instruction, say 'WAITING'. If you have
+  completed your goal, say 'I HAVE COMPLETED THE GOAL'.
+   If you have neither completed your goal nor are
+  waiting, then please resume your work.
+
+⏺ Both worker agents are spawned and initializing:
+
+⏺ Bash(ib list --manager agent-35877c79)
+  ⎿  agent-0b495d64  running  1m  opus  agent-35877c79

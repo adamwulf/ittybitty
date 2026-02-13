@@ -296,17 +296,17 @@ tmux session (ittybitty-<repo-id>-<agent-id>)
 
 The `get_state` function reads recent tmux output to determine state. See the Agent States table in the `<ittybitty>` block for state meanings.
 
-**Detection priority order** (see `get_state` function for patterns):
+**Detection priority order** (see `parse_state` function for patterns):
 1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
 2. Check last 5 lines for compacting state ("Compacting conversation") - agent is busy summarizing context
 3. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
 4. Check last 15 lines for rate limiting ("rate_limit_error", "usage limit reached")
-5. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL")
-6. Check last 15 lines for waiting ("WAITING")
-7. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking)
+5. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL") - excludes quoted occurrences from nudge text
+6. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking, spinners, tool invocations)
+7. Check last 15 lines for waiting ("WAITING") - if agent output (⏺) appears after WAITING, it's stale → running
 8. Unknown if no indicators found
 
-This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), and active execution indicators in the very recent output override completion phrases.
+This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), active execution indicators in the very recent output override completion phrases, and weak running indicators override stale WAITING signals from a previous state.
 
 ### Graceful Process Shutdown
 

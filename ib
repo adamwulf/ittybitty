@@ -4353,26 +4353,23 @@ parse_state() {
 
     # Check for completion signal
     # The agent saying "I HAVE COMPLETED THE GOAL" is the definitive completion signal
-    if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
+    # Exclude quoted occurrences like 'I HAVE COMPLETED THE GOAL' which appear in
+    # watchdog nudge prompts as instruction text, not actual completion signals
+    local lines_unquoted="${last_lines//"'I HAVE COMPLETED THE GOAL'"/}"
+    if [[ "$lines_unquoted" == *'I HAVE COMPLETED THE GOAL'* ]]; then
         echo "complete"
         return
     fi
 
-    # Check for explicit waiting message
-    # Look for WAITING as a standalone word (not in instruction text)
-    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
-    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
-       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
-        echo "waiting"
-        return
-    fi
-
-    # No completion/waiting - check for other running indicators in recent window
+    # Check for other running indicators in recent window
     # These may appear in discussions about Claude but are less definitive:
     # - "ctrl+b ctrl+b" - tmux passthrough indicator
     # - "thinking)" - model thinking indicator
     # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Only checked in last 15 lines to avoid matching historical text
+    # NOTE: These are checked BEFORE waiting because a stale WAITING signal can
+    # persist in the 15-line window after the agent receives input and resumes work.
+    # Any running indicator means the agent has resumed, overriding stale WAITING.
     if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
         echo "running"
         return
@@ -4381,17 +4378,21 @@ parse_state() {
     # Check for thinking spinners at start of line (model is actively thinking)
     # These Unicode spinner characters appear at line start when Claude is processing
     # Active thinking contains "(Esc to interrupt" or similar interruption markers
-    # Exclude completion time indicators like "✻ Cogitated for 4m 4s" or "✻ Brewed for 6m 20s"
-    # These have the structure: spinner + word + "for" without interruption markers
+    # Exclude completion time indicators in two formats:
+    #   Old: "✻ Cogitated for 4m 4s" (spinner + past-tense verb + "for" at line start)
+    #   New: "· Photosynthesizing… (10m 57s · thought for 254s)" (spinner line with "thought for")
     if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         # If the spinner line contains an interruption marker, it's actively thinking
         if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
             echo "running"
             return
         fi
-        # Otherwise, check if it's a completion time indicator (pattern: spinner word for)
+        # Check if it's a completion time indicator:
+        # Old format: "✻ Cogitated for 4m 4s" - spinner + word + for at line start
+        # New format: "· Photosynthesizing… (10m 57s · thought for 254s)" - spinner line with "thought for"
         # If NOT a completion indicator, it's still an active spinner
-        if ! [[ "$last_lines" =~ [✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]]; then
+        if ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
+           ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
             echo "running"
             return
         fi
@@ -4404,6 +4405,26 @@ parse_state() {
     # it suggests the agent might still be processing
     if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
         echo "running"
+        return
+    fi
+
+    # Check for explicit waiting message
+    # Look for WAITING as a standalone word (not in instruction text)
+    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
+    # NOTE: This is checked AFTER weak running indicators so that a stale WAITING
+    # from a previous state doesn't override evidence that the agent has resumed work.
+    # Additionally, if WAITING is present but agent output (⏺) appears AFTER the last
+    # WAITING, the agent has resumed work and WAITING is stale.
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+        # Check if agent produced output after the last WAITING (stale WAITING)
+        # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
+        local after_waiting="${last_lines##*WAITING}"
+        if [[ "$after_waiting" == *"⏺"* ]]; then
+            echo "running"
+            return
+        fi
+        echo "waiting"
         return
     fi
 
@@ -9123,23 +9144,15 @@ EOF
             return
         fi
 
-        # Check completion/waiting in last 15 lines
-        if [[ "$last_lines" == *'I HAVE COMPLETED THE GOAL'* ]]; then
+        # Check completion in last 15 lines (exclude quoted occurrences from nudge text)
+        local lines_unquoted="${last_lines//"'I HAVE COMPLETED THE GOAL'"/}"
+        if [[ "$lines_unquoted" == *'I HAVE COMPLETED THE GOAL'* ]]; then
             echo "complete (matched: I HAVE COMPLETED THE GOAL)"
             return
         fi
 
-        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
-            echo "waiting (matched: standalone WAITING)"
-            return
-        fi
-
-        if [[ "$last_lines" =~ ⏺.*WAITING ]]; then
-            echo "waiting (matched: ⏺...WAITING)"
-            return
-        fi
-
-        # Other running indicators in last 15 lines
+        # Other running indicators in last 15 lines (checked before WAITING so
+        # stale WAITING from a previous state doesn't override resumed work)
         if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b ]]; then
             echo "running (matched: ctrl+b ctrl+b)"
             return
@@ -9152,13 +9165,41 @@ EOF
 
         # Check for thinking spinners at start of line
         if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-            echo "running (matched: thinking spinner at line start)"
-            return
+            # If the spinner line contains an interruption marker, it's actively thinking
+            if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+                echo "running (matched: thinking spinner with interrupt marker)"
+                return
+            fi
+            # Exclude completion time indicators:
+            # Old format: "✻ Cogitated for 4m 4s" (spinner + word + for at line start)
+            # New format: "· Photosynthesizing… (10m 57s · thought for 254s)" (spinner line with "thought for")
+            if ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
+               ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
+                echo "running (matched: thinking spinner at line start)"
+                return
+            fi
         fi
 
         # Weak running indicator (tool invocation without strong indicator)
         if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
             echo "running (matched: ⏺ ToolName()"
+            return
+        fi
+
+        # Check for explicit waiting message (after running indicators)
+        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+           [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+            # Check if agent produced output after the last WAITING (stale WAITING)
+            local after_waiting="${last_lines##*WAITING}"
+            if [[ "$after_waiting" == *"⏺"* ]]; then
+                echo "running (matched: agent output ⏺ after stale WAITING)"
+                return
+            fi
+            if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
+                echo "waiting (matched: standalone WAITING)"
+            else
+                echo "waiting (matched: ⏺...WAITING)"
+            fi
             return
         fi
 

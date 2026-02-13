@@ -1,0 +1,11 @@
+⏺ All workers are running. Entering waiting mode.
+
+  WAITING
+
+❯ [sent by agent agent-abc123]: Worker completed.
+
+⏺ Let me verify the build.
+
+⏺ Bash(xcodebuild -workspace Muse.xcworkspace build)
+  ⎿  Running… (42s · timeout 5m)
+     ctrl+b ctrl+b (twice) to run in background
