@@ -1,0 +1,15 @@
+⏺ Both workers are initializing. Entering WAITING mode for
+  the watchdog to notify me when they complete.
+
+  WAITING
+
+✻ Crunched for 3m 29s
+
+❯ When you stop working, you must always end your
+  message with either 'WAITING' or 'I HAVE COMPLETED
+  THE GOAL'. IMPORTANT: Write your summary.
+
+⏺ Both workers are still initializing. I'll continue
+  waiting for the watchdog to notify me.
+
+  WAITING

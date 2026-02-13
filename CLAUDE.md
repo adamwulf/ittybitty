@@ -302,11 +302,11 @@ The `get_state` function reads recent tmux output to determine state. See the Ag
 3. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
 4. Check last 15 lines for rate limiting ("rate_limit_error", "usage limit reached")
 5. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL") - excludes quoted occurrences from nudge text
-6. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking, spinners, tool invocations)
-7. Check last 15 lines for waiting ("WAITING") - if agent output (⏺) appears after WAITING, it's stale → running
+6. Check last 15 lines for waiting ("WAITING") - if agent output (⏺) appears after WAITING, it's stale → running
+7. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking, spinners, tool invocations)
 8. Unknown if no indicators found
 
-This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), active execution indicators in the very recent output override completion phrases, and weak running indicators override stale WAITING signals from a previous state.
+This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), active execution indicators in the very recent output override completion phrases, and WAITING is detected before weak running indicators that could appear in completion time lines after WAITING. The stale WAITING guard (⏺ after WAITING → running) handles agents that resumed work after a previous WAITING.
 
 ### Graceful Process Shutdown
 
