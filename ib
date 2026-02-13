@@ -12977,36 +12977,36 @@ cmd_hooks_session_start() {
         cwd=$(pwd)
     fi
 
-    # Check if cwd is in an agent worktree
-    # Pattern: .ittybitty/agents/<id>/repo
+    # Determine role based on cwd
+    local role="primary"
     if [[ "$cwd" =~ /.ittybitty/agents/([^/]+)/repo(/|$) ]]; then
-        local agent_id="${BASH_REMATCH[1]}"
-
         # Find meta.json - go up from repo dir to agent dir
-        local agent_dir="${cwd%%/repo*}"
-        if [[ "$cwd" =~ /repo ]]; then
-            agent_dir="${cwd%/repo*}"
-        fi
+        local agent_dir="${cwd%/repo*}"
         local meta_file="$agent_dir/meta.json"
 
         # Check if this is a worker agent
-        local is_worker="false"
+        role="manager"
         if [[ -f "$meta_file" ]]; then
             local worker_val
             worker_val=$(json_get "$meta_file" "worker" "false")
             if [[ "$worker_val" == "true" ]]; then
-                is_worker="true"
+                role="worker"
             fi
         fi
-
-        if [[ "$is_worker" == "true" ]]; then
-            get_ittybitty_instructions "worker"
-        else
-            get_ittybitty_instructions "manager"
-        fi
-    else
-        get_ittybitty_instructions "primary"
     fi
+
+    # Get instructions and output as JSON with additionalContext
+    local instructions
+    instructions=$(get_ittybitty_instructions "$role")
+    local escaped_instructions
+    escaped_instructions=$(json_escape_string "$instructions")
+
+    printf '{\n'
+    printf '  "hookSpecificOutput": {\n'
+    printf '    "hookEventName": "SessionStart",\n'
+    printf '    "additionalContext": "%s"\n' "$escaped_instructions"
+    printf '  }\n'
+    printf '}\n'
 }
 
 # Test session-start hook detection logic
@@ -13128,6 +13128,8 @@ Always spawn **manager** agents (not `--worker`). Managers assess the task and s
 
 **Agent questions:** Agents ask via `ib ask`. Check `ib questions` periodically.
 
+**Completed/stopped agents:** You can `ib send` messages to completed or stopped agents - they will restart and respond to the message.
+
 ### Agent States
 
 | State | Meaning |
@@ -13149,17 +13151,18 @@ ITTYBITTY_PRIMARY
 <ittybitty>
 ## IttyBitty Manager Agent
 
-You are a manager agent in the ittybitty multi-agent orchestration system.
+You are a manager agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, worktree path, and available commands.
 
 ### Task Sizing Strategy
 
 - **SMALL**: Do it yourself - don't spawn sub-agents unnecessarily
 - **MEDIUM/LARGE**: Break into independent tasks, spawn worker sub-agents
 
-### Spawning Workers
+### Spawning & Monitoring Workers
 
-Use `ib new-agent --worker "task description"` to spawn focused worker agents.
-Enter WAITING mode after spawning - a watchdog monitors each worker and notifies you when they complete or need help. Don't poll `ib list`.
+- Spawn workers with `ib new-agent --worker "task description"`
+- Enter WAITING mode after spawning - a watchdog monitors workers and notifies you when they complete or need help. Don't poll `ib list`.
+- You can `ib send` messages to completed or stopped agents - they will restart and respond.
 
 ### Merging Worker Results
 
@@ -13189,13 +13192,13 @@ ITTYBITTY_MANAGER
 <ittybitty>
 ## IttyBitty Worker Agent
 
-You are a worker agent in the ittybitty multi-agent orchestration system.
+You are a worker agent in the ittybitty multi-agent orchestration system. Your agent prompt provides your specific agent ID, manager ID, worktree path, and available commands.
 
 ### Communication
 
-- Report to your manager: `ib send <manager-id> "message"`
-- If stuck: `ib send <manager-id> "[STUCK] description of problem"`
-- Then enter WAITING state for help
+- Report to your manager via `ib send`
+- If stuck: send a `[STUCK]` message to your manager and enter WAITING state
+- Your manager can send you messages even after you complete - you will restart and respond.
 
 ### Self-Inspection
 
