@@ -4594,16 +4594,18 @@ parse_state() {
     fi
 
     # Check for explicit waiting message
-    # Look for WAITING as a standalone word (not in instruction text)
-    # Matches: "WAITING" on its own line, or "⏺ ...WAITING" patterns
-    # NOTE: This is checked BEFORE weak running indicators (spinners, thinking, tool
-    # invocations) because those can appear in completion time lines after WAITING
+    # Look for WAITING as a standalone word on its own line (not in instruction text)
+    # NOTE: This is checked BEFORE weak running indicators (spinners, thinking)
+    # because those can appear in completion time lines after WAITING
     # (e.g., "✽ Verifying… (5m · ↓ 2.7k tokens)" or "· Fermenting… (2m · thinking)")
     # and would cause false "running" detection, triggering infinite nudge loops.
     # The stale WAITING guard (⏺ after WAITING) is sufficient to detect when an agent
     # has actually resumed work after a previous WAITING state.
-    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
-       [[ "$last_lines" =~ ⏺.*WAITING ]]; then
+    # Note: We only check for standalone WAITING on its own line. The previous
+    # ⏺.*WAITING pattern was removed because bash regex . matches newlines,
+    # causing false matches across lines (e.g., matching ⏺ on line 1 with
+    # WAITING in nudge text on line 5).
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
         # Check if agent produced output after the last WAITING (stale WAITING)
         # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
         local after_waiting="${last_lines##*WAITING}"
