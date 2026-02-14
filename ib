@@ -6507,7 +6507,7 @@ EOF
     # Build prompt with context prefix
     # Most agent context (identity, path isolation, git worktree, commands, workflow)
     # is provided by the SessionStart hook via get_ittybitty_instructions().
-    # build_agent_prompt() only provides: role marker, config-dependent instructions
+    # build_agent_prompt() only provides: config-dependent instructions
     # (PR creation), custom prompts, and the user's task.
 
     # PR instructions for managers (depends on runtime config, gh availability)
@@ -6527,13 +6527,9 @@ When your task is complete:
 2. Exit normally"
     fi
 
-    # Role marker
-    local ROLE_MARKER=""
+    # Custom role-specific prompt
     local CUSTOM_ROLE_PROMPT=""
     if [[ "$WORKER_MODE" == true ]]; then
-        ROLE_MARKER="<ittybitty>You are an IttyBitty worker agent.</ittybitty>
-
-"
         if [[ -n "$CONFIG_PROMPT_WORKER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM WORKER INSTRUCTIONS]
 $CONFIG_PROMPT_WORKER
@@ -6541,9 +6537,6 @@ $CONFIG_PROMPT_WORKER
 "
         fi
     else
-        ROLE_MARKER="<ittybitty>You are an IttyBitty manager agent.</ittybitty>
-
-"
         if [[ -n "$CONFIG_PROMPT_MANAGER" ]]; then
             CUSTOM_ROLE_PROMPT="[CUSTOM MANAGER INSTRUCTIONS]
 $CONFIG_PROMPT_MANAGER
@@ -6561,9 +6554,8 @@ $CONFIG_PROMPT_ALL
 "
     fi
 
-    local PROMPT_PREFIX="${ROLE_MARKER}${COMPLETION_INSTRUCTIONS:+${COMPLETION_INSTRUCTIONS}
-}${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}[USER TASK]
-$PROMPT"
+    local PROMPT_PREFIX="${COMPLETION_INSTRUCTIONS:+${COMPLETION_INSTRUCTIONS}
+}${CUSTOM_ALL_PROMPT}${CUSTOM_ROLE_PROMPT}$PROMPT"
 
     # Save the full prompt (with prefix) for reference
     local PROMPT_FILE="$AGENT_DIR/prompt.txt"
