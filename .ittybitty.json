@@ -13,7 +13,8 @@
         "Bash(wc:*)",
         "Bash(chmod +x tests/:*)",
         "Bash(chmod +x ./tests/:*)",
-        "Bash(./tests/*.sh:*)"
+        "Bash(./tests/*.sh:*)",
+        "Bash(sleep:*)"
       ],
       "deny": []
     },
