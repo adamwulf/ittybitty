@@ -4642,6 +4642,16 @@ parse_state() {
         fi
     fi
 
+    # Check for background tasks in the status bar
+    # Claude Code shows running background tasks as:
+    #   "⏵⏵ accept edits on · 2 bashes" (same-type tasks)
+    #   "⏵⏵ accept edits on · 3 background tasks" (mixed types)
+    # If background tasks exist, the agent is still running even if no other indicators
+    if [[ "$last_lines" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
+        echo "running"
+        return
+    fi
+
     # No explicit state indicators found
     echo "unknown"
 }
@@ -9271,6 +9281,12 @@ EOF
                 echo "running (matched: active spinner in broader 20-line window)"
                 return
             fi
+        fi
+
+        # Check for background tasks in status bar
+        if [[ "$last_lines" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
+            echo "running (matched: background tasks in status bar)"
+            return
         fi
 
         echo "unknown (no patterns matched)"
