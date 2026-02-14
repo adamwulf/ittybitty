@@ -18151,7 +18151,7 @@ try {
             json_delete "$config_file" "externalDiffTool"
         else
             # Set the value using json_set helper
-            json_set "$config_file" "externalDiffTool" "\"$value\""
+            json_set "$config_file" "externalDiffTool" "$value"
         fi
 
         # Update the global config variable
