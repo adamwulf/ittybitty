@@ -8921,32 +8921,194 @@ cmd_hooks_agent_status() {
 }
 
 # =============================================================================
+# HELPER: check_pretooluse_access
+# =============================================================================
+
+# Core logic for PreToolUse path isolation and tool access checks.
+# Pure logic - no file I/O. All values are passed as parameters.
+# Callers MUST define output_decision(decision, reason) before calling.
+# All decision paths call output_decision exactly once, then return 0.
+#
+# Args:
+#   $1 = tool_name
+#   $2 = tool_input (JSON string)
+#   $3 = agent_id
+#   $4 = agent_dir (for path comparison: log file check)
+#   $5 = worktree_path (for path comparison: worktree check)
+#   $6 = abs_agents_dir (for path comparison: other-agent check)
+#   $7 = root_repo (for path comparison: main-repo check, empty to skip)
+#   $8 = is_worker ("true" or "false")
+#   $9 = allow_list (newline-separated tool patterns)
+#   ${10} = stdin_json (full JSON for extracting file paths and cwd)
+check_pretooluse_access() {
+    local tool_name="$1"
+    local tool_input="$2"
+    local agent_id="$3"
+    local agent_dir="$4"
+    local worktree_path="$5"
+    local abs_agents_dir="$6"
+    local root_repo="$7"
+    local is_worker="$8"
+    local allow_list="$9"
+    shift 9
+    local stdin_json="$1"
+
+    # Helper to log denial with [PreToolUse] prefix
+    _ptua_log_denial() {
+        local params
+        params=$(json_format_tool_input "$tool_input")
+        if [[ -n "$params" ]]; then
+            log_agent "$agent_id" "[PreToolUse] Permission denied: $tool_name ($params)" --quiet
+        else
+            log_agent "$agent_id" "[PreToolUse] Permission denied: $tool_name" --quiet
+        fi
+    }
+
+    # Special handling for TaskCreate - give role-specific denial messages
+    if [[ "$tool_name" == "TaskCreate" ]]; then
+        _ptua_log_denial
+        if [[ "$is_worker" == "true" ]]; then
+            output_decision "deny" "TaskCreate is not available. Workers cannot create tasks."
+        else
+            output_decision "deny" "TaskCreate is not available. Use ib new-agent --worker to spawn worker agents instead."
+        fi
+        return 0
+    fi
+
+    # Check if tool is in allow list
+    local _in_allow_list=false
+    if [[ -n "$allow_list" ]]; then
+        while IFS= read -r pattern; do
+            [[ -z "$pattern" ]] && continue
+            if tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+                _in_allow_list=true
+                break
+            fi
+        done <<< "$allow_list"
+    fi
+
+    if [[ "$_in_allow_list" == "false" ]]; then
+        _ptua_log_denial
+        output_decision "deny" "Tool not in allow list"
+        return 0
+    fi
+
+    # Tool is in allow list - now check path isolation
+
+    # Extract file path from input (check both file_path and path fields)
+    local file_path
+    file_path=$(json_get - "tool_input.file_path" "" <<< "$stdin_json")
+    if [[ -z "$file_path" ]]; then
+        file_path=$(json_get - "tool_input.path" "" <<< "$stdin_json")
+    fi
+
+    # Special handling for Bash tool - check for cd commands
+    if [[ "$tool_name" == "Bash" ]]; then
+        local bash_command
+        bash_command=$(json_get - "tool_input.command" "" <<< "$stdin_json")
+
+        # Check if command is a cd command (handle various forms: cd, cd dir, cd "dir", cd 'dir')
+        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
+            # Extract the target directory from cd command
+            # Remove 'cd ' prefix and handle quotes
+            local cd_target="${bash_command#cd }"
+            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
+
+            # Remove quotes if present
+            cd_target="${cd_target#\"}"
+            cd_target="${cd_target%\"}"
+            cd_target="${cd_target#\'}"
+            cd_target="${cd_target%\'}"
+
+            # If cd target is empty or just whitespace, allow (cd to home)
+            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
+                output_decision "allow" "Tool in allow list, cd to home"
+                return 0
+            fi
+
+            # Use cd_target as the file_path for further checks
+            file_path="$cd_target"
+        else
+            # Not a cd command - allowed by allow list, no path check needed for non-cd
+            output_decision "allow" "Tool in allow list"
+            return 0
+        fi
+    fi
+
+    # If no file path found, allow (might be a non-file tool or tool with no path param)
+    if [[ -z "$file_path" ]]; then
+        output_decision "allow" "Tool in allow list"
+        return 0
+    fi
+
+    # Resolve to absolute path
+    if [[ "$file_path" != /* ]]; then
+        local cwd
+        cwd=$(json_get - "cwd" "" <<< "$stdin_json")
+        if [[ -n "$cwd" ]]; then
+            file_path="$cwd/$file_path"
+        fi
+    fi
+
+    # Normalize path (resolve . and ..) - only if directory exists
+    local dir_part
+    dir_part=$(dirname "$file_path")
+    if [[ -d "$dir_part" ]]; then
+        file_path="$(cd "$dir_part" && pwd)/$(basename "$file_path")"
+    fi
+    # If directory doesn't exist, keep the original path for pattern matching
+
+    # Check 1: Allow access within agent's own worktree
+    if [[ "$file_path" == "$worktree_path"* ]]; then
+        output_decision "allow" "Tool in allow list, path in worktree"
+        return 0
+    fi
+
+    # Check 2: Allow access to agent's own log file
+    if [[ "$file_path" == "$agent_dir/agent.log" ]]; then
+        output_decision "allow" "Tool in allow list, accessing own log"
+        return 0
+    fi
+
+    # Check 3: Block access to other agents' directories
+    if [[ "$file_path" == "$abs_agents_dir/"* ]]; then
+        if [[ "$tool_name" == "Bash" ]]; then
+            log_agent "$agent_id" "[PreToolUse] Path violation: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
+            output_decision "deny" "Access denied: cannot cd into other agents' worktrees"
+        else
+            log_agent "$agent_id" "[PreToolUse] Path violation: $tool_name tried to access other agent's data: $file_path" --quiet
+            output_decision "deny" "Access denied: cannot access other agents' files"
+        fi
+        return 0
+    fi
+
+    # Check 4: Block access to main repo (outside worktree)
+    if [[ -n "$root_repo" && "$file_path" == "$root_repo"* && "$file_path" != "$worktree_path"* ]]; then
+        log_agent "$agent_id" "[PreToolUse] Path violation: $tool_name tried to access main repo: $file_path" --quiet
+        output_decision "deny" "Access denied: work in your worktree, not the main repo"
+        return 0
+    fi
+
+    # All other paths: allow (system files, etc. - tool is in allow list)
+    output_decision "allow" "Tool in allow list"
+    return 0
+}
+
+# =============================================================================
 # COMMAND: hooks agent-path (formerly hook-check-path)
 # =============================================================================
 
 # PreToolUse hook to enforce agent path isolation
 # Blocks file access outside the agent's worktree
+# Reads real files, resolves paths, then calls check_pretooluse_access()
 cmd_hooks_agent_path() {
     local ID="$1"
 
-    # Helper to output JSON with permissionDecision
+    # Define output_decision for real hook output (JSON format)
     output_decision() {
         local decision="$1"
         local reason="$2"
         echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"$decision\",\"permissionDecisionReason\":\"$reason\"}}"
-    }
-
-    # Helper to log a denial with [PreToolUse] prefix for clear attribution
-    log_denial() {
-        local tool="$1"
-        local input_json="$2"
-        local params
-        params=$(json_format_tool_input "$input_json")
-        if [[ -n "$params" ]]; then
-            log_agent "$ID" "[PreToolUse] Permission denied: $tool ($params)" --quiet
-        else
-            log_agent "$ID" "[PreToolUse] Permission denied: $tool" --quiet
-        fi
     }
 
     if [[ -z "$ID" ]]; then
@@ -8982,116 +9144,20 @@ cmd_hooks_agent_path() {
         WORKTREE_PATH=$(cd "$WORKTREE_PATH" && pwd)
     fi
 
-    # Check if tool is in allow list
-    if ! tool_in_allow_list "$tool_name" "$tool_input" "$SETTINGS_FILE"; then
-        # Tool not in allow list - deny and log
-        log_denial "$tool_name" "$tool_input"
-        output_decision "deny" "Tool not in allow list"
-        exit 0
-    fi
+    # Read values from files before calling pure-logic helper
+    local IS_WORKER
+    IS_WORKER=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
 
-    # Tool is in allow list - now check path isolation
+    local ALLOW_LIST
+    ALLOW_LIST=$(json_get_array "$SETTINGS_FILE" "permissions.allow")
 
-    # Extract file path from input (check both file_path and path fields)
-    local file_path
-    file_path=$(json_get - "tool_input.file_path" "" <<< "$json_input")
-    if [[ -z "$file_path" ]]; then
-        file_path=$(json_get - "tool_input.path" "" <<< "$json_input")
-    fi
-
-    # Special handling for Bash tool - check for cd commands
-    if [[ "$tool_name" == "Bash" ]]; then
-        local bash_command
-        bash_command=$(json_get - "tool_input.command" "" <<< "$json_input")
-
-        # Check if command is a cd command (handle various forms: cd, cd dir, cd "dir", cd 'dir')
-        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
-            # Extract the target directory from cd command
-            # Remove 'cd ' prefix and handle quotes
-            local cd_target="${bash_command#cd }"
-            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
-
-            # Remove quotes if present
-            cd_target="${cd_target#\"}"
-            cd_target="${cd_target%\"}"
-            cd_target="${cd_target#\'}"
-            cd_target="${cd_target%\'}"
-
-            # If cd target is empty or just whitespace, allow (cd to home)
-            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
-                output_decision "allow" "Tool in allow list, cd to home"
-                exit 0
-            fi
-
-            # Use cd_target as the file_path for further checks
-            file_path="$cd_target"
-        else
-            # Not a cd command - allowed by allow list, no path check needed for non-cd
-            output_decision "allow" "Tool in allow list"
-            exit 0
-        fi
-    fi
-
-    # If no file path found, allow (might be a non-file tool or tool with no path param)
-    if [[ -z "$file_path" ]]; then
-        output_decision "allow" "Tool in allow list"
-        exit 0
-    fi
-
-    # Resolve to absolute path
-    if [[ "$file_path" != /* ]]; then
-        local cwd
-        cwd=$(json_get - "cwd" "" <<< "$json_input")
-        if [[ -n "$cwd" ]]; then
-            file_path="$cwd/$file_path"
-        fi
-    fi
-
-    # Normalize path (resolve . and ..) - only if directory exists
-    local dir_part
-    dir_part=$(dirname "$file_path")
-    if [[ -d "$dir_part" ]]; then
-        file_path="$(cd "$dir_part" && pwd)/$(basename "$file_path")"
-    fi
-    # If directory doesn't exist, keep the original path for pattern matching
-
-    # Check 1: Allow access within agent's own worktree
-    if [[ "$file_path" == "$WORKTREE_PATH"* ]]; then
-        output_decision "allow" "Tool in allow list, path in worktree"
-        exit 0
-    fi
-
-    # Check 2: Allow access to agent's own log file
-    if [[ "$file_path" == "$AGENT_DIR/agent.log" ]]; then
-        output_decision "allow" "Tool in allow list, accessing own log"
-        exit 0
-    fi
-
-    # Check 3: Block access to other agents' directories
-    if [[ "$file_path" == "$ABS_AGENTS_DIR/"* ]]; then
-        if [[ "$tool_name" == "Bash" ]]; then
-            log_agent "$ID" "[PreToolUse] Path violation: Bash cd command tried to enter other agent's worktree: $file_path" --quiet
-            output_decision "deny" "Access denied: cannot cd into other agents' worktrees"
-        else
-            log_agent "$ID" "[PreToolUse] Path violation: $tool_name tried to access other agent's data: $file_path" --quiet
-            output_decision "deny" "Access denied: cannot access other agents' files"
-        fi
-        exit 0
-    fi
-
-    # Check 4: Block access to main repo (outside worktree)
-    # Use git worktree list to find the main repo path
+    # Detect root repo via git worktree list
     local ROOT_REPO
     ROOT_REPO=$(git -C "$WORKTREE_PATH" worktree list --porcelain 2>/dev/null | grep -m1 '^worktree ' | sed 's/^worktree //')
 
-    if [[ -n "$ROOT_REPO" && "$file_path" == "$ROOT_REPO"* && "$file_path" != "$WORKTREE_PATH"* ]]; then
-        log_agent "$ID" "[PreToolUse] Path violation: $tool_name tried to access main repo: $file_path" --quiet
-        output_decision "deny" "Access denied: work in your worktree, not the main repo"
-        exit 0
-    fi
-
-    # All other paths: allow (system files, etc. - tool is in allow list)
-    output_decision "allow" "Tool in allow list"
+    check_pretooluse_access "$tool_name" "$tool_input" "$ID" \
+        "$AGENT_DIR" "$WORKTREE_PATH" "$ABS_AGENTS_DIR" "$ROOT_REPO" \
+        "$IS_WORKER" "$ALLOW_LIST" "$json_input"
     exit 0
 }
 
@@ -9488,7 +9554,8 @@ EOF
 # =============================================================================
 
 # Test PreToolUse hook logic with a JSON fixture file
-# This command allows testing the PreToolUse decision logic without a real agent
+# Thin wrapper: extracts values from fixture, then calls the REAL
+# check_pretooluse_access() helper with no file I/O.
 # Fixture JSON format:
 # {
 #   "tool_name": "Bash",
@@ -9497,7 +9564,8 @@ EOF
 #   "allow_list": ["Bash(cat:*)", "Edit"],
 #   "worktree_path": "/path/to/worktree",
 #   "agents_dir": "/path/to/agents",
-#   "root_repo": "/path/to/root"
+#   "root_repo": "/path/to/root",
+#   "worker": false
 # }
 cmd_test_pretooluse() {
     local fixture_file="$1"
@@ -9516,147 +9584,36 @@ cmd_test_pretooluse() {
     local fixture
     fixture=$(cat "$fixture_file")
 
-    # Extract test parameters
-    local tool_name tool_input cwd allow_list worktree_path agent_dir agents_dir root_repo
+    # Extract test parameters from fixture
+    local tool_name tool_input agents_dir worktree_path root_repo agent_dir worker allow_list
     tool_name=$(json_get - "tool_name" "" <<< "$fixture")
     tool_input=$(json_get - "tool_input" "{}" <<< "$fixture")
-    cwd=$(json_get - "cwd" "" <<< "$fixture")
-    allow_list=$(json_get - "allow_list" "[]" <<< "$fixture")
-    worktree_path=$(json_get - "worktree_path" "" <<< "$fixture")
-    agent_dir=$(json_get - "agent_dir" "" <<< "$fixture")
     agents_dir=$(json_get - "agents_dir" "" <<< "$fixture")
+    worktree_path=$(json_get - "worktree_path" "" <<< "$fixture")
     root_repo=$(json_get - "root_repo" "" <<< "$fixture")
+    agent_dir=$(json_get - "agent_dir" "" <<< "$fixture")
+    worker=$(json_get - "worker" "false" <<< "$fixture")
 
-    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
-    test_tool_matches_pattern() {
-        local t_name="$1"
-        local t_input="$2"
-        local pattern="$3"
+    # Convert allow_list JSON array to newline-separated patterns
+    allow_list=$(json_get_array - "allow_list" <<< "$fixture")
 
-        # Check for Bash(prefix:*) pattern
-        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
-            local prefix="${BASH_REMATCH[1]}"
-            if [[ "$t_name" == "Bash" ]]; then
-                local command
-                command=$(json_get - "command" "" <<< "$t_input")
-                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
-                    return 0
-                fi
-            fi
-            return 1
-        fi
+    # Derive agent_dir from agents_dir if not explicitly set
+    if [[ -z "$agent_dir" ]]; then
+        agent_dir="$agents_dir/test-agent"
+    fi
 
-        # Exact tool name match
-        if [[ "$pattern" == "$t_name" ]]; then
-            return 0
-        fi
-
-        return 1
+    # Define test output_decision - captures just the decision
+    local _test_result=""
+    output_decision() {
+        _test_result="$1"
     }
 
-    # Check if tool is in allow list
-    local in_allow_list=false
-    while IFS= read -r pattern; do
-        [[ -z "$pattern" ]] && continue
-        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
-            in_allow_list=true
-            break
-        fi
-    done < <(json_get_array - "allow_list" <<< "$fixture")
+    # Call the real check logic - same helper used by the real hook
+    check_pretooluse_access "$tool_name" "$tool_input" "test-agent" \
+        "$agent_dir" "$worktree_path" "$agents_dir" "$root_repo" \
+        "$worker" "$allow_list" "$fixture"
 
-    if [[ "$in_allow_list" == "false" ]]; then
-        echo "deny"
-        exit 0
-    fi
-
-    # Tool is in allow list - now check path isolation
-
-    # Extract file path from input (check both file_path and path)
-    local file_path
-    file_path=$(json_get - "file_path" "" <<< "$tool_input")
-    if [[ -z "$file_path" ]]; then
-        file_path=$(json_get - "path" "" <<< "$tool_input")
-    fi
-
-    # Special handling for Bash tool - check for cd commands
-    if [[ "$tool_name" == "Bash" ]]; then
-        local bash_command
-        bash_command=$(json_get - "command" "" <<< "$tool_input")
-
-        # Check if command is a cd command
-        if [[ "$bash_command" =~ ^cd[[:space:]]+ ]]; then
-            # Extract the target directory from cd command
-            local cd_target="${bash_command#cd }"
-            cd_target="${cd_target#"${cd_target%%[![:space:]]*}"}"  # trim leading whitespace
-
-            # Remove quotes if present
-            cd_target="${cd_target#\"}"
-            cd_target="${cd_target%\"}"
-            cd_target="${cd_target#\'}"
-            cd_target="${cd_target%\'}"
-
-            # If cd target is empty or just whitespace, allow (cd to home)
-            if [[ -z "$cd_target" || "$cd_target" =~ ^[[:space:]]*$ ]]; then
-                echo "allow"
-                exit 0
-            fi
-
-            # Use cd_target as the file_path for further checks
-            file_path="$cd_target"
-        else
-            # Not a cd command - allowed by allow list, no path check needed for non-cd
-            echo "allow"
-            exit 0
-        fi
-    fi
-
-    # If no file path found, allow (might be a non-file tool or tool with no path param)
-    if [[ -z "$file_path" ]]; then
-        echo "allow"
-        exit 0
-    fi
-
-    # Resolve to absolute path if relative
-    if [[ "$file_path" != /* ]]; then
-        if [[ -n "$cwd" ]]; then
-            file_path="$cwd/$file_path"
-        fi
-    fi
-
-    # Normalize path (handle . and .. without needing real filesystem)
-    # Simple normalization: remove trailing slashes, collapse multiple slashes
-    file_path=$(echo "$file_path" | sed 's|//*|/|g; s|/$||')
-
-    # Check 1: Allow access within agent's own worktree
-    if [[ -n "$worktree_path" && "$file_path" == "$worktree_path"* ]]; then
-        echo "allow"
-        exit 0
-    fi
-
-    # Check 2: Allow access to agent's own log file
-    if [[ -n "$agent_dir" && "$file_path" == "$agent_dir/agent.log" ]]; then
-        echo "allow"
-        exit 0
-    fi
-
-    # Check 3: Block access to other agents' directories
-    if [[ -n "$agents_dir" && "$file_path" == "$agents_dir/"* ]]; then
-        # It's in agents_dir but not in worktree_path (which would have matched above)
-        echo "deny"
-        exit 0
-    fi
-
-    # Check 4: Block access to main repo (outside worktree)
-    if [[ -n "$root_repo" && "$file_path" == "$root_repo"* ]]; then
-        # Check if it's NOT in the worktree (worktree check already passed if it was)
-        if [[ -z "$worktree_path" || "$file_path" != "$worktree_path"* ]]; then
-            echo "deny"
-            exit 0
-        fi
-    fi
-
-    # All other paths: allow (system files, etc. - tool is in allow list)
-    echo "allow"
+    echo "$_test_result"
     exit 0
 }
 

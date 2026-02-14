@@ -1,0 +1,13 @@
+{
+  "tool_name": "TaskCreate",
+  "tool_input": {
+    "subject": "Fix the bug",
+    "description": "Fix the login bug"
+  },
+  "cwd": "/repo/agents/test-agent/repo",
+  "allow_list": ["Read", "Write", "Edit", "TaskCreate"],
+  "worktree_path": "/repo/agents/test-agent/repo",
+  "agents_dir": "/repo/agents",
+  "root_repo": "/repo",
+  "worker": false
+}
