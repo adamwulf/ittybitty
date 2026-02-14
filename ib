@@ -8982,6 +8982,20 @@ cmd_hooks_agent_path() {
         WORKTREE_PATH=$(cd "$WORKTREE_PATH" && pwd)
     fi
 
+    # Special handling for TaskCreate - give role-specific denial messages
+    if [[ "$tool_name" == "TaskCreate" ]]; then
+        local is_worker
+        is_worker=$(read_meta_field "$AGENT_DIR/meta.json" "worker" "false")
+        if [[ "$is_worker" == "true" ]]; then
+            log_denial "$tool_name" "$tool_input"
+            output_decision "deny" "TaskCreate is not available. Workers cannot create tasks."
+        else
+            log_denial "$tool_name" "$tool_input"
+            output_decision "deny" "TaskCreate is not available. Use ib new-agent --worker to spawn worker agents instead."
+        fi
+        exit 0
+    fi
+
     # Check if tool is in allow list
     if ! tool_in_allow_list "$tool_name" "$tool_input" "$SETTINGS_FILE"; then
         # Tool not in allow list - deny and log
@@ -9553,6 +9567,12 @@ cmd_test_pretooluse() {
 
         return 1
     }
+
+    # Special handling for TaskCreate - give role-specific denial messages
+    if [[ "$tool_name" == "TaskCreate" ]]; then
+        echo "deny"
+        exit 0
+    fi
 
     # Check if tool is in allow list
     local in_allow_list=false
