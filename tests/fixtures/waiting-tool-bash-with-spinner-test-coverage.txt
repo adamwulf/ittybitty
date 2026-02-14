@@ -1,0 +1,30 @@
+` vs `main`
+      2
+      3 **Branch:** `agent/agent-a79d400d`
+      4 **Diff:** ~1,230 lines added across 19 files
+        (18 changed + CLAUDE.md)
+      5 **Reviewer focus:** Test coverage gaps and ri
+        sks
+      6
+      7 ---
+      8
+      9 ## 1. CRITICAL CHECK: CodingKeys `text = "ric
+        h_text"` Change
+     … +215 lines (ctrl+o to expand)
+
+⏺ Now let me commit the review and report back.
+
+⏺ Bash(git add REVIEW-test-coverage.md && git commit -m "Add
+       test coverage review for agent/agent-a79d400d
+      branch…)
+  ⎿  Waiting…
+
+✻ Philosophising…
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/test-coverage
+  Session: 25% (4h 44m) Weekly: 23% (5d 2h)
+  ⏵⏵ accept edits on · 2 bashes

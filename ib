@@ -4487,6 +4487,17 @@ parse_state() {
         return
     fi
 
+    # Check for tool waiting indicator: ⎿  Waiting… means a tool (e.g., bash command)
+    # is still executing. Claude Code may fire the Stop hook during this wait.
+    # The agent will resume automatically when the tool completes, so this is
+    # treated as "waiting". Checked before active running indicators because
+    # nudge-induced spinners may coexist with tool waiting output, and the
+    # fundamental state is "waiting on a tool".
+    if [[ "$last_lines" =~ ⎿[[:space:]]*Waiting ]]; then
+        echo "waiting"
+        return
+    fi
+
     # Check for ACTIVE running indicators in very recent output
     # These indicate something is definitely executing RIGHT NOW:
     # - "(Esc to interrupt" / "(esc to interrupt" / "(ctrl+c to interrupt" - shown during tool/thinking
@@ -8819,7 +8830,32 @@ cmd_hooks_agent_status() {
         # Both "unknown" and "running" indicate the agent is actually idle
         # (the Stop hook only fires when Claude stops) but tmux output still
         # has stale indicators that make state detection think it's running.
+
+        # Debounce: skip if a nudge was sent within the last 5 seconds to prevent
+        # feedback loops where the nudge itself triggers another Stop hook.
+        local nudge_file="$AGENT_DIR/last-nudge"
+        if [[ -f "$nudge_file" ]]; then
+            local last_nudge_time
+            last_nudge_time=$(<"$nudge_file")
+            local now
+            now=$(date +%s)
+            local elapsed=$((now - last_nudge_time))
+            if [[ $elapsed -lt 5 ]]; then
+                log_agent "$ID" "[hook] State $state, skipping nudge (debounce: ${elapsed}s since last)" --quiet
+                # Schedule a delayed re-check so the agent doesn't get stuck idle.
+                # Use a marker file to avoid spawning multiple rechecks.
+                local recheck_file="$AGENT_DIR/nudge-recheck"
+                if [[ ! -f "$recheck_file" ]]; then
+                    echo "1" > "$recheck_file"
+                    ( sleep 5 && rm -f "$recheck_file" && ib hooks agent-status "$ID" ) >> "$AGENT_DIR/agent.log" 2>&1 &
+                    disown
+                fi
+                echo "$state"
+                return
+            fi
+        fi
         log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
+        date +%s > "$nudge_file"
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
@@ -9153,6 +9189,12 @@ EOF
         # Get last 15 lines for broader state detection
         local last_lines
         last_lines=$(echo "$input" | tail -15)
+
+        # Check for tool waiting (⎿  Waiting…) - tool is still executing
+        if [[ "$last_lines" =~ ⎿[[:space:]]*Waiting ]]; then
+            echo "waiting (matched: tool waiting ⎿ Waiting)"
+            return
+        fi
 
         # Check for ACTIVE running indicators FIRST in very recent output
         # Note: We require opening parenthesis to distinguish from discussion text
