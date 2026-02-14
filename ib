@@ -2495,6 +2495,40 @@ is_running_as_agent() {
     return 1
 }
 
+# Pure decision function: is this command allowed for an agent?
+# Args: $1 = command name (e.g., "hooks", "test-tool-match")
+#       $2 = subcommand (optional, for commands like "hooks install")
+# Returns: 0 if allowed, 1 if denied
+# No side effects (no stderr output, no exit)
+check_agent_command_access() {
+    local cmd="$1"
+    local subcmd="${2:-}"
+
+    case "$cmd" in
+        # Test/debug commands - development only, not for agents
+        parse-state|test-*)
+            return 1
+            ;;
+        # Interactive commands - not available to agents (except watch --debug)
+        watch)
+            if [[ "$subcmd" == "--debug" ]]; then
+                return 0
+            fi
+            return 1
+            ;;
+        # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
+        hooks)
+            case "$subcmd" in
+                install|uninstall)
+                    return 1
+                    ;;
+            esac
+            ;;
+    esac
+
+    return 0
+}
+
 # Check if a command is allowed for the current execution context
 # Args: $1 = command name (e.g., "hooks", "test-tool-match")
 #       $2 = subcommand (optional, for commands like "hooks install")
@@ -2513,26 +2547,22 @@ enforce_command_access() {
 
     # Case 1: Agent (Claude running in worktree or ib tmux session)
     if [[ "$is_claude" == "true" ]] && { [[ "$in_worktree" == "true" ]] || [[ "$in_tmux_session" == "true" ]]; }; then
-        case "$cmd" in
-            watch)
-                # Allow watch --debug for performance testing from agents
-                if [[ "$subcmd" == "--debug" ]]; then
-                    return 0
-                fi
-                echo "Error: '$cmd' is an interactive command not available to agents" >&2
-                echo "Use 'ib watch --debug' for performance testing" >&2
-                exit 1
-                ;;
-            hooks)
-                case "$subcmd" in
-                    install|uninstall)
-                        echo "Error: 'ib hooks $subcmd' modifies main repo configuration" >&2
-                        echo "Agents cannot install or uninstall hooks" >&2
-                        exit 1
-                        ;;
-                esac
-                ;;
-        esac
+        if ! check_agent_command_access "$cmd" "$subcmd"; then
+            case "$cmd" in
+                watch)
+                    echo "Error: '$cmd' is an interactive command not available to agents" >&2
+                    echo "Use 'ib watch --debug' for performance testing" >&2
+                    ;;
+                hooks)
+                    echo "Error: 'ib hooks $subcmd' modifies main repo configuration" >&2
+                    echo "Agents cannot install or uninstall hooks" >&2
+                    ;;
+                parse-state|test-*)
+                    echo "Error: '$cmd' is a test/debug command not available to agents" >&2
+                    ;;
+            esac
+            exit 1
+        fi
         return 0
     fi
 
@@ -9494,56 +9524,28 @@ EOF
         exit 1
     fi
 
-    # Test each pattern
+    # Test each pattern using the real tool_matches_pattern() function
     for p in "${patterns_to_test[@]}"; do
-        # Check for Bash(prefix:*) pattern
-        if [[ "$p" =~ ^Bash\(([^:]+):\*\)$ ]]; then
-            local prefix="${BASH_REMATCH[1]}"
-            if [[ "$tool_name" == "Bash" ]]; then
-                local command
-                command=$(json_get - "command" "" <<< "$tool_input")
-                # Check if command starts with prefix (with space or end of string)
-                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
-                    if $verbose; then
-                        echo "match (pattern: $p, command: $command, prefix match: $prefix)"
-                    else
-                        echo "match"
-                    fi
-                    return 0
-                else
-                    if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
-                        echo "no-match (pattern: $p, tool: $tool_name, command: $command, expected prefix: $prefix)"
-                        return 0
-                    fi
-                fi
-            else
-                if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
-                    echo "no-match (pattern: $p, tool: $tool_name, pattern requires Bash tool)"
-                    return 0
-                fi
-            fi
-        # Exact tool name match
-        elif [[ "$p" == "$tool_name" ]]; then
+        if tool_matches_pattern "$tool_name" "$tool_input" "$p"; then
             if $verbose; then
-                echo "match (pattern: $p, exact tool match)"
+                echo "match (pattern: $p, tool: $tool_name)"
             else
                 echo "match"
             fi
             return 0
-        else
-            if $verbose && [[ ${#patterns_to_test[@]} -eq 1 ]]; then
-                echo "no-match (pattern: $p, tool: $tool_name)"
-                return 0
-            fi
         fi
     done
 
     # No pattern matched
     if $verbose; then
-        local patterns_str
-        patterns_str=$(printf '%s, ' "${patterns_to_test[@]}")
-        patterns_str="${patterns_str%, }"  # Remove trailing comma and space
-        echo "no-match (tool: $tool_name, tested patterns: $patterns_str)"
+        if [[ ${#patterns_to_test[@]} -eq 1 ]]; then
+            echo "no-match (pattern: ${patterns_to_test[0]}, tool: $tool_name)"
+        else
+            local patterns_str
+            patterns_str=$(printf '%s, ' "${patterns_to_test[@]}")
+            patterns_str="${patterns_str%, }"  # Remove trailing comma and space
+            echo "no-match (tool: $tool_name, tested patterns: $patterns_str)"
+        fi
     else
         echo "no-match"
     fi
@@ -9944,67 +9946,34 @@ EOF
     fi
 
     # Extract test parameters from JSON
-    local tool_name tool_input allow_list
+    local tool_name tool_input
     tool_name=$(json_get - "tool_name" "" <<< "$input")
     tool_input=$(json_get - "tool_input" "{}" <<< "$input")
-    allow_list=$(json_get - "settings.permissions.allow" "[]" <<< "$input")
 
     if [[ -z "$tool_name" ]]; then
         echo "Error: tool_name is required in input" >&2
         exit 1
     fi
 
-    # Helper to check if tool matches a pattern (same logic as tool_matches_pattern)
-    test_tool_matches_pattern() {
-        local t_name="$1"
-        local t_input="$2"
-        local pattern="$3"
+    # Write settings to temp file for tool_in_allow_list()
+    local tmp_settings
+    tmp_settings=$(mktemp)
+    json_get - "settings" "{}" <<< "$input" > "$tmp_settings"
 
-        # Check for Bash(prefix:*) pattern
-        if [[ "$pattern" =~ ^Bash\(([^:]+):\*\)$ ]]; then
-            local prefix="${BASH_REMATCH[1]}"
-            if [[ "$t_name" == "Bash" ]]; then
-                local command
-                command=$(json_get - "command" "" <<< "$t_input")
-                if [[ "$command" == "$prefix" || "$command" == "$prefix "* ]]; then
-                    return 0
-                fi
+    if $verbose; then
+        # For verbose output, iterate with real tool_matches_pattern() to find which pattern matched
+        local matched_pattern=""
+        while IFS= read -r pattern; do
+            [[ -z "$pattern" ]] && continue
+            if tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
+                matched_pattern="$pattern"
+                break
             fi
-            return 1
-        fi
+        done < <(json_get_array "$tmp_settings" "permissions.allow")
 
-        # Exact tool name match
-        if [[ "$pattern" == "$t_name" ]]; then
-            return 0
-        fi
-
-        return 1
-    }
-
-    # Check if tool is in allow list
-    local matched_pattern=""
-    while IFS= read -r pattern; do
-        [[ -z "$pattern" ]] && continue
-        if test_tool_matches_pattern "$tool_name" "$tool_input" "$pattern"; then
-            matched_pattern="$pattern"
-            break
-        fi
-    done < <(json_get_array - "settings.permissions.allow" <<< "$input")
-
-    if [[ -n "$matched_pattern" ]]; then
-        if $verbose; then
-            if [[ "$tool_name" == "Bash" ]]; then
-                local command
-                command=$(json_get - "command" "" <<< "$tool_input")
-                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name, command: $command)"
-            else
-                echo "allowed (matched pattern: $matched_pattern, tool: $tool_name)"
-            fi
+        if [[ -n "$matched_pattern" ]]; then
+            echo "allowed (matched pattern: $matched_pattern, tool: $tool_name)"
         else
-            echo "allowed"
-        fi
-    else
-        if $verbose; then
             # Build comma-separated list of allow patterns
             local allow_list_str=""
             while IFS= read -r p; do
@@ -10014,12 +9983,19 @@ EOF
                 else
                     allow_list_str="$p"
                 fi
-            done < <(json_get_array - "settings.permissions.allow" <<< "$input")
+            done < <(json_get_array "$tmp_settings" "permissions.allow")
             echo "denied (tool: $tool_name, allow list: [$allow_list_str])"
+        fi
+    else
+        # Use real tool_in_allow_list() for the decision
+        if tool_in_allow_list "$tool_name" "$tool_input" "$tmp_settings"; then
+            echo "allowed"
         else
             echo "denied"
         fi
     fi
+
+    rm -f "$tmp_settings"
 }
 
 # =============================================================================
@@ -12156,36 +12132,12 @@ EOF
         return 0
     fi
 
-    # Simulate agent context - apply the same logic as enforce_command_access
-    case "$cmd" in
-        # Test commands - development only, not for agents
-        parse-state|test-*)
-            echo "deny"
-            return 0
-            ;;
-        # Interactive commands - don't make sense for agents (except watch --debug)
-        watch)
-            # Allow watch --debug for performance testing from agents
-            if [[ "$subcmd" == "--debug" ]]; then
-                echo "allow"
-                return 0
-            fi
-            echo "deny"
-            return 0
-            ;;
-        # Hooks subcommands - agents can use agent-* hooks but not install/uninstall
-        hooks)
-            case "$subcmd" in
-                install|uninstall)
-                    echo "deny"
-                    return 0
-                    ;;
-            esac
-            ;;
-    esac
-
-    echo "allow"
-    return 0
+    # Use real check_agent_command_access() for agent access decisions
+    if check_agent_command_access "$cmd" "$subcmd"; then
+        echo "allow"
+    else
+        echo "deny"
+    fi
 }
 
 # =============================================================================
