@@ -299,14 +299,21 @@ The `get_state` function reads recent tmux output to determine state. See the Ag
 **Detection priority order** (see `parse_state` function for patterns):
 1. Check if Claude hasn't started yet (creating) - no logo or [USER TASK] in output
 2. Check last 5 lines for compacting state ("Compacting conversation") - agent is busy summarizing context
-3. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
-4. Check last 15 lines for rate limiting ("rate_limit_error", "usage limit reached")
-5. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL") - excludes quoted occurrences from nudge text
-6. Check last 15 lines for waiting ("WAITING") - if agent output (⏺) appears after WAITING, it's stale → running
-7. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking, spinners, tool invocations)
-8. Unknown if no indicators found
+3. Check last 15 lines for tool waiting (⎿ Waiting) - a tool is still executing, agent will resume when done
+4. Check last 5 lines for active execution indicators (esc/ctrl+c to interrupt, ⎿ Running) - these mean something is running RIGHT NOW
+5. Check last 15 lines for rate limiting ("rate_limit_error", "usage limit reached")
+6. Check last 15 lines for completion ("I HAVE COMPLETED THE GOAL") - excludes quoted occurrences from nudge text
+7. Check last 15 lines for waiting ("WAITING") - if agent output (⏺) appears after WAITING, it's stale → running
+8. Check last 15 lines for other running indicators (ctrl+b ctrl+b, thinking, spinners)
+9. Check broader 20-line window for active spinners with interrupt markers
+10. Check last 15 lines for background tasks in status bar (⏵⏵ ... · N bashes)
+11. Unknown if no indicators found
+
+**Note:** Tool invocation patterns (`⏺ Bash(...)`, `⏺ Read(...)`, etc.) are NOT used as running indicators. They are unreliable because tool output persists in scrollback after completion/denial, which can cause false "running" detection and infinite nudge loops in the Stop hook. Background tasks in the Claude Code footer (step 10) are checked instead as a reliable indicator of in-progress work.
 
 This order ensures that creating agents are properly identified, compacting is detected before generic running indicators (since both have "esc to interrupt"), active execution indicators in the very recent output override completion phrases, and WAITING is detected before weak running indicators that could appear in completion time lines after WAITING. The stale WAITING guard (⏺ after WAITING → running) handles agents that resumed work after a previous WAITING.
+
+**Stop hook behavior:** The Stop hook (`cmd_hooks_agent_status`) fires when Claude becomes idle. If background tasks are detected in the tmux footer (⏵⏵ with task count), the hook skips nudging because the agent has genuine work in progress and will resume when the background task completes.
 
 ### Graceful Process Shutdown
 

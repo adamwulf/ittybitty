@@ -4461,6 +4461,11 @@ compute_state_from_content() {
 # Note: Strong running indicators take priority because they indicate active execution
 # that happens AFTER any completion phrase in the output.
 parse_state() {
+    # Sets _PARSE_STATE_REASON with a human-readable description of which pattern matched.
+    # This global is useful when calling parse_state directly (not in a subshell)
+    # to avoid losing the reason in command substitution.
+    _PARSE_STATE_REASON=""
+
     local input
     if [[ $# -gt 0 ]]; then
         input="$1"
@@ -4470,6 +4475,7 @@ parse_state() {
 
     # Empty input = unknown (caller handles stopped for tmux sessions)
     if [[ -z "$input" ]]; then
+        _PARSE_STATE_REASON="empty input"
         echo "unknown"
         return
     fi
@@ -4484,6 +4490,7 @@ parse_state() {
         if [[ "$input" == *"Enter to confirm"* ]]; then
             if [[ "$input" == *"Do you trust the files"* ]] || \
                [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
+                _PARSE_STATE_REASON="permission prompt (workspace trust or external imports)"
                 echo "creating"
                 return
             fi
@@ -4513,6 +4520,7 @@ parse_state() {
     # This appears as: "✽ Compacting conversation… (esc to interrupt)"
     # Must check before running indicators since compacting also has "(esc to interrupt)"
     if [[ "$very_recent" == *"Compacting conversation"* ]]; then
+        _PARSE_STATE_REASON="Compacting conversation in last 5 lines"
         echo "compacting"
         return
     fi
@@ -4524,6 +4532,7 @@ parse_state() {
     # nudge-induced spinners may coexist with tool waiting output, and the
     # fundamental state is "waiting on a tool".
     if [[ "$last_lines" =~ ⎿[[:space:]]*Waiting ]]; then
+        _PARSE_STATE_REASON="tool waiting (⎿ Waiting)"
         echo "waiting"
         return
     fi
@@ -4539,6 +4548,7 @@ parse_state() {
     # agent may have resumed work after saying they completed
     # Note: We require opening parenthesis to distinguish from discussion text
     if [[ "$very_recent" =~ \([Ee]sc\ to\ interrupt|\(ctrl\+c\ to\ interrupt|⎿\ \ Running ]]; then
+        _PARSE_STATE_REASON="active execution indicator in last 5 lines"
         echo "running"
         return
     fi
@@ -4553,6 +4563,7 @@ parse_state() {
     # - "/upgrade to increase your usage limit."
     # Use case-insensitive matching for "usage limit" phrases
     if [[ "$last_lines" == *"rate_limit_error"* ]]; then
+        _PARSE_STATE_REASON="rate_limit_error in output"
         echo "rate_limited"
         return
     fi
@@ -4565,6 +4576,7 @@ parse_state() {
        [[ "$last_lines" == *"hit your limit"* ]] || \
        [[ "$last_lines" == *"/upgrade to increase your usage limit"* ]]; then
         eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+        _PARSE_STATE_REASON="usage limit pattern in output"
         echo "rate_limited"
         return
     fi
@@ -4576,6 +4588,7 @@ parse_state() {
     # watchdog nudge prompts as instruction text, not actual completion signals
     local lines_unquoted="${last_lines//"'I HAVE COMPLETED THE GOAL'"/}"
     if [[ "$lines_unquoted" == *'I HAVE COMPLETED THE GOAL'* ]]; then
+        _PARSE_STATE_REASON="I HAVE COMPLETED THE GOAL in last 15 lines"
         echo "complete"
         return
     fi
@@ -4595,9 +4608,11 @@ parse_state() {
         # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
         local after_waiting="${last_lines##*WAITING}"
         if [[ "$after_waiting" == *"⏺"* ]]; then
+            _PARSE_STATE_REASON="agent output ⏺ after stale WAITING"
             echo "running"
             return
         fi
+        _PARSE_STATE_REASON="WAITING in last 15 lines"
         echo "waiting"
         return
     fi
@@ -4609,6 +4624,7 @@ parse_state() {
     # - Thinking spinners (✽ ✶ ✢ · ✻) at start of line - shown during model thinking
     # Only checked in last 15 lines to avoid matching historical text
     if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
+        _PARSE_STATE_REASON="ctrl+b ctrl+b or thinking) in last 15 lines"
         echo "running"
         return
     fi
@@ -4622,6 +4638,7 @@ parse_state() {
     if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         # If the spinner line contains an interruption marker, it's actively thinking
         if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+            _PARSE_STATE_REASON="thinking spinner with interrupt marker"
             echo "running"
             return
         fi
@@ -4631,20 +4648,17 @@ parse_state() {
         # If NOT a completion indicator, it's still an active spinner
         if ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
            ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
+            _PARSE_STATE_REASON="active thinking spinner (not completion timer)"
             echo "running"
             return
         fi
     fi
 
-    # Check for tool invocation patterns (weaker running signal)
-    # ⏺ followed by a tool name and opening paren indicates tool use
-    # This is weaker than the strong indicators because tool output can remain
-    # visible after completion, but if there's no completion/waiting phrase,
-    # it suggests the agent might still be processing
-    if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
-        echo "running"
-        return
-    fi
+    # Note: Tool invocation patterns (⏺ Bash(...), ⏺ Read(...), etc.) are NOT
+    # checked here. They are unreliable running indicators because tool output
+    # persists in scrollback after completion/denial, causing false "running"
+    # detection that triggers infinite nudge loops in the Stop hook.
+    # Background tasks (⏵⏵ footer) are checked below as a reliable alternative.
 
     # Check for permission prompts in recent output - these block agent progress
     # Workspace trust prompt: "Do you trust the files in this folder?"
@@ -4654,6 +4668,7 @@ parse_state() {
     if [[ "$last_lines" == *"Enter to confirm"* ]]; then
         if [[ "$last_lines" == *"Do you trust the files"* ]] || \
            [[ "$last_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
+            _PARSE_STATE_REASON="permission prompt in last 15 lines"
             echo "creating"
             return
         fi
@@ -4667,6 +4682,7 @@ parse_state() {
     broader_lines=$(printf '%s' "$input" | tail -20)
     if [[ "$broader_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         if [[ "$broader_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+            _PARSE_STATE_REASON="active spinner in broader 20-line window"
             echo "running"
             return
         fi
@@ -4678,11 +4694,13 @@ parse_state() {
     #   "⏵⏵ accept edits on · 3 background tasks" (mixed types)
     # If background tasks exist, the agent is still running even if no other indicators
     if [[ "$last_lines" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
+        _PARSE_STATE_REASON="background tasks in status bar"
         echo "running"
         return
     fi
 
     # No explicit state indicators found
+    _PARSE_STATE_REASON="no patterns matched"
     echo "unknown"
 }
 
@@ -8858,8 +8876,22 @@ cmd_hooks_agent_status() {
         return
     fi
 
+    if [[ "$state" == "running" ]]; then
+        # Check if "running" is from background tasks in the Claude Code footer.
+        # The footer shows "⏵⏵ ... · N bashes" when background tasks are active.
+        # In this case, the agent has genuine work in progress and will resume
+        # when the background task completes - no nudge needed.
+        local recent_output
+        recent_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -15 -E - 2>/dev/null) || true
+        if [[ "$recent_output" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
+            log_agent "$ID" "[hook] State running with background tasks, skipping nudge" --quiet
+            echo "$state"
+            return
+        fi
+    fi
+
     if [[ "$state" == "unknown" || "$state" == "running" ]]; then
-        # Both "unknown" and "running" indicate the agent is actually idle
+        # Both "unknown" and "running" may indicate the agent is actually idle
         # (the Stop hook only fires when Claude stops) but tmux output still
         # has stale indicators that make state detection think it's running.
 
@@ -9264,130 +9296,18 @@ EOF
         input=$(cat)
     fi
 
+    # Call parse_state directly (not in a subshell) so _PARSE_STATE_REASON is preserved.
+    # Redirect stdout to a temp file to capture the state string.
+    local tmpfile="/tmp/ib-parse-state-$$"
+    parse_state "$input" > "$tmpfile"
+    local state
+    state=$(<"$tmpfile")
+    rm -f "$tmpfile"
+
     if $verbose; then
-        # Check for 'creating' state - Claude permission screens before fully started
-        # Only detect as creating if Claude logo/[USER TASK] is NOT present
-        if [[ "$input" != *"Claude Code v"* ]] && [[ "$input" != *"[USER TASK]"* ]]; then
-            if [[ "$input" == *"Enter to confirm"* ]]; then
-                if [[ "$input" == *"Do you trust the files"* ]]; then
-                    echo "creating (matched: workspace trust prompt)"
-                    return
-                fi
-                if [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
-                    echo "creating (matched: external imports prompt)"
-                    return
-                fi
-            fi
-        fi
-
-        # Get last 5 lines for active execution detection (very recent window)
-        local very_recent
-        very_recent=$(echo "$input" | tail -5)
-
-        # Get last 15 lines for broader state detection
-        local last_lines
-        last_lines=$(echo "$input" | tail -15)
-
-        # Check for tool waiting (⎿  Waiting…) - tool is still executing
-        if [[ "$last_lines" =~ ⎿[[:space:]]*Waiting ]]; then
-            echo "waiting (matched: tool waiting ⎿ Waiting)"
-            return
-        fi
-
-        # Check for ACTIVE running indicators FIRST in very recent output
-        # Note: We require opening parenthesis to distinguish from discussion text
-        if [[ "$very_recent" =~ \([Ee]sc\ to\ interrupt ]]; then
-            echo "running (matched: (Esc to interrupt in last 5 lines)"
-            return
-        fi
-
-        if [[ "$very_recent" =~ \(ctrl\+c\ to\ interrupt ]]; then
-            echo "running (matched: (ctrl+c to interrupt in last 5 lines)"
-            return
-        fi
-
-        if [[ "$very_recent" =~ ⎿\ \ Running ]]; then
-            echo "running (matched: ⎿  Running in last 5 lines)"
-            return
-        fi
-
-        # Check completion in last 15 lines (exclude quoted occurrences from nudge text)
-        local lines_unquoted="${last_lines//"'I HAVE COMPLETED THE GOAL'"/}"
-        if [[ "$lines_unquoted" == *'I HAVE COMPLETED THE GOAL'* ]]; then
-            echo "complete (matched: I HAVE COMPLETED THE GOAL)"
-            return
-        fi
-
-        # Check for explicit waiting message (before weak running indicators)
-        if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
-           [[ "$last_lines" =~ ⏺.*WAITING ]]; then
-            # Check if agent produced output after the last WAITING (stale WAITING)
-            local after_waiting="${last_lines##*WAITING}"
-            if [[ "$after_waiting" == *"⏺"* ]]; then
-                echo "running (matched: agent output ⏺ after stale WAITING)"
-                return
-            fi
-            if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
-                echo "waiting (matched: standalone WAITING)"
-            else
-                echo "waiting (matched: ⏺...WAITING)"
-            fi
-            return
-        fi
-
-        # Other running indicators in last 15 lines
-        if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b ]]; then
-            echo "running (matched: ctrl+b ctrl+b)"
-            return
-        fi
-
-        if [[ "$last_lines" =~ thinking\) ]]; then
-            echo "running (matched: thinking))"
-            return
-        fi
-
-        # Check for thinking spinners at start of line
-        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-            # If the spinner line contains an interruption marker, it's actively thinking
-            if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
-                echo "running (matched: thinking spinner with interrupt marker)"
-                return
-            fi
-            # Exclude completion time indicators:
-            # Old format: "✻ Cogitated for 4m 4s" (spinner + word + for at line start)
-            # New format: "· Photosynthesizing… (10m 57s · thought for 254s)" (spinner line with "thought for")
-            if ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
-               ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
-                echo "running (matched: thinking spinner at line start)"
-                return
-            fi
-        fi
-
-        # Weak running indicator (tool invocation without strong indicator)
-        if [[ "$last_lines" =~ ⏺[[:space:]]*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch|WebSearch|TodoWrite|NotebookEdit|LSP|AskUserQuestion)\( ]]; then
-            echo "running (matched: ⏺ ToolName()"
-            return
-        fi
-
-        # Broader window (last 20 lines) for spinners pushed out by queued messages
-        local broader_lines
-        broader_lines=$(echo "$input" | tail -20)
-        if [[ "$broader_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-            if [[ "$broader_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
-                echo "running (matched: active spinner in broader 20-line window)"
-                return
-            fi
-        fi
-
-        # Check for background tasks in status bar
-        if [[ "$last_lines" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
-            echo "running (matched: background tasks in status bar)"
-            return
-        fi
-
-        echo "unknown (no patterns matched)"
+        echo "$state (matched: $_PARSE_STATE_REASON)"
     else
-        parse_state "$input"
+        echo "$state"
     fi
 }
 
