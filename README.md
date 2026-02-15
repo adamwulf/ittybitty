@@ -214,6 +214,21 @@ ib send <agent-id> "answer"  # Send your response
 
 You can always ask Claude to check on agents, and it will `ib list` to see their status, and can check on them and message them if needed.
 
+### Task Interception
+
+Task interception lets ib automatically redirect Claude's native Task tool calls to spawn ib agents instead. When Claude tries to use `Task(subagent_type=Explore)` or similar, it creates an ib manager agent rather than a native subagent.
+
+```bash
+# Enable task interception
+ib config set interceptTasks true
+ib hooks install-intercept
+
+# Disable task interception
+ib hooks uninstall-intercept
+```
+
+Some Task types are always handled natively (Bash, statusline-setup, claude-code-guide, meta-agent). You can also toggle this in the `ib watch` setup dialog (`h` key).
+
 ## Configuration
 
 ### Config Files
@@ -251,6 +266,7 @@ ib config --global list                     # Show user config only
 | `fps` | 10 | Refresh rate for `ib watch` |
 | `createPullRequests` | false | Create PRs instead of leaving changes on branch |
 | `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
+| `interceptTasks` | false | Intercept Task tool calls to spawn ib agents instead |
 | `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
 | `hooks.injectStatus` | true | Enable status injection via hooks |

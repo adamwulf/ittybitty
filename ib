@@ -1733,6 +1733,180 @@ try {
     fi
 }
 
+# Check if intercept-task hook is installed in settings JSON
+# Usage: json_has_intercept_hook "settings_json_or_file"
+# Returns: 0 if hook found, 1 if not found
+json_has_intercept_hook() {
+    local input="$1"
+    local json_content
+
+    # Read from file or use as string
+    if [[ -f "$input" ]]; then
+        json_content=$(<"$input")
+    else
+        json_content="$input"
+    fi
+
+    if [[ -z "$json_content" ]]; then
+        return 1
+    fi
+
+    local result
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        result=$(echo "$json_content" | jq -r '
+            if .hooks.PreToolUse then
+                [.hooks.PreToolUse[].hooks[]? | select(.command | contains("ib hooks intercept-task"))] | length > 0 |
+                if . then "true" else "false" end
+            else "false" end
+        ' 2>/dev/null) || result="false"
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        result=$(osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    var hooks = obj.hooks;
+    if (!hooks || !hooks.PreToolUse || !Array.isArray(hooks.PreToolUse)) {
+        'false';
+    } else {
+        var found = false;
+        for (var i = 0; i < hooks.PreToolUse.length; i++) {
+            var entry = hooks.PreToolUse[i];
+            if (entry.hooks && Array.isArray(entry.hooks)) {
+                for (var j = 0; j < entry.hooks.length; j++) {
+                    var hook = entry.hooks[j];
+                    if (hook.command && hook.command.indexOf('ib hooks intercept-task') !== -1) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        found ? 'true' : 'false';
+    }
+} catch(e) {
+    'false';
+}
+" 2>/dev/null)
+    fi
+
+    [[ "$result" == "true" ]]
+}
+
+# Add intercept-task hook to settings JSON
+# Usage: json_add_intercept_hook "settings_json"
+# Outputs: modified JSON with hook added
+json_add_intercept_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        json_content="{}"
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            .hooks //= {} |
+            .hooks.PreToolUse //= [] |
+            .hooks.PreToolUse += [{ matcher: "Task|TaskOutput", hooks: [{ type: "command", command: "ib hooks intercept-task" }] }]
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+    if (!obj.hooks) obj.hooks = {};
+    if (!obj.hooks.PreToolUse) obj.hooks.PreToolUse = [];
+
+    var newHook = {
+        matcher: 'Task|TaskOutput',
+        hooks: [{type: 'command', command: 'ib hooks intercept-task'}]
+    };
+    obj.hooks.PreToolUse.push(newHook);
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
+# Remove intercept-task hook from settings JSON
+# Usage: json_remove_intercept_hook "settings_json"
+# Outputs: modified JSON with hook removed
+json_remove_intercept_hook() {
+    local json_content="$1"
+
+    if [[ -z "$json_content" ]]; then
+        echo "{}"
+        return
+    fi
+
+    if [[ "$JSON_ENGINE" == "jq" ]]; then
+        echo "$json_content" | jq '
+            if .hooks.PreToolUse then
+                .hooks.PreToolUse |= map(select(.hooks | all(.command | contains("ib hooks intercept-task") | not))) |
+                if .hooks.PreToolUse | length == 0 then del(.hooks.PreToolUse) else . end |
+                if .hooks | keys | length == 0 then del(.hooks) else . end
+            else . end
+        ' 2>/dev/null || true
+    else
+        local input_b64
+        input_b64=$(echo -n "$json_content" | base64)
+
+        osascript -l JavaScript -e "
+ObjC.import('Foundation');
+
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions('$input_b64', 0),
+    $.NSUTF8StringEncoding
+).js;
+
+try {
+    var obj = JSON.parse(decoded);
+
+    if (obj.hooks && obj.hooks.PreToolUse && Array.isArray(obj.hooks.PreToolUse)) {
+        obj.hooks.PreToolUse = obj.hooks.PreToolUse.filter(function(entry) {
+            if (!entry.hooks || !Array.isArray(entry.hooks)) return true;
+            return entry.hooks.every(function(hook) {
+                return !hook.command || hook.command.indexOf('ib hooks intercept-task') === -1;
+            });
+        });
+
+        if (obj.hooks.PreToolUse.length === 0) {
+            delete obj.hooks.PreToolUse;
+        }
+        if (Object.keys(obj.hooks).length === 0) {
+            delete obj.hooks;
+        }
+    }
+
+    JSON.stringify(obj, null, 2);
+} catch(e) {
+    '{}';
+}
+" 2>/dev/null
+    fi
+}
+
 # Check if status injection hooks are installed in settings JSON
 # Checks for UserPromptSubmit and PostToolUse hooks with inject-status
 # Usage: json_has_status_hooks "settings_json_or_file"
@@ -2895,6 +3069,7 @@ _config_parse_all() {
     _CFG_AUTO_COMPACT_THRESHOLD=""
     _CFG_HOOKS_INJECT_STATUS=""
     _CFG_HOOKS_STATUS_VISIBLE=""
+    _CFG_INTERCEPT_TASKS=""
 
     [[ -z "$json_content" ]] && return 0
 
@@ -2916,7 +3091,8 @@ _config_parse_all() {
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if .hooks then (if .hooks | has("injectStatus") then .hooks.injectStatus else "__UNSET__" end) else "__UNSET__" end),
-                (if .hooks then (if .hooks | has("statusVisible") then .hooks.statusVisible else "__UNSET__" end) else "__UNSET__" end)
+                (if .hooks then (if .hooks | has("statusVisible") then .hooks.statusVisible else "__UNSET__" end) else "__UNSET__" end),
+                (if has("interceptTasks") then .interceptTasks else "__UNSET__" end)
             ] | @tsv
         ' 2>/dev/null) || return 1
     else
@@ -2948,7 +3124,8 @@ try {
         d.hasOwnProperty('externalDiffTool') ? d.externalDiffTool : '__UNSET__',
         d.hasOwnProperty('autoCompactThreshold') ? d.autoCompactThreshold : '__UNSET__',
         h.hasOwnProperty('injectStatus') ? h.injectStatus : '__UNSET__',
-        h.hasOwnProperty('statusVisible') ? h.statusVisible : '__UNSET__'
+        h.hasOwnProperty('statusVisible') ? h.statusVisible : '__UNSET__',
+        d.hasOwnProperty('interceptTasks') ? d.interceptTasks : '__UNSET__'
     ].join('\t');
 } catch(e) { ''; }
 " 2>/dev/null) || return 1
@@ -2963,6 +3140,7 @@ try {
             _CFG_ALLOW_AGENT_QUESTIONS _CFG_EXTERNAL_DIFF_TOOL \
             _CFG_AUTO_COMPACT_THRESHOLD \
             _CFG_HOOKS_INJECT_STATUS _CFG_HOOKS_STATUS_VISIBLE \
+            _CFG_INTERCEPT_TASKS \
             <<< "$result"
     fi
 
@@ -2981,6 +3159,7 @@ try {
     [[ "$_CFG_AUTO_COMPACT_THRESHOLD" == "__UNSET__" ]] && _CFG_AUTO_COMPACT_THRESHOLD="" || true
     [[ "$_CFG_HOOKS_INJECT_STATUS" == "__UNSET__" ]] && _CFG_HOOKS_INJECT_STATUS="" || true
     [[ "$_CFG_HOOKS_STATUS_VISIBLE" == "__UNSET__" ]] && _CFG_HOOKS_STATUS_VISIBLE="" || true
+    [[ "$_CFG_INTERCEPT_TASKS" == "__UNSET__" ]] && _CFG_INTERCEPT_TASKS="" || true
 
     return 0
 }
@@ -3003,6 +3182,7 @@ _apply_parsed_config() {
     [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
     [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
     [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
+    [[ -n "$_CFG_INTERCEPT_TASKS" ]] && CONFIG_INTERCEPT_TASKS="$_CFG_INTERCEPT_TASKS" || true
 }
 
 load_config() {
@@ -3020,6 +3200,7 @@ load_config() {
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_HOOKS_INJECT_STATUS="true"
     CONFIG_HOOKS_STATUS_VISIBLE="true"
+    CONFIG_INTERCEPT_TASKS="false"
 
     local user_file="$HOME/.ittybitty.json"
     local project_file=".ittybitty.json"
@@ -8798,6 +8979,9 @@ cmd_hooks() {
         main-path)
             cmd_hooks_main_path "$@"
             ;;
+        intercept-task)
+            cmd_hooks_intercept_task "$@"
+            ;;
         inject-status)
             cmd_hooks_inject_status "$@"
             ;;
@@ -8809,6 +8993,12 @@ cmd_hooks() {
             ;;
         uninstall)
             cmd_hooks_uninstall "$@"
+            ;;
+        install-intercept)
+            cmd_hooks_install_intercept "$@"
+            ;;
+        uninstall-intercept)
+            cmd_hooks_uninstall_intercept "$@"
             ;;
         -h|--help|"")
             cat <<EOF
@@ -8824,6 +9014,11 @@ The 'install' command adds:
   - UserPromptSubmit hook: injects full status at conversation start
   - PostToolUse hook: injects status updates after Bash/Task tools
   - SessionStart hook: provides role-specific ittybitty instructions
+
+Task interception:
+  install-intercept   Install Task tool interception hook
+  uninstall-intercept Remove Task tool interception hook
+  intercept-task      PreToolUse - intercepts Task calls to spawn ib agents
 
 Status injection hooks:
   inject-status       Output agent status for Claude Code hook injection
@@ -10219,6 +10414,7 @@ cmd_test_apply_parsed_config() {
     CONFIG_MODEL=""
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
+    CONFIG_INTERCEPT_TASKS="false"
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_HOOKS_INJECT_STATUS="true"
@@ -10241,6 +10437,7 @@ cmd_test_apply_parsed_config() {
     echo "CONFIG_MODEL:${CONFIG_MODEL:+ $CONFIG_MODEL}"
     echo "CONFIG_FPS: $CONFIG_FPS"
     echo "CONFIG_ALLOW_AGENT_QUESTIONS: $CONFIG_ALLOW_AGENT_QUESTIONS"
+    echo "CONFIG_INTERCEPT_TASKS: $CONFIG_INTERCEPT_TASKS"
     echo "CONFIG_EXTERNAL_DIFF_TOOL:${CONFIG_EXTERNAL_DIFF_TOOL:+ $CONFIG_EXTERNAL_DIFF_TOOL}"
     echo "CONFIG_AUTO_COMPACT_THRESHOLD:${CONFIG_AUTO_COMPACT_THRESHOLD:+ $CONFIG_AUTO_COMPACT_THRESHOLD}"
     echo "CONFIG_HOOKS_INJECT_STATUS: $CONFIG_HOOKS_INJECT_STATUS"
@@ -10278,6 +10475,7 @@ cmd_test_settings_load() {
         echo "fps:"
         echo "createPullRequests:"
         echo "allowAgentQuestions:"
+        echo "interceptTasks:"
         echo "autoCompactThreshold:"
         echo "externalDiffTool:"
         echo "permissions.manager:"
@@ -10297,6 +10495,7 @@ cmd_test_settings_load() {
                 (if has("fps") then .fps else "__UNSET__" end),
                 (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                 (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
+                (if has("interceptTasks") then .interceptTasks else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 ((.permissions.manager.allow // []) | length),
@@ -10325,6 +10524,7 @@ try {
         d.fps !== undefined ? d.fps : '__UNSET__',
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
+        d.interceptTasks !== undefined ? d.interceptTasks : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -10337,11 +10537,11 @@ try {
     fi
 
     # Parse TSV result
-    local maxAgents model fps createPRs allowQuestions autoCompact extDiff
+    local maxAgents model fps createPRs allowQuestions interceptTasks autoCompact extDiff
     local pm_allow pm_deny pw_allow pw_deny
     if [[ -n "$result" ]]; then
         IFS=$'\t' read -r \
-            maxAgents model fps createPRs allowQuestions autoCompact extDiff \
+            maxAgents model fps createPRs allowQuestions interceptTasks autoCompact extDiff \
             pm_allow pm_deny pw_allow pw_deny \
             <<< "$result"
     fi
@@ -10352,6 +10552,7 @@ try {
     [[ "$fps" == "__UNSET__" ]] && fps=""
     [[ "$createPRs" == "__UNSET__" ]] && createPRs=""
     [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions=""
+    [[ "$interceptTasks" == "__UNSET__" ]] && interceptTasks="" || true
     [[ "$autoCompact" == "__UNSET__" ]] && autoCompact=""
     [[ "$extDiff" == "__UNSET__" ]] && extDiff=""
 
@@ -10361,6 +10562,7 @@ try {
     echo "fps:${fps:+ $fps}"
     echo "createPullRequests:${createPRs:+ $createPRs}"
     echo "allowAgentQuestions:${allowQuestions:+ $allowQuestions}"
+    echo "interceptTasks:${interceptTasks:+ $interceptTasks}"
     echo "autoCompactThreshold:${autoCompact:+ $autoCompact}"
     echo "externalDiffTool:${extDiff:+ $extDiff}"
 
@@ -12343,12 +12545,129 @@ cmd_hooks_main_path() {
 }
 
 # =============================================================================
+# COMMAND: hooks intercept-task
+# =============================================================================
+
+# PreToolUse hook that intercepts Claude's native Task tool calls and
+# redirects them to spawn ib agents instead.
+# Reads JSON from stdin with tool_name, tool_input, and cwd fields.
+# Exit 0 = allow (native Task proceeds), Exit 2 = deny (with guidance on stderr)
+cmd_hooks_intercept_task() {
+    # Read JSON input from stdin
+    local json_input
+    json_input=$(cat)
+
+    # Extract tool name
+    local tool_name
+    tool_name=$(json_get - "tool_name" "" <<< "$json_input")
+
+    # Skip if called from an agent worktree (agents use ib commands directly)
+    local cwd
+    cwd=$(json_get - "cwd" "" <<< "$json_input")
+    if [[ "$cwd" == *"/.ittybitty/agents/"*"/repo"* ]]; then
+        exit 0
+    fi
+
+    # Load config and check if interception is enabled
+    load_config
+    if [[ "$CONFIG_INTERCEPT_TASKS" != "true" ]]; then
+        exit 0
+    fi
+
+    # Handle TaskOutput - deny with guidance to use ib commands
+    if [[ "$tool_name" == "TaskOutput" ]]; then
+        echo "TaskOutput is not available when task interception is enabled. Use 'ib look <id>' to view agent output, 'ib send <id> \"message\"' to send input, or 'ib list' to see all agents." >&2
+        exit 2
+    fi
+
+    # Handle Task tool
+    if [[ "$tool_name" != "Task" ]]; then
+        exit 0
+    fi
+
+    # Extract subagent_type from tool_input
+    local subagent_type
+    subagent_type=$(json_get - "tool_input.subagent_type" "" <<< "$json_input")
+
+    # Skip list: these types should use native Task (not intercepted)
+    case "$subagent_type" in
+        Bash|statusline-setup|claude-code-guide|meta-agent|ib-merge)
+            exit 0
+            ;;
+    esac
+
+    # Extract task details from tool_input
+    local prompt description model
+    prompt=$(json_get - "tool_input.prompt" "" <<< "$json_input")
+    description=$(json_get - "tool_input.description" "" <<< "$json_input")
+    model=$(json_get - "tool_input.model" "" <<< "$json_input")
+
+    # Build the agent task prompt
+    local agent_prompt="$prompt"
+    if [[ -z "$agent_prompt" ]]; then
+        agent_prompt="$description"
+    fi
+
+    if [[ -z "$agent_prompt" ]]; then
+        # No prompt or description - allow native Task as fallback
+        exit 0
+    fi
+
+    # Build ib new-agent command
+    local spawn_cmd="ib new-agent"
+
+    # Pass model if specified
+    if [[ -n "$model" ]]; then
+        spawn_cmd="$spawn_cmd --model $model"
+    fi
+
+    # Spawn the agent (as a manager)
+    local spawn_output
+    if spawn_output=$(eval "$spawn_cmd" '"$agent_prompt"' 2>&1); then
+        # Extract agent ID from output (format: "Created agent <id> ...")
+        local agent_id=""
+        if [[ "$spawn_output" =~ Created\ (manager\ )?agent\ ([a-zA-Z0-9_-]+) ]]; then
+            agent_id="${BASH_REMATCH[2]}"
+        fi
+
+        if [[ -n "$agent_id" ]]; then
+            echo "Task intercepted and redirected to ib agent '$agent_id'. Use 'ib look $agent_id' to view progress, 'ib send $agent_id \"message\"' to communicate, 'ib diff $agent_id' to review changes, and 'ib merge $agent_id' to merge when done. Use 'ib list' to see all agents." >&2
+            exit 2
+        else
+            # Spawned but couldn't parse ID - still deny since agent was created
+            echo "Task intercepted and redirected to an ib agent. Use 'ib list' to find it, then 'ib look <id>' to view progress." >&2
+            exit 2
+        fi
+    else
+        # Spawn failed - allow native Task as fallback
+        exit 0
+    fi
+}
+
+# =============================================================================
 # COMMAND: hooks status
 # =============================================================================
 
 # Check if main repo hooks are installed
+# Usage: cmd_hooks_status [--intercept]
+#   --intercept: check only task interception hook (returns: installed, not-installed)
+#   default: check safety hooks (returns: installed, partial, not-installed)
 cmd_hooks_status() {
     local SETTINGS_FILE=".claude/settings.local.json"
+
+    # Check for --intercept flag
+    if [[ "${1:-}" == "--intercept" ]]; then
+        if [[ ! -f "$SETTINGS_FILE" ]]; then
+            echo "not-installed"
+            exit 0
+        fi
+        if json_has_intercept_hook "$SETTINGS_FILE"; then
+            echo "installed"
+        else
+            echo "not-installed"
+        fi
+        exit 0
+    fi
 
     if [[ ! -f "$SETTINGS_FILE" ]]; then
         echo "not-installed"
@@ -12465,6 +12784,68 @@ cmd_hooks_uninstall() {
     else
         echo "$settings" > "$SETTINGS_FILE"
         echo "Hooks uninstalled from $SETTINGS_FILE"
+    fi
+}
+
+# =============================================================================
+# COMMAND: hooks install-intercept
+# =============================================================================
+
+# Install task interception hook to main repo settings
+cmd_hooks_install_intercept() {
+    local SETTINGS_FILE=".claude/settings.local.json"
+    local CLAUDE_DIR=".claude"
+
+    # Create .claude directory if needed
+    if [[ ! -d "$CLAUDE_DIR" ]]; then
+        mkdir -p "$CLAUDE_DIR"
+    fi
+
+    # Start with existing settings or empty object
+    local settings="{}"
+    if [[ -f "$SETTINGS_FILE" ]]; then
+        settings=$(<"$SETTINGS_FILE")
+    fi
+
+    # Add intercept hook if not present
+    if json_has_intercept_hook "$settings"; then
+        echo "Task interception hook already installed"
+        exit 0
+    fi
+
+    settings=$(json_add_intercept_hook "$settings")
+
+    # Write settings
+    echo "$settings" > "$SETTINGS_FILE"
+    echo "Task interception hook installed to $SETTINGS_FILE"
+}
+
+# =============================================================================
+# COMMAND: hooks uninstall-intercept
+# =============================================================================
+
+# Remove task interception hook from main repo settings
+cmd_hooks_uninstall_intercept() {
+    local SETTINGS_FILE=".claude/settings.local.json"
+
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+        echo "No settings file found, nothing to uninstall"
+        exit 0
+    fi
+
+    local settings
+    settings=$(<"$SETTINGS_FILE")
+
+    # Remove intercept hook
+    settings=$(json_remove_intercept_hook "$settings")
+
+    # Write settings (or delete file if empty)
+    if json_is_empty "$settings"; then
+        rm -f "$SETTINGS_FILE"
+        echo "Task interception hook uninstalled, removed empty settings file"
+    else
+        echo "$settings" > "$SETTINGS_FILE"
+        echo "Task interception hook uninstalled from $SETTINGS_FILE"
     fi
 }
 
@@ -14288,17 +14669,18 @@ EOF
     # Setup dialog state
     # Each: 0=unknown, 1=installed, 2=not installed
     local SETUP_HOOKS_INSTALLED=0     # Safety hooks (path isolation + status injection + session-start)
+    local SETUP_INTERCEPT_INSTALLED=0 # Task interception hook
     local SETUP_GITIGNORE=0           # .ittybitty in .gitignore
     local SETUP_CONFIG_FILE=0         # .ittybitty.json config file exists
-    local SETUP_FOCUS=0  # 0=hooks, 1=gitignore, 2=config file, 3=ext diff, 4=Close
+    local SETUP_FOCUS=0  # 0=hooks, 1=intercept, 2=gitignore, 3=config file, 4=ext diff, 5=Close
 
     # Settings dialog tabs (expanded setup dialog)
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
     local SETTINGS_FOCUS_USER=0       # Focus index for user settings tab
     local SETTINGS_FOCUS_PROJECT=0    # Focus index for project settings tab
     # Config keys for settings tabs (8 scalar + 2 permission groups = 10 items + 1 Close button)
-    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
-    local SETTINGS_ITEMS_COUNT=10     # 9 config items + Close button
+    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "interceptTasks" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
+    local SETTINGS_ITEMS_COUNT=11     # 10 config items + Close button
 
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
@@ -14378,6 +14760,17 @@ EOF
         fi
     }
 
+    # Check if task interception hook is installed
+    watch_check_intercept_status() {
+        local status
+        status=$(cmd_hooks_status --intercept 2>/dev/null)
+        if [[ "$status" == "installed" ]]; then
+            SETUP_INTERCEPT_INSTALLED=1
+        else
+            SETUP_INTERCEPT_INSTALLED=2
+        fi
+    }
+
     # Check if .ittybitty is in .gitignore
     watch_check_gitignore() {
         local gitignore="$ROOT_REPO_PATH/.gitignore"
@@ -14407,6 +14800,7 @@ EOF
     # Check all setup items on startup
     watch_check_all_setup() {
         watch_check_hooks_status
+        watch_check_intercept_status
         watch_check_gitignore
         watch_check_config_file
     }
@@ -16362,7 +16756,7 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 1: Safety hooks
+        # Option 1: Safety hooks (focus 0)
         dialog_draw_checkbox "$row" "$SETUP_HOOKS_INSTALLED" "Safety hooks" "$([[ $SETUP_FOCUS -eq 0 ]] && echo 1 || echo 0)"
         ((row++))
 
@@ -16374,8 +16768,20 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 2: Gitignore
-        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
+        # Option 2: Task interception (focus 1)
+        dialog_draw_checkbox "$row" "$SETUP_INTERCEPT_INSTALLED" "Task interception" "$([[ $SETUP_FOCUS -eq 1 ]] && echo 1 || echo 0)"
+        ((row++))
+
+        # Description for task interception
+        dialog_draw_line "$row" "  Redirect Task tool calls to spawn ib agents"
+        ((row++))
+
+        # Blank line
+        dialog_draw_line "$row" ""
+        ((row++))
+
+        # Option 3: Gitignore (focus 2)
+        dialog_draw_checkbox "$row" "$SETUP_GITIGNORE" "Gitignore" "$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)"
         ((row++))
 
         # Description for gitignore
@@ -16386,8 +16792,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 3: Config file (shows checkmark when exists, can't be removed)
-        local config_focused=$([[ $SETUP_FOCUS -eq 2 ]] && echo 1 || echo 0)
+        # Option 4: Config file (focus 3, shows checkmark when exists, can't be removed)
+        local config_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
         local config_checkbox config_disabled=0
         if [[ $SETUP_CONFIG_FILE -eq 1 ]]; then
             config_checkbox="[+]"
@@ -16423,8 +16829,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Option 4: External diff tool (text input, not checkbox)
-        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 3 ]] && echo 1 || echo 0)
+        # Option 5: External diff tool (focus 4, text input, not checkbox)
+        local ext_diff_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
         local ext_diff_value="${CONFIG_EXTERNAL_DIFF_TOOL:-}"
         local ext_diff_display
         if [[ -n "$ext_diff_value" ]]; then
@@ -16454,8 +16860,8 @@ EOF
         dialog_draw_line "$row" ""
         ((row++))
 
-        # Close button - render manually to handle escape sequences correctly
-        local close_focused=$([[ $SETUP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+        # Close button (focus 5) - render manually to handle escape sequences correctly
+        local close_focused=$([[ $SETUP_FOCUS -eq 5 ]] && echo 1 || echo 0)
         local btn_visual_width=7  # [Close] = 7 chars
         local inner_width=$((DIALOG_WIDTH - 4))
         local left_pad=$(( (inner_width - btn_visual_width) / 2 ))
@@ -16492,6 +16898,7 @@ EOF
         _SETTINGS_CACHE_fps=""
         _SETTINGS_CACHE_createPullRequests=""
         _SETTINGS_CACHE_allowAgentQuestions=""
+        _SETTINGS_CACHE_interceptTasks=""
         _SETTINGS_CACHE_autoCompactThreshold=""
         _SETTINGS_CACHE_externalDiffTool=""
         _SETTINGS_CACHE_permissions_manager=""
@@ -16518,6 +16925,7 @@ EOF
                     (if has("fps") then .fps else "__UNSET__" end),
                     (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                     (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
+                    (if has("interceptTasks") then .interceptTasks else "__UNSET__" end),
                     (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                     (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                     ((.permissions.manager.allow // []) | length),
@@ -16546,6 +16954,7 @@ try {
         d.fps !== undefined ? d.fps : '__UNSET__',
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
+        d.interceptTasks !== undefined ? d.interceptTasks : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -16565,6 +16974,7 @@ try {
                 _SETTINGS_CACHE_fps \
                 _SETTINGS_CACHE_createPullRequests \
                 _SETTINGS_CACHE_allowAgentQuestions \
+                _SETTINGS_CACHE_interceptTasks \
                 _SETTINGS_CACHE_autoCompactThreshold \
                 _SETTINGS_CACHE_externalDiffTool \
                 _pm_allow _pm_deny _pw_allow _pw_deny \
@@ -16576,6 +16986,7 @@ try {
             [[ "$_SETTINGS_CACHE_fps" == "__UNSET__" ]] && _SETTINGS_CACHE_fps=""
             [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests=""
             [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions=""
+            [[ "$_SETTINGS_CACHE_interceptTasks" == "__UNSET__" ]] && _SETTINGS_CACHE_interceptTasks="" || true
             [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold=""
             [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool=""
 
@@ -16599,6 +17010,7 @@ try {
         _SETTINGS_USER_FB_fps=""
         _SETTINGS_USER_FB_createPullRequests=""
         _SETTINGS_USER_FB_allowAgentQuestions=""
+        _SETTINGS_USER_FB_interceptTasks=""
         _SETTINGS_USER_FB_autoCompactThreshold=""
         _SETTINGS_USER_FB_externalDiffTool=""
         _SETTINGS_USER_FB_permissions_manager=""
@@ -16613,6 +17025,7 @@ try {
         _SETTINGS_USER_FB_fps="$_SETTINGS_CACHE_fps"
         _SETTINGS_USER_FB_createPullRequests="$_SETTINGS_CACHE_createPullRequests"
         _SETTINGS_USER_FB_allowAgentQuestions="$_SETTINGS_CACHE_allowAgentQuestions"
+        _SETTINGS_USER_FB_interceptTasks="$_SETTINGS_CACHE_interceptTasks"
         _SETTINGS_USER_FB_autoCompactThreshold="$_SETTINGS_CACHE_autoCompactThreshold"
         _SETTINGS_USER_FB_externalDiffTool="$_SETTINGS_CACHE_externalDiffTool"
         _SETTINGS_USER_FB_permissions_manager="$_SETTINGS_CACHE_permissions_manager"
@@ -16653,6 +17066,7 @@ try {
             fps) default_value="10" ;;
             createPullRequests) default_value="false" ;;
             allowAgentQuestions) default_value="true" ;;
+            interceptTasks) default_value="false" ;;
             autoCompactThreshold) default_value="" ;;
             externalDiffTool) default_value="" ;;
             permissions.manager) default_value="allow: 0, deny: 0" ;;
@@ -16667,6 +17081,7 @@ try {
             fps) cached_value="$_SETTINGS_CACHE_fps" ;;
             createPullRequests) cached_value="$_SETTINGS_CACHE_createPullRequests" ;;
             allowAgentQuestions) cached_value="$_SETTINGS_CACHE_allowAgentQuestions" ;;
+            interceptTasks) cached_value="$_SETTINGS_CACHE_interceptTasks" ;;
             autoCompactThreshold) cached_value="$_SETTINGS_CACHE_autoCompactThreshold" ;;
             externalDiffTool) cached_value="$_SETTINGS_CACHE_externalDiffTool" ;;
             permissions.manager) cached_value="$_SETTINGS_CACHE_permissions_manager" ;;
@@ -16685,6 +17100,7 @@ try {
                 fps) user_fb="$_SETTINGS_USER_FB_fps" ;;
                 createPullRequests) user_fb="$_SETTINGS_USER_FB_createPullRequests" ;;
                 allowAgentQuestions) user_fb="$_SETTINGS_USER_FB_allowAgentQuestions" ;;
+                interceptTasks) user_fb="$_SETTINGS_USER_FB_interceptTasks" ;;
                 autoCompactThreshold) user_fb="$_SETTINGS_USER_FB_autoCompactThreshold" ;;
                 externalDiffTool) user_fb="$_SETTINGS_USER_FB_externalDiffTool" ;;
                 permissions.manager) user_fb="$_SETTINGS_USER_FB_permissions_manager" ;;
@@ -16836,7 +17252,16 @@ try {
                                 watch_check_hooks_status
                                 _DIALOG_DIRTY=1
                                 ;;
-                            1)  # Gitignore
+                            1)  # Task interception
+                                if [[ $SETUP_INTERCEPT_INSTALLED -eq 1 ]]; then
+                                    cmd_hooks_uninstall_intercept >/dev/null 2>&1
+                                else
+                                    cmd_hooks_install_intercept >/dev/null 2>&1
+                                fi
+                                watch_check_intercept_status
+                                _DIALOG_DIRTY=1
+                                ;;
+                            2)  # Gitignore
                                 if [[ $SETUP_GITIGNORE -eq 1 ]]; then
                                     cmd_setup_gitignore_uninstall >/dev/null 2>&1
                                 else
@@ -16845,7 +17270,7 @@ try {
                                 watch_check_gitignore
                                 _DIALOG_DIRTY=1
                                 ;;
-                            2)  # Config file (only create, not remove)
+                            3)  # Config file (only create, not remove)
                                 if [[ $SETUP_CONFIG_FILE -ne 1 ]]; then
                                     cmd_setup_config_file_install >/dev/null 2>&1
                                     watch_check_config_file
@@ -16853,11 +17278,11 @@ try {
                                 fi
                                 # If file already exists, do nothing (can't remove via UI)
                                 ;;
-                            3)  # External diff tool - open input dialog
+                            4)  # External diff tool - open input dialog
                                 watch_dialog_init_ext_diff_tool
                                 DIALOG_MODE=8
                                 ;;
-                            4)  # Close button
+                            5)  # Close button
                                 DIALOG_MODE=0
                                 ;;
                         esac
@@ -16961,7 +17386,7 @@ try {
 
         # Determine action based on key type
         case "$key" in
-            createPullRequests|allowAgentQuestions)
+            createPullRequests|allowAgentQuestions|interceptTasks)
                 # Boolean toggle
                 settings_toggle_boolean "$key" "$config_file"
                 ;;
@@ -22242,6 +22667,7 @@ Available Keys:
   createPullRequests          Auto-create PRs on merge (default: false)
   allowAgentQuestions         Allow agents to ask user questions (default: true)
   autoCompactThreshold        Context % to trigger /compact (1-100, unset=auto)
+  interceptTasks              Intercept Task tool to spawn ib agents (default: false)
   externalDiffTool            External diff tool command
   permissions.manager.allow   Tools allowed for manager agents (JSON array)
   permissions.manager.deny    Tools denied for manager agents (JSON array)
@@ -22300,6 +22726,7 @@ cmd_config() {
                 createPullRequests) default_value="false"; has_default=true ;;
                 allowAgentQuestions) default_value="true"; has_default=true ;;
                 autoCompactThreshold) default_value=""; has_default=true ;;
+                interceptTasks) default_value="false"; has_default=true ;;
                 externalDiffTool) default_value=""; has_default=true ;;
                 permissions.manager.allow) default_value="[]"; has_default=true ;;
                 permissions.manager.deny) default_value="[]"; has_default=true ;;
@@ -22370,7 +22797,7 @@ cmd_config() {
                         exit 1
                     fi
                     ;;
-                createPullRequests)
+                createPullRequests|interceptTasks)
                     if [[ "$VALUE" != "true" && "$VALUE" != "false" ]]; then
                         echo "Error: '$KEY' must be true or false, got '$VALUE'" >&2
                         exit 1
@@ -22559,6 +22986,7 @@ cmd_config() {
                 "createPullRequests|false|Auto-create PRs on merge"
                 "allowAgentQuestions|true|Allow agents to ask user questions"
                 "autoCompactThreshold||Context % to trigger /compact (1-100)"
+                "interceptTasks|false|Intercept Task tool to spawn ib agents"
                 "externalDiffTool||External diff tool command"
                 "hooks.injectStatus|true|Enable status injection via hooks"
                 "hooks.statusVisible|true|Show agent status in user messages"
