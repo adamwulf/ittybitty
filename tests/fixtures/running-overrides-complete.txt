@@ -1,6 +1,0 @@
-Previously I said I HAVE COMPLETED THE GOAL
-
-But then new work arrived and now I'm processing:
-
-⏺ Bash(git status)
-  ⎿  Running (esc to interrupt)

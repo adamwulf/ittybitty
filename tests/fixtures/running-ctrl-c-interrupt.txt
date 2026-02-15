@@ -1,4 +1,0 @@
-Processing files...
-
-⏺ Bash(npm run build)
-  ⎿  Running (ctrl+c to interrupt)

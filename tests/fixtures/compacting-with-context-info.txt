@@ -1,5 +1,0 @@
-Working on the implementation...
-
-✽ Compacting conversation… (esc to interrupt)
-
-Context left until auto-compact: 5%

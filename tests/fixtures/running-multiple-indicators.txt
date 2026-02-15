@@ -1,8 +1,0 @@
-⏺ Bash(npm test)
-  ⎿  Running (esc to interrupt)
-
-ctrl+b ctrl+b
-
-Still executing tests...
-
-Claude is thinking)

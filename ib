@@ -8921,6 +8921,25 @@ cmd_hooks_agent_status() {
             fi
         fi
         log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
+
+        # Save tmux output for debugging false state detections
+        # Capture the same view that get_state used (last 20 lines)
+        local debug_dir="$AGENT_DIR/debug"
+        mkdir -p "$debug_dir"
+        local debug_ts
+        debug_ts=$(date +%s)
+        local debug_file="$debug_dir/nudge-${debug_ts}-${state}.txt"
+        local debug_capture
+        debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
+        if [[ -n "$debug_capture" ]]; then
+            printf '%s\n' "$debug_capture" > "$debug_file"
+            # Also log the parse_state reason for this capture
+            local debug_reason
+            debug_reason=$(printf '%s' "$debug_capture" | ib parse-state -v 2>&1) || true
+            printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+            log_agent "$ID" "[hook] Saved debug capture to debug/nudge-${debug_ts}-${state}.txt" --quiet
+        fi
+
         date +%s > "$nudge_file"
         local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
 

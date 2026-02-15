@@ -1,2 +1,0 @@
-The agent will be WAITING for input after this message completes.
-Currently processing the request.

@@ -1,3 +1,0 @@
-I have completed the initial setup and spawned the worker agents.
-
-⏺ The workers are processing. WAITING for their completion.
