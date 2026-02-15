@@ -8881,10 +8881,17 @@ cmd_hooks_agent_status() {
     local debug_capture
     debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
     if [[ -n "$debug_capture" ]]; then
+        # Strip ANSI codes for consistent pattern matching
+        _strip_ansi "$debug_capture"
+        debug_capture="$_STRIP_ANSI_RESULT"
         printf '%s\n' "$debug_capture" > "$debug_file"
-        local debug_reason
-        debug_reason=$(printf '%s' "$debug_capture" | ib parse-state -v 2>&1) || true
-        printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+        # Call parse_state directly instead of spawning 'ib parse-state' subprocess
+        local parse_tmpfile="/tmp/ib-stop-debug-$$"
+        parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
+        local parsed_state
+        parsed_state=$(<"$parse_tmpfile") || true
+        rm -f "$parse_tmpfile"
+        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
     fi
 
     # Get agent's manager (if any) for worker notifications
@@ -8958,11 +8965,17 @@ cmd_hooks_agent_status() {
         local debug_capture
         debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
         if [[ -n "$debug_capture" ]]; then
+            # Strip ANSI codes for consistent pattern matching
+            _strip_ansi "$debug_capture"
+            debug_capture="$_STRIP_ANSI_RESULT"
             printf '%s\n' "$debug_capture" > "$debug_file"
-            # Also log the parse_state reason for this capture
-            local debug_reason
-            debug_reason=$(printf '%s' "$debug_capture" | ib parse-state -v 2>&1) || true
-            printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+            # Call parse_state directly instead of spawning 'ib parse-state' subprocess
+            local parse_tmpfile="/tmp/ib-nudge-debug-$$"
+            parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
+            local parsed_state
+            parsed_state=$(<"$parse_tmpfile") || true
+            rm -f "$parse_tmpfile"
+            printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
             log_agent "$ID" "[hook] Saved debug capture to debug/nudge-${debug_ts}-${state}.txt" --quiet
         fi
 
@@ -19887,14 +19900,18 @@ try {
         fi
 
         # Capture last 20 lines of tmux output
-        local capture
-        capture=$(tmux capture-pane -t "$tmux_session" -p -S -20 -E - 2>/dev/null) || true
+        local raw_capture
+        raw_capture=$(tmux capture-pane -t "$tmux_session" -p -S -20 -E - 2>/dev/null) || true
 
-        if [[ -z "$capture" ]]; then
+        if [[ -z "$raw_capture" ]]; then
             _WATCH_STATUS_MSG="Empty capture for $agent_id"
             _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
             return
         fi
+
+        # Strip ANSI codes for consistent pattern matching (same as background cache)
+        _strip_ansi "$raw_capture"
+        local capture="$_STRIP_ANSI_RESULT"
 
         # Get current state for filename
         local state
@@ -19909,10 +19926,15 @@ try {
 
         printf '%s\n' "$capture" > "$debug_file"
 
-        # Append parse-state -v output
-        local debug_reason
-        debug_reason=$(printf '%s' "$capture" | ib parse-state -v 2>&1) || true
-        printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+        # Append parse-state verbose output by calling parse_state directly
+        # (avoids spawning an 'ib parse-state' subprocess which can take 1-3+ seconds
+        # and cause the status message to expire before it's ever rendered)
+        local parse_tmpfile="/tmp/ib-snapshot-$$"
+        parse_state "$capture" > "$parse_tmpfile" 2>/dev/null || true
+        local parsed_state
+        parsed_state=$(<"$parse_tmpfile") || true
+        rm -f "$parse_tmpfile"
+        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
 
         # Show status feedback
         _WATCH_STATUS_MSG="Snapshot saved: debug/snapshot-${debug_ts}-${state}.txt"
