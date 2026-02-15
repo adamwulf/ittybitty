@@ -1,0 +1,44 @@
+            +" "allowAgentQuestions" "interceptTasks"
+            + "autoCompactThreshold" "externalDiffToo
+            +l" "permissions.manager" "permissions.wo
+            +rker")
+      14660 +    local SETTINGS_ITEMS_COUNT=11     #
+            +10 config items + Close button
+      14661
+      14662      # Legacy aliases for compatibility
+      14663      local HOOKS_INSTALLED=0  # 0=unknown
+             , 1=installed, 2=not installed
+
+⏺ Now update the settings_load_all_values() function to
+  include interceptTasks:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(ib)
+  ⎿  Added 1 line
+      16875          _SETTINGS_CACHE_fps=""
+      16876          _SETTINGS_CACHE_createPullReques
+             ts=""
+      16877          _SETTINGS_CACHE_allowAgentQuesti
+             ons=""
+      16878 +        _SETTINGS_CACHE_interceptTasks="
+            +"
+      16879          _SETTINGS_CACHE_autoCompactThres
+             hold=""
+      16880          _SETTINGS_CACHE_externalDiffTool
+             =""
+      16881          _SETTINGS_CACHE_permissions_mana
+             ger=""
+
+⏺ Now add interceptTasks to the jq extraction:
+
+· Smooshing… (7m 17s · ↓ 18.9k tokens · thought for 12s)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/task-intercept
+  Session: 28% (4h 42m) Weekly: 57% (3d 3h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+

@@ -1,0 +1,44 @@
+      16809 +        # Option 5: External diff tool (
+            +focus 4, text input, not checkbox)
+      16810 +        local ext_diff_focused=$([[ $SET
+            +UP_FOCUS -eq 4 ]] && echo 1 || echo 0)
+      16811          local ext_diff_value="${CONFIG_E
+             XTERNAL_DIFF_TOOL:-}"
+      16812          local ext_diff_display
+      16813          if [[ -n "$ext_diff_value" ]]; t
+             hen
+     ...
+      16837          dialog_draw_line "$row" ""
+      16838          ((row++))
+      16839
+      16828 -        # Close button - render manually
+            - to handle escape sequences correctly
+      16829 -        local close_focused=$([[ $SETUP_
+            -FOCUS -eq 4 ]] && echo 1 || echo 0)
+      16840 +        # Close button (focus 5) - rende
+            +r manually to handle escape sequences co
+            +rrectly
+      16841 +        local close_focused=$([[ $SETUP_
+            +FOCUS -eq 5 ]] && echo 1 || echo 0)
+      16842          local btn_visual_width=7  # [Clo
+             se] = 7 chars
+      16843          local inner_width=$((DIALOG_WIDT
+             H - 4))
+      16844          local left_pad=$(( (inner_width
+             - btn_visual_width) / 2 ))
+
+⏺ Now update the key handling. I need to update item_count
+  and the case statement for the setup tab actions:
+
+  Reading 1 file… (ctrl+o to expand)
+
+· Smooshing… (6m 14s · ↑ 16.7k tokens · thought for 12s)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/task-intercept
+  Session: 27% (4h 43m) Weekly: 57% (3d 3h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+
