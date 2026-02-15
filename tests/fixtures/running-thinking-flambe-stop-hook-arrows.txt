@@ -1,0 +1,44 @@
+  4. researcher is usually spawned by research-pi - If
+  research-pi is intercepted and becomes an ib agent, it
+  would use ib new-agent --worker directly rather than Task.
+   So researcher interception only matters if the primary
+  Claude spawns one directly.
+  5. Explore is lightweight - It only reads files, never
+  writes. Native Task is arguably better for quick searches
+  since ib agents have startup overhead (worktree, tmux,
+  Claude boot). An ib new-agent takes 10-20 seconds vs
+  near-instant native Task.
+
+  My recommendation
+
+  The current split is reasonable for the "redirect
+  everything substantial" approach. But if you want to
+  optimize:
+
+  - Move Explore to skip list - It's fast, read-only, and
+  the ib overhead hurts more than helps
+  - Move Plan to skip list - Same reasoning, it's read-only
+  research
+  - Remove ib-merge from skip list - It's not a real
+  subagent_type
+  - Consider a default-skip approach - Only intercept known
+  heavy types (general-purpose, feature-implementer,
+  research-pi, researcher) instead of intercepting
+  everything unknown
+
+  Want me to make any of these adjustments?
+
+  WAITING
+
+✳ Flambéing… (running stop hook · 52s · ↓ 3.2k tokens ·
+thought for 27s)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/task-intercept
+  Session: 66% (4h 24m) Weekly: 61% (3d 3h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+  Context left until auto-compact: 8%
+

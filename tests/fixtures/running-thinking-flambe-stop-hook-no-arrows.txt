@@ -1,0 +1,44 @@
+  1. Agent ID regex - Now captures raw ID from head -1 and
+  validates with ^[a-zA-Z0-9_-]+$
+  2. Command injection - Replaced eval with local -a
+  spawn_args=(...) array execution, added model validation
+  (sonnet|opus|haiku|"")
+  3. Inconsistent || true - Added to all 8 __UNSET__
+  conversion lines in cmd_test_settings_load and all 8 in
+  settings_load_all_values (fixing pre-existing gaps too)
+  4. TaskOutput blanket denial - Matcher changed to just
+  Task, TaskOutput handler removed entirely so native
+  background tasks work normally
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Crunched for 2m 16s
+
+❯ When you stop working, you must always end your
+  message with either 'WAITING' or 'I HAVE COMPLETED
+  THE GOAL'. IMPORTANT: Write your summary or status
+  update FIRST, then put the status phrase as your
+  FINAL line - nothing should come after it. If you are
+   waiting for input or have nothing more to do without
+   further instruction, say 'WAITING'. If you have
+  completed your goal, say 'I HAVE COMPLETED THE GOAL'.
+   If you have neither completed your goal nor are
+  waiting, then please resume your work.
+
+⏺ All four critical code review fixes have been committed.
+  The task interception feature is complete with both the
+  initial implementation and the review fixes applied.
+
+  I HAVE COMPLETED THE GOAL
+
+✳ Flambéing… (running stop hook)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/task-intercept
+  Session: 77% (4h 19m) Weekly: 61% (3d 3h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+  Context left until auto-compact: 2%
+

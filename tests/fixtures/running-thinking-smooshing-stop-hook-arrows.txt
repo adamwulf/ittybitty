@@ -1,0 +1,44 @@
+  statusline-setup, claude-code-guide, meta-agent, ib-merge)
+  - Spawns ib new-agent for intercepted types, returns deny
+  with agent ID
+  - Falls back to native Task if spawn fails
+
+  Install/uninstall commands:
+  - ib hooks install-intercept / ib hooks
+  uninstall-intercept
+  - ib hooks status --intercept
+
+  Watch setup dialog:
+  - Added "Task interception" checkbox (focus index 1,
+  between Safety hooks and Gitignore)
+  - Toggle installs/uninstalls the intercept hook
+
+  Settings tabs:
+  - Added interceptTasks to SETTINGS_CONFIG_KEYS as boolean
+  toggle
+  - Updated settings_load_all_values() cache and display
+
+  Test fixtures:
+  - Updated all 9 affected .expected files to include
+  interceptTasks: line
+
+  Documentation:
+  - CLAUDE.md: Added config key entry and Task Interception
+  section
+  - README.md: Added config table entry and Task
+  Interception subsection
+
+  I HAVE COMPLETED THE GOAL
+
+✶ Smooshing… (running stop hook · 17m 16s · ↓ 36.9k tokens
+ · thought for 38s)
+
+────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/task-intercept
+  Session: 43% (4h 32m) Weekly: 59% (3d 3h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+  Context left until auto-compact: 10%
+
