@@ -1816,7 +1816,7 @@ json_add_intercept_hook() {
         echo "$json_content" | jq '
             .hooks //= {} |
             .hooks.PreToolUse //= [] |
-            .hooks.PreToolUse += [{ matcher: "Task|TaskOutput", hooks: [{ type: "command", command: "ib hooks intercept-task" }] }]
+            .hooks.PreToolUse += [{ matcher: "Task", hooks: [{ type: "command", command: "ib hooks intercept-task" }] }]
         ' 2>/dev/null || true
     else
         local input_b64
@@ -1836,7 +1836,7 @@ try {
     if (!obj.hooks.PreToolUse) obj.hooks.PreToolUse = [];
 
     var newHook = {
-        matcher: 'Task|TaskOutput',
+        matcher: 'Task',
         hooks: [{type: 'command', command: 'ib hooks intercept-task'}]
     };
     obj.hooks.PreToolUse.push(newHook);
@@ -10547,14 +10547,15 @@ try {
     fi
 
     # Convert placeholder back to empty
-    [[ "$maxAgents" == "__UNSET__" ]] && maxAgents=""
-    [[ "$model" == "__UNSET__" ]] && model=""
-    [[ "$fps" == "__UNSET__" ]] && fps=""
-    [[ "$createPRs" == "__UNSET__" ]] && createPRs=""
-    [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions=""
+    # Note: Using || true to prevent set -e from exiting when condition is false
+    [[ "$maxAgents" == "__UNSET__" ]] && maxAgents="" || true
+    [[ "$model" == "__UNSET__" ]] && model="" || true
+    [[ "$fps" == "__UNSET__" ]] && fps="" || true
+    [[ "$createPRs" == "__UNSET__" ]] && createPRs="" || true
+    [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions="" || true
     [[ "$interceptTasks" == "__UNSET__" ]] && interceptTasks="" || true
-    [[ "$autoCompact" == "__UNSET__" ]] && autoCompact=""
-    [[ "$extDiff" == "__UNSET__" ]] && extDiff=""
+    [[ "$autoCompact" == "__UNSET__" ]] && autoCompact="" || true
+    [[ "$extDiff" == "__UNSET__" ]] && extDiff="" || true
 
     # Output in consistent format
     echo "maxAgents:${maxAgents:+ $maxAgents}"
@@ -12574,13 +12575,8 @@ cmd_hooks_intercept_task() {
         exit 0
     fi
 
-    # Handle TaskOutput - deny with guidance to use ib commands
-    if [[ "$tool_name" == "TaskOutput" ]]; then
-        echo "TaskOutput is not available when task interception is enabled. Use 'ib look <id>' to view agent output, 'ib send <id> \"message\"' to send input, or 'ib list' to see all agents." >&2
-        exit 2
-    fi
-
-    # Handle Task tool
+    # Only handle Task tool - allow everything else (including TaskOutput for
+    # native background tasks like Bash subagents) to proceed normally
     if [[ "$tool_name" != "Task" ]]; then
         exit 0
     fi
@@ -12602,6 +12598,12 @@ cmd_hooks_intercept_task() {
     description=$(json_get - "tool_input.description" "" <<< "$json_input")
     model=$(json_get - "tool_input.model" "" <<< "$json_input")
 
+    # Validate model - only allow known values to prevent injection
+    case "$model" in
+        sonnet|opus|haiku|"") ;;
+        *) model="" ;;
+    esac
+
     # Build the agent task prompt
     local agent_prompt="$prompt"
     if [[ -z "$agent_prompt" ]]; then
@@ -12613,24 +12615,23 @@ cmd_hooks_intercept_task() {
         exit 0
     fi
 
-    # Build ib new-agent command
-    local spawn_cmd="ib new-agent"
+    # Build ib new-agent command as array (avoids eval with untrusted input)
+    local -a spawn_args=("ib" "new-agent")
 
     # Pass model if specified
     if [[ -n "$model" ]]; then
-        spawn_cmd="$spawn_cmd --model $model"
+        spawn_args+=("--model" "$model")
     fi
 
     # Spawn the agent (as a manager)
+    # cmd_new_agent outputs the raw agent ID on success
     local spawn_output
-    if spawn_output=$(eval "$spawn_cmd" '"$agent_prompt"' 2>&1); then
-        # Extract agent ID from output (format: "Created agent <id> ...")
-        local agent_id=""
-        if [[ "$spawn_output" =~ Created\ (manager\ )?agent\ ([a-zA-Z0-9_-]+) ]]; then
-            agent_id="${BASH_REMATCH[2]}"
-        fi
+    if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>&1); then
+        # cmd_new_agent outputs just the raw ID (e.g., "abc12345")
+        local agent_id
+        agent_id=$(echo "$spawn_output" | head -1)
 
-        if [[ -n "$agent_id" ]]; then
+        if [[ "$agent_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
             echo "Task intercepted and redirected to ib agent '$agent_id'. Use 'ib look $agent_id' to view progress, 'ib send $agent_id \"message\"' to communicate, 'ib diff $agent_id' to review changes, and 'ib merge $agent_id' to merge when done. Use 'ib list' to see all agents." >&2
             exit 2
         else
@@ -16981,14 +16982,15 @@ try {
                 <<< "$result"
 
             # Convert placeholder back to empty
-            [[ "$_SETTINGS_CACHE_maxAgents" == "__UNSET__" ]] && _SETTINGS_CACHE_maxAgents=""
-            [[ "$_SETTINGS_CACHE_model" == "__UNSET__" ]] && _SETTINGS_CACHE_model=""
-            [[ "$_SETTINGS_CACHE_fps" == "__UNSET__" ]] && _SETTINGS_CACHE_fps=""
-            [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests=""
-            [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions=""
+            # Note: Using || true to prevent set -e from exiting when condition is false
+            [[ "$_SETTINGS_CACHE_maxAgents" == "__UNSET__" ]] && _SETTINGS_CACHE_maxAgents="" || true
+            [[ "$_SETTINGS_CACHE_model" == "__UNSET__" ]] && _SETTINGS_CACHE_model="" || true
+            [[ "$_SETTINGS_CACHE_fps" == "__UNSET__" ]] && _SETTINGS_CACHE_fps="" || true
+            [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests="" || true
+            [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions="" || true
             [[ "$_SETTINGS_CACHE_interceptTasks" == "__UNSET__" ]] && _SETTINGS_CACHE_interceptTasks="" || true
-            [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold=""
-            [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool=""
+            [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold="" || true
+            [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool="" || true
 
             # Build permissions display strings
             if [[ "${_pm_allow:-0}" -gt 0 || "${_pm_deny:-0}" -gt 0 ]]; then
