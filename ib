@@ -4482,13 +4482,15 @@ parse_state() {
 
     # Check for 'creating' state - Claude permission screens before fully started
     # These appear when Claude needs user acceptance before proceeding:
-    # - Workspace trust prompt: "Do you trust the files" + "Enter to confirm"
+    # - Workspace trust prompt (old): "Do you trust the files" + "Enter to confirm"
+    # - Workspace trust prompt (new): "I trust this folder" + "Enter to confirm"
     # - External imports prompt: "Allow external CLAUDE.md file imports" + "Enter to confirm"
     # IMPORTANT: Only detect as creating if Claude logo/[USER TASK] is NOT present
     # (if they're present, Claude has started and permission prompts are just history)
     if [[ "$input" != *"Claude Code v"* ]] && [[ "$input" != *"[USER TASK]"* ]]; then
         if [[ "$input" == *"Enter to confirm"* ]]; then
             if [[ "$input" == *"Do you trust the files"* ]] || \
+               [[ "$input" == *"trust this folder"* ]] || \
                [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
                 _PARSE_STATE_REASON="permission prompt (workspace trust or external imports)"
                 echo "creating"
@@ -4595,17 +4597,17 @@ parse_state() {
 
     # Check for explicit waiting message
     # Look for WAITING as a standalone word on its own line (not in instruction text)
+    # Two formats: "  WAITING" (indented) or "⏺ WAITING" (with output marker)
     # NOTE: This is checked BEFORE weak running indicators (spinners, thinking)
     # because those can appear in completion time lines after WAITING
     # (e.g., "✽ Verifying… (5m · ↓ 2.7k tokens)" or "· Fermenting… (2m · thinking)")
     # and would cause false "running" detection, triggering infinite nudge loops.
     # The stale WAITING guard (⏺ after WAITING) is sufficient to detect when an agent
     # has actually resumed work after a previous WAITING state.
-    # Note: We only check for standalone WAITING on its own line. The previous
-    # ⏺.*WAITING pattern was removed because bash regex . matches newlines,
-    # causing false matches across lines (e.g., matching ⏺ on line 1 with
-    # WAITING in nudge text on line 5).
-    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
+    # Note: We use two regex checks instead of .*WAITING because bash regex .
+    # matches newlines, causing false matches across lines.
+    if [[ "$last_lines" =~ (^|$'\n')[[:space:]]*WAITING[[:space:]]*($|$'\n') ]] || \
+       [[ "$last_lines" =~ (^|$'\n')⏺[[:space:]]*WAITING[[:space:]]*($|$'\n') ]]; then
         # Check if agent produced output after the last WAITING (stale WAITING)
         # ⏺ is Claude's output marker - if it appears after WAITING, agent has resumed
         local after_waiting="${last_lines##*WAITING}"
@@ -4663,12 +4665,14 @@ parse_state() {
     # Background tasks (⏵⏵ footer) are checked below as a reliable alternative.
 
     # Check for permission prompts in recent output - these block agent progress
-    # Workspace trust prompt: "Do you trust the files in this folder?"
+    # Workspace trust prompt (old): "Do you trust the files in this folder?"
+    # Workspace trust prompt (new): "I trust this folder"
     # External imports prompt: "Allow external CLAUDE.md file imports?"
     # Both show "Enter to confirm" and require user interaction
     # Only check last 15 lines to avoid false positives from prompts in scroll history
     if [[ "$last_lines" == *"Enter to confirm"* ]]; then
         if [[ "$last_lines" == *"Do you trust the files"* ]] || \
+           [[ "$last_lines" == *"trust this folder"* ]] || \
            [[ "$last_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
             _PARSE_STATE_REASON="permission prompt in last 15 lines"
             echo "creating"
@@ -8860,6 +8864,23 @@ cmd_hooks_agent_status() {
     log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
 
     local TMUX_SESSION=$(session_name "$ID")
+
+    # Save tmux output for ALL Stop hook triggers (debug mode)
+    # This helps study what correct vs incorrect detections look like
+    local AGENT_DIR_EARLY="$AGENTS_DIR/$ID"
+    local debug_dir="$AGENT_DIR_EARLY/debug"
+    mkdir -p "$debug_dir"
+    local debug_ts
+    debug_ts=$(date +%s)
+    local debug_file="$debug_dir/stop-${debug_ts}-${state}.txt"
+    local debug_capture
+    debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
+    if [[ -n "$debug_capture" ]]; then
+        printf '%s\n' "$debug_capture" > "$debug_file"
+        local debug_reason
+        debug_reason=$(printf '%s' "$debug_capture" | ib parse-state -v 2>&1) || true
+        printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+    fi
 
     # Get agent's manager (if any) for worker notifications
     local AGENT_DIR="$AGENTS_DIR/$ID"

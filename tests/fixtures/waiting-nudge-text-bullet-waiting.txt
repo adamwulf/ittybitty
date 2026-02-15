@@ -1,0 +1,29 @@
+
+ ▐▛███▜▌   Claude Code v2.1.42
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/…/.ittybitty/agents/agent-4fe8660a/repo
+
+❯ wait
+
+⏺ WAITING
+
+❯ When you stop working, you must always end your
+  message with either 'WAITING' or 'I HAVE COMPLETED
+  THE GOAL'. IMPORTANT: Write your summary or status
+  update FIRST, then put the status phrase as your
+  FINAL line - nothing should come after it. If you are
+   waiting for input or have nothing more to do without
+   further instruction, say 'WAITING'. If you have
+  completed your goal, say 'I HAVE COMPLETED THE GOAL'.
+   If you have neither completed your goal nor are
+  waiting, then please resume your work.
+
+⏺ WAITING
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-4fe8660a
+  Session: 99% (3h 31m) Weekly: 48% (3d 20h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
