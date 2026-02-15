@@ -16562,6 +16562,36 @@ try {
         fi
     }
 
+    # Load user config as fallback for project tab
+    # Call before settings_load_all_values "project" to populate fallback values.
+    # Sets: _SETTINGS_USER_FB_* variables
+    settings_load_user_fallback() {
+        # Reset user fallback cache
+        _SETTINGS_USER_FB_maxAgents=""
+        _SETTINGS_USER_FB_model=""
+        _SETTINGS_USER_FB_fps=""
+        _SETTINGS_USER_FB_createPullRequests=""
+        _SETTINGS_USER_FB_allowAgentQuestions=""
+        _SETTINGS_USER_FB_autoCompactThreshold=""
+        _SETTINGS_USER_FB_externalDiffTool=""
+        _SETTINGS_USER_FB_permissions_manager=""
+        _SETTINGS_USER_FB_permissions_worker=""
+
+        # Load user config into the shared cache temporarily
+        settings_load_all_values "user"
+
+        # Copy cache to user fallback variables
+        _SETTINGS_USER_FB_maxAgents="$_SETTINGS_CACHE_maxAgents"
+        _SETTINGS_USER_FB_model="$_SETTINGS_CACHE_model"
+        _SETTINGS_USER_FB_fps="$_SETTINGS_CACHE_fps"
+        _SETTINGS_USER_FB_createPullRequests="$_SETTINGS_CACHE_createPullRequests"
+        _SETTINGS_USER_FB_allowAgentQuestions="$_SETTINGS_CACHE_allowAgentQuestions"
+        _SETTINGS_USER_FB_autoCompactThreshold="$_SETTINGS_CACHE_autoCompactThreshold"
+        _SETTINGS_USER_FB_externalDiffTool="$_SETTINGS_CACHE_externalDiffTool"
+        _SETTINGS_USER_FB_permissions_manager="$_SETTINGS_CACHE_permissions_manager"
+        _SETTINGS_USER_FB_permissions_worker="$_SETTINGS_CACHE_permissions_worker"
+    }
+
     # Get config value from cache (must call settings_load_all_values first)
     # Args: $1=key, $2=scope ("user" or "project")
     # Sets: _SETTINGS_VALUE, _SETTINGS_SOURCE
@@ -16619,6 +16649,27 @@ try {
         if [[ -n "$cached_value" && "$cached_value" != "null" ]]; then
             _SETTINGS_VALUE="$cached_value"
             _SETTINGS_SOURCE="$scope"
+        elif [[ "$scope" == "project" ]]; then
+            # Check user config fallback before defaults
+            local user_fb=""
+            case "$key" in
+                maxAgents) user_fb="$_SETTINGS_USER_FB_maxAgents" ;;
+                model) user_fb="$_SETTINGS_USER_FB_model" ;;
+                fps) user_fb="$_SETTINGS_USER_FB_fps" ;;
+                createPullRequests) user_fb="$_SETTINGS_USER_FB_createPullRequests" ;;
+                allowAgentQuestions) user_fb="$_SETTINGS_USER_FB_allowAgentQuestions" ;;
+                autoCompactThreshold) user_fb="$_SETTINGS_USER_FB_autoCompactThreshold" ;;
+                externalDiffTool) user_fb="$_SETTINGS_USER_FB_externalDiffTool" ;;
+                permissions.manager) user_fb="$_SETTINGS_USER_FB_permissions_manager" ;;
+                permissions.worker) user_fb="$_SETTINGS_USER_FB_permissions_worker" ;;
+            esac
+            if [[ -n "$user_fb" && "$user_fb" != "null" ]]; then
+                _SETTINGS_VALUE="$user_fb"
+                _SETTINGS_SOURCE="user"
+            else
+                _SETTINGS_VALUE="$default_value"
+                _SETTINGS_SOURCE="default"
+            fi
         else
             _SETTINGS_VALUE="$default_value"
             _SETTINGS_SOURCE="default"
@@ -16683,6 +16734,11 @@ try {
             current_focus=$SETTINGS_FOCUS_USER
         else
             current_focus=$SETTINGS_FOCUS_PROJECT
+        fi
+
+        # For project tab, pre-load user config as fallback for inherited values
+        if [[ "$scope" == "project" ]]; then
+            settings_load_user_fallback
         fi
 
         # Load all config values in one parse (optimization: reduces 30+ osascript calls to 1)
@@ -21937,6 +21993,10 @@ try {
     while true; do
         local frame_start_ms=$(get_ms)
         FRAME_NUMBER=$((FRAME_NUMBER + 1))
+
+        # Refresh FPS from config (picks up changes from settings edits)
+        TARGET_FPS="${CONFIG_FPS:-10}"
+        TARGET_FRAME_MS=$((1000 / TARGET_FPS))
 
         # Show feedback dialog after initial frames render (one-time trigger)
         if [[ $FEEDBACK_TRIGGER_FRAME -gt 0 && $FRAME_NUMBER -ge $FEEDBACK_TRIGGER_FRAME && $DIALOG_MODE -eq 0 ]]; then

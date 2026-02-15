@@ -1,6 +1,5 @@
 {
   "model": "opus",
-  "fps": 10,
   "permissions": {
     "manager": {
       "allow": [
@@ -27,6 +26,5 @@
       ],
       "deny": []
     }
-  },
-  "externalDiffTool": "\"git webdiff\""
+  }
 }
