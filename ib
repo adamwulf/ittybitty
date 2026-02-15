@@ -4651,6 +4651,14 @@ parse_state() {
             echo "running"
             return
         fi
+        # If the spinner line contains token transfer arrows (↑/↓), it's actively processing
+        # Active: "· Smooshing… (6m 14s · ↑ 16.7k tokens · thought for 12s)"
+        # These arrows indicate live token streaming, only present during active thinking
+        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*[↑↓] ]]; then
+            _PARSE_STATE_REASON="thinking spinner with active token transfer"
+            echo "running"
+            return
+        fi
         # Check if it's a completion time indicator:
         # Old format: "✻ Cogitated for 4m 4s" - spinner + word + for at line start
         # New format: "· Photosynthesizing… (10m 57s · thought for 254s)" - spinner line with "thought for"
