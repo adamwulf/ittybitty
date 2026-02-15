@@ -1,0 +1,43 @@
+  1. Create /research-feature skill first (biggest ROI for
+  agent efficiency)
+  2. Create /lessons-learned skill aggregating gotchas from
+  bug analysis docs
+  3. Create /core-data-patterns skill (most error-prone
+  area)
+  4. Slim down CLAUDE.md by moving localization content to
+  .claude/rules/
+  5. Eventually migrate from .claude/commands/ to
+  .claude/skills/ directory structure
+
+  The full report with concrete skill implementations is at
+  research/skills-for-institutional-knowledge.md.
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Worked for 4m 46s
+
+⏺ Agent "Research Claude Code skills system" completed
+
+⏺ The research is complete and committed. The skills
+  research agent's findings have already been incorporated
+  into the report. Nothing more to do.
+
+  I HAVE COMPLETED THE GOAL
+
+⏺ Agent "Audit docs/ and research/ folders" completed
+
+⏺ Both research agents have completed and their findings are
+   already incorporated into the committed report. The task
+  is done.
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Spinning… (running stop hook · thought for 6s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-fe3c0b6e
+  Session: 50% (37m) Weekly: 52% (3d 4h)
+  ⏵⏵ accept edits on (shift+tab to cycle)

@@ -1,0 +1,43 @@
+  - **View Controllers** (Muse/View Controllers/) -
+  what patterns, gotchas, and rules matter here?
+  - **Views** (Muse/Views/) - what's different about
+  working on views vs controllers?
+  - **Interactions** (Muse/Interactions/) - gesture
+  handling, selection, drag/drop rules
+  - **Data/persistence layer** - whatever the actual
+  persistence mechanism is (NOT Core Data)
+  - **Sync/Network** (Muse/Service
+  Workers/SyncNetwork/, NetworkConnection/,
+  NetworkModel/) - sync architecture rules
+  - **Import/Export** (Muse/Import & Export/) - bundle
+  format, translation behavior
+  - **Extensions** - app extensions like MuseShare
+  - **LogDriver and automerge packages** - the sibling
+  repos
+
+  ### What I want:
+  For each area, propose a rule file with:
+  1. The exact `paths:` glob that would trigger it
+  (using CSV format, not YAML arrays)
+  2. The specific knowledge/guardrails agents need when
+   working in that area
+  3. References to relevant docs/ files for deeper
+  reading
+
+  For example, if an agent starts editing files in the
+  sync network, it should automatically
+
+⏺ This is a substantial research task. I'll explore the
+  actual codebase in parallel across all the areas you
+  listed. Let me launch exploration agents for each area
+  simultaneously.
+
+· Fluttering… (thought for 13s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-fe3c0b6e
+  Session: 76% (10m) Weekly: 54% (3d 4h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
