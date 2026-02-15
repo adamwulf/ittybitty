@@ -2339,7 +2339,7 @@ cmd_test_compare_versions() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/, debug/
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -2380,6 +2380,11 @@ archive_agent_output() {
         # Archive debug-logs directory (tmux captures when state was unknown)
         if [[ -d "$AGENT_DIR/debug-logs" ]]; then
             cp -r "$AGENT_DIR/debug-logs" "$archive_folder/debug-logs"
+        fi
+
+        # Archive debug directory (stop hook, nudge, and snapshot captures)
+        if [[ -d "$AGENT_DIR/debug" ]]; then
+            cp -r "$AGENT_DIR/debug" "$archive_folder/debug"
         fi
 
         echo "Archived to: $archive_folder/"
@@ -14108,6 +14113,7 @@ Controls:
   e       Jump to errors pane
   ;/l     Scroll panes down/up
   s       Send message to agent
+  S       Capture tmux snapshot for debugging state detection
   m       Merge agent's branch
   x       Kill agent
   a       Create new agent
@@ -14219,6 +14225,11 @@ EOF
     local RENDER_TIME_1=0
     local RENDER_TIME_2=0
     local RENDER_TIME_3=0
+
+    # Status message (temporary feedback after actions like snapshot capture)
+    # Uses $SECONDS (bash builtin) to avoid subprocess spawning in render path
+    local _WATCH_STATUS_MSG=""
+    local _WATCH_STATUS_EXPIRES=0  # $SECONDS value when message should disappear
 
     # Escape sequence tracking for normal mode (arrow keys)
     local _WATCH_ESC_PENDING=0  # 0=none, 1=got ESC, 2=got ESC+[
@@ -19859,6 +19870,55 @@ try {
         fi
     }
 
+    # Capture tmux snapshot for debugging state detection
+    # Args: $1=agent_id
+    # Saves last 20 lines of tmux output + parse-state -v output to debug/snapshot-{ts}-{state}.txt
+    watch_capture_snapshot() {
+        local agent_id="$1"
+        local agent_dir="$AGENTS_DIR/$agent_id"
+        local tmux_session
+        tmux_session=$(session_name "$agent_id")
+
+        # Check if tmux session exists
+        if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
+            _WATCH_STATUS_MSG="No tmux session for $agent_id"
+            _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
+            return
+        fi
+
+        # Capture last 20 lines of tmux output
+        local capture
+        capture=$(tmux capture-pane -t "$tmux_session" -p -S -20 -E - 2>/dev/null) || true
+
+        if [[ -z "$capture" ]]; then
+            _WATCH_STATUS_MSG="Empty capture for $agent_id"
+            _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
+            return
+        fi
+
+        # Get current state for filename
+        local state
+        state=$(get_state "$agent_id")
+
+        # Save to debug directory
+        local debug_dir="$agent_dir/debug"
+        mkdir -p "$debug_dir"
+        local debug_ts
+        debug_ts=$(date +%s)
+        local debug_file="$debug_dir/snapshot-${debug_ts}-${state}.txt"
+
+        printf '%s\n' "$capture" > "$debug_file"
+
+        # Append parse-state -v output
+        local debug_reason
+        debug_reason=$(printf '%s' "$capture" | ib parse-state -v 2>&1) || true
+        printf '\n--- parse-state -v output ---\n%s\n' "$debug_reason" >> "$debug_file"
+
+        # Show status feedback
+        _WATCH_STATUS_MSG="Snapshot saved: debug/snapshot-${debug_ts}-${state}.txt"
+        _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
+    }
+
     # Open external diff tool for an agent
     # Args: $1=agent_id
     watch_open_external_diff() {
@@ -20069,6 +20129,18 @@ try {
                 action_text_visible_len=$((action_text_visible_len + 12))  # "    h: setup" = 12 chars
             fi
         fi
+
+        # Override action_text with temporary status message if active
+        if [[ -n "$_WATCH_STATUS_MSG" ]]; then
+            if [[ $SECONDS -lt $_WATCH_STATUS_EXPIRES ]]; then
+                action_text="${COLOR_YELLOW}${_WATCH_STATUS_MSG}${COLOR_RESET}${COLOR_DIM}"
+                action_text_visible_len=${#_WATCH_STATUS_MSG}
+            else
+                _WATCH_STATUS_MSG=""
+                _WATCH_STATUS_EXPIRES=0
+            fi
+        fi
+
         # Use LAST_FRAME_MS from previous complete frame (includes sleep)
         local frame_ms=$LAST_FRAME_MS
         if [[ $frame_ms -eq 0 ]]; then
@@ -21806,6 +21878,16 @@ try {
                 if [[ $AGENT_COUNT -gt 0 && -n "$_WATCH_SELECTED_ID" ]]; then
                     watch_dialog_init_reassign
                     DIALOG_MODE=15
+                fi
+                ;;
+            S)
+                _WATCH_ESC_PENDING=0
+                # Capture tmux snapshot for debugging state detection
+                if [[ -n "$_WATCH_SELECTED_ID" ]]; then
+                    watch_capture_snapshot "$_WATCH_SELECTED_ID"
+                else
+                    _WATCH_STATUS_MSG="No agent selected"
+                    _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
                 fi
                 ;;
             w)
