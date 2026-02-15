@@ -1,0 +1,43 @@
+      commit -m "Unify skills research into single
+      consolidated report…)
+  ⎿  [agent/agent-fe3c0b6e b798fd193] Unify skills rese
+     arch into single consolidated report
+      2 files changed, 499 insertions(+), 868 deletions
+     … +7 lines (ctrl+o to expand)
+
+⏺ Done. The unified report is committed at b798fd193. Here's
+   what changed:
+
+  - research/skills-for-institutional-knowledge.md —
+  Rewritten as a single consolidated report (703 lines → 703
+   lines, reorganized)
+  - research/skills-deep-dive-mechanics.md — Deleted
+
+  The unified report flows as:
+  1. Executive Summary — Updated with deep-dive conclusions
+  2. Part 1: Knowledge Audit — Unchanged from original
+  3. Part 2: Technical Analysis — Merged skills + rules +
+  auto-invocation mechanics + context budget math
+  4. Part 3: Rules vs Skills — Tradeoff analysis, false
+  positive/negative data, granularity recommendations,
+  decision matrix
+  5. Part 4: Recommended Architecture — The revised version
+  with rules for guardrails, skills for workflows, and
+  explicit "What Was Dropped and Why" section
+  6. Part 5: Implementation Plan — Updated phases (rules
+  first, not lessons-learned)
+  7. Part 6: Concrete Examples — Full skill implementations
+  8. Appendices — Context budget, agent sharing, sources
+
+  I HAVE COMPLETED THE GOAL
+
+✳ Pondering… (running stop hook · 4m 17s · ↓ 10.5k tokens ·
+thought for 14s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-fe3c0b6e
+  Session: 73% (18m) Weekly: 53% (3d 4h)
+  ⏵⏵ accept edits on (shift+tab to cycle)

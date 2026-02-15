@@ -1,0 +1,43 @@
+  stores. They teach agents when and how to consult existing
+   docs at the right moments, rather than duplicating
+  content.
+
+  Proposed Architecture (3 Skill Categories)
+
+  1. Investigative Skills — /research-feature, /check-docs —
+   guide agents through systematic codebase discovery before
+   implementing
+  2. Pattern Skills — /ink-tool, /core-data-patterns,
+  /card-implementation, /sync-debugging — encode proven
+  implementation patterns with supporting reference files
+  3. Guardrail Skills — /pre-implementation-check,
+  /geometry-safety — auto-invoked to catch common mistakes
+
+  Top Recommendations
+
+  1. Create /research-feature skill first (biggest ROI for
+  agent efficiency)
+  2. Create /lessons-learned skill aggregating gotchas from
+  bug analysis docs
+  3. Create /core-data-patterns skill (most error-prone
+  area)
+  4. Slim down CLAUDE.md by moving localization content to
+  .claude/rules/
+  5. Eventually migrate from .claude/commands/ to
+  .claude/skills/ directory structure
+
+  The full report with concrete skill implementations is at
+  research/skills-for-institutional-knowledge.md.
+
+  I HAVE COMPLETED THE GOAL
+
+✶ Spinning… (running stop hook · 4m 46s · ↓ 9.5k tokens ·
+thought for 6s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-fe3c0b6e
+  Session: 50% (37m) Weekly: 52% (3d 4h)
+  ⏵⏵ accept edits on (shift+tab to cycle)

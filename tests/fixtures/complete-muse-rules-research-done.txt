@@ -1,0 +1,43 @@
+  skills technical analysis, design proposals, and
+  implementation recommendations.
+  2. research/skills-deep-dive-mechanics.md (commit
+  2a1bb801c) — Companion deep-dive covering rules loading
+  mechanics, skill auto-invocation behavior, false
+  positive/negative analysis, and a revised practical
+  strategy recommending rules for guardrails (100% reliable)
+   and skills for explicit workflows only.
+
+  Key strategic recommendations from the research:
+  - Use .claude/rules/ for critical guardrails (logging,
+  memory management, concurrency) — always loaded, 100%
+  reliable
+  - Reserve skills for explicit workflow commands
+  (translation, release prep) — not auto-invoked
+  - Target 15-30 medium-granularity skills within the
+  ~16,000 char description budget
+  - The paths: conditional loading in rules is currently
+  buggy (GitHub issue #16299), so treat all rules as
+  globally loaded for now
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Cogitated for 6m 5s
+
+⏺ Agent "Research .claude/rules/ mechanics" completed
+
+⏺ This is a late notification for a research agent whose
+  results were already incorporated into the committed
+  report. Both research reports are committed and the goal
+  is complete.
+
+  I HAVE COMPLETED THE GOAL
+
+✻ Crystallizing… (running stop hook · thought for 3s)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-fe3c0b6e
+  Session: 66% (26m) Weekly: 53% (3d 4h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
