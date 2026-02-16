@@ -12653,7 +12653,8 @@ cmd_hooks_intercept_task() {
 
     # Build the Bash subagent's prompt with --prompt-file to avoid shell redirects
     # that trigger permission prompts. The command is a plain ib call matching Bash(ib:*)
-    local shim_prompt="Run this command and return the full output: $cmd --prompt-file $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
+    local shim_prompt
+    printf -v shim_prompt 'Run this exact command:\n\n%s --prompt-file %s\n\nReturn the full output. The spawned agent can be monitored with ib look, ib send, ib diff, ib merge, and ib list.' "$cmd" "$tmpfile"
 
     # JSON-escape the shim prompt and description for safe embedding
     local escaped_prompt
