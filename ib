@@ -6467,6 +6467,7 @@ cmd_new_agent() {
             --yolo)        YOLO_MODE=true; shift ;;
             --worker|--leaf) WORKER_MODE=true; shift ;;
             --model)       MODEL="$2"; shift 2 ;;
+            --prompt-file) PROMPT=$(<"$2"); shift 2 ;;
             -h|--help)
                 cat <<EOF
 Usage: ib new-agent [options] "prompt"
@@ -12650,9 +12651,9 @@ cmd_hooks_intercept_task() {
         cmd="$cmd --model $model"
     fi
 
-    # Build the Bash subagent's prompt - tells it to run the command with stdin redirect
-    # Keep it as a single simple command (no && or pipes) so it matches Bash(ib:*) permissions
-    local shim_prompt="Run this command and return the full output: $cmd < $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
+    # Build the Bash subagent's prompt with --prompt-file to avoid shell redirects
+    # that trigger permission prompts. The command is a plain ib call matching Bash(ib:*)
+    local shim_prompt="Run this command and return the full output: $cmd --prompt-file $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
 
     # JSON-escape the shim prompt and description for safe embedding
     local escaped_prompt
