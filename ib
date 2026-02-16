@@ -12651,7 +12651,8 @@ cmd_hooks_intercept_task() {
     fi
 
     # Build the Bash subagent's prompt - tells it to run the command with stdin redirect
-    local shim_prompt="Run this command and return the full output: $cmd < $tmpfile && rm $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
+    # Keep it as a single simple command (no && or pipes) so it matches Bash(ib:*) permissions
+    local shim_prompt="Run this command and return the full output: $cmd < $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
 
     # JSON-escape the shim prompt and description for safe embedding
     local escaped_prompt
