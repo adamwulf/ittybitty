@@ -6541,6 +6541,11 @@ EOF
         esac
     done
 
+    # If no positional prompt, try reading from stdin (for piped/redirected input)
+    if [[ -z "$PROMPT" ]] && [[ ! -t 0 ]]; then
+        PROMPT=$(cat 2>/dev/null) || true
+    fi
+
     if [[ -z "$PROMPT" ]]; then
         echo "Error: prompt required" >&2
         echo "Usage: ib new-agent [options] \"prompt\"" >&2
@@ -12627,42 +12632,39 @@ cmd_hooks_intercept_task() {
         exit 0
     fi
 
-    # Build ib new-agent command as array (avoids eval with untrusted input)
-    local -a spawn_args=("ib" "new-agent")
+    # Write prompt to temp file so the Bash subagent can pass it via stdin
+    # (avoids all quoting/escaping issues with arbitrary prompt content)
+    local tmpfile
+    tmpfile=$(mktemp /tmp/ib-intercept-XXXXXXXX) || {
+        # mktemp failed - allow native Task as fallback
+        exit 0
+    }
+    printf '%s' "$agent_prompt" > "$tmpfile"
 
-    # If called from a manager agent, spawn as worker under that manager
+    # Build the ib new-agent command for the Bash subagent to run
+    local cmd="ib new-agent"
     if [[ -n "$calling_agent_id" ]]; then
-        spawn_args+=("--worker" "--manager" "$calling_agent_id")
+        cmd="$cmd --worker --manager $calling_agent_id"
     fi
-
-    # Pass model if specified
     if [[ -n "$model" ]]; then
-        spawn_args+=("--model" "$model")
+        cmd="$cmd --model $model"
     fi
 
-    # Spawn the agent
-    # cmd_new_agent outputs the raw agent ID on stdout; discard stderr (git messages)
-    local spawn_output
-    if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>/dev/null); then
-        # cmd_new_agent outputs just the raw ID (e.g., "abc12345")
-        local agent_id
-        agent_id=$(echo "$spawn_output" | tail -1)
+    # Build the Bash subagent's prompt - tells it to run the command with stdin redirect
+    local shim_prompt="Run this command and return the full output: $cmd < $tmpfile && rm $tmpfile -- After running, report the agent ID. The agent can be monitored with: ib look <id>, ib send <id> msg, ib diff <id>, ib merge <id>, ib list."
 
-        local reason
-        if [[ "$agent_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-            reason="Task intercepted and redirected to ib agent '$agent_id'. Use 'ib look $agent_id' to view progress, 'ib send $agent_id \"message\"' to communicate, 'ib diff $agent_id' to review changes, and 'ib merge $agent_id' to merge when done. Use 'ib list' to see all agents."
-        else
-            # Spawned but couldn't parse ID - still deny since agent was created
-            reason="Task intercepted and redirected to an ib agent. Use 'ib list' to find it, then 'ib look <id>' to view progress."
-        fi
-        # Output proper JSON deny decision so Claude sees the reason
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
-            "$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-        exit 0
-    else
-        # Spawn failed - allow native Task as fallback
-        exit 0
-    fi
+    # JSON-escape the shim prompt and description for safe embedding
+    local escaped_prompt
+    escaped_prompt=$(json_escape_string "$shim_prompt")
+    local escaped_desc
+    escaped_desc=$(json_escape_string "${description:-Spawn ib agent}")
+
+    # Return updatedInput to rewrite the Task as a lightweight Bash subagent
+    # that spawns the ib agent. This allows the Task to proceed (no deny),
+    # which avoids sibling failure cascade when multiple Tasks spawn in parallel.
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"%s","max_turns":3,"model":"haiku"}}}\n' \
+        "$escaped_prompt" "$escaped_desc"
+    exit 0
 }
 
 # =============================================================================
