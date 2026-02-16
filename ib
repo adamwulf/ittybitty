@@ -2339,7 +2339,7 @@ cmd_test_compare_versions() {
 # =============================================================================
 
 # Archive an agent's output before cleanup
-# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/, debug/
+# Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/
 archive_agent_output() {
     local ID="$1"
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -2377,14 +2377,9 @@ archive_agent_output() {
             mv "$AGENT_DIR/settings.local.json" "$archive_folder/settings.local.json"
         fi
 
-        # Archive debug-logs directory (tmux captures when state was unknown)
+        # Archive debug-logs directory (tmux captures: stop hook, nudge, snapshot, unknown state)
         if [[ -d "$AGENT_DIR/debug-logs" ]]; then
             cp -r "$AGENT_DIR/debug-logs" "$archive_folder/debug-logs"
-        fi
-
-        # Archive debug directory (stop hook, nudge, and snapshot captures)
-        if [[ -d "$AGENT_DIR/debug" ]]; then
-            cp -r "$AGENT_DIR/debug" "$archive_folder/debug"
         fi
 
         echo "Archived to: $archive_folder/"
@@ -8881,7 +8876,7 @@ cmd_hooks_agent_status() {
     # Save tmux output for ALL Stop hook triggers (debug mode)
     # This helps study what correct vs incorrect detections look like
     local AGENT_DIR_EARLY="$AGENTS_DIR/$ID"
-    local debug_dir="$AGENT_DIR_EARLY/debug"
+    local debug_dir="$AGENT_DIR_EARLY/debug-logs"
     mkdir -p "$debug_dir"
     local debug_ts
     debug_ts=$(date +%s)
@@ -8965,7 +8960,7 @@ cmd_hooks_agent_status() {
 
         # Save tmux output for debugging false state detections
         # Capture the same view that get_state used (last 20 lines)
-        local debug_dir="$AGENT_DIR/debug"
+        local debug_dir="$AGENT_DIR/debug-logs"
         mkdir -p "$debug_dir"
         local debug_ts
         debug_ts=$(date +%s)
@@ -8984,7 +8979,7 @@ cmd_hooks_agent_status() {
             parsed_state=$(<"$parse_tmpfile") || true
             rm -f "$parse_tmpfile"
             printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
-            log_agent "$ID" "[hook] Saved debug capture to debug/nudge-${debug_ts}-${state}.txt" --quiet
+            log_agent "$ID" "[hook] Saved debug capture to debug-logs/nudge-${debug_ts}-${state}.txt" --quiet
         fi
 
         date +%s > "$nudge_file"
@@ -13897,14 +13892,14 @@ cmd_watchdog() {
                     local debug_dir="$AGENT_DIR/debug-logs"
                     mkdir -p "$debug_dir"
                     local debug_timestamp
-                    debug_timestamp=$(date +%Y%m%d-%H%M%S)
-                    local debug_file="$debug_dir/unknown-${debug_timestamp}.txt"
+                    debug_timestamp=$(date +%s)
+                    local debug_file="$debug_dir/watchdog-${debug_timestamp}-unknown.txt"
                     local TMUX_SESSION
                     TMUX_SESSION=$(session_name "$AGENT_ID")
                     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                         tmux capture-pane -t "$TMUX_SESSION" -p -S - > "$debug_file" 2>/dev/null || true
                         echo "[watchdog] Saved debug log: $debug_file"
-                        log_agent "$AGENT_ID" "[watchdog] Debug log saved: debug-logs/unknown-${debug_timestamp}.txt" --quiet
+                        log_agent "$AGENT_ID" "[watchdog] Debug log saved: debug-logs/watchdog-${debug_timestamp}-unknown.txt" --quiet
                     fi
                 fi
 
@@ -19893,7 +19888,7 @@ try {
 
     # Capture tmux snapshot for debugging state detection
     # Args: $1=agent_id
-    # Saves last 20 lines of tmux output + parse-state -v output to debug/snapshot-{ts}-{state}.txt
+    # Saves last 20 lines of tmux output + parse-state -v output to debug-logs/snapshot-{ts}-{state}.txt
     watch_capture_snapshot() {
         local agent_id="$1"
         local agent_dir="$AGENTS_DIR/$agent_id"
@@ -19926,7 +19921,7 @@ try {
         state=$(get_state "$agent_id")
 
         # Save to debug directory
-        local debug_dir="$agent_dir/debug"
+        local debug_dir="$agent_dir/debug-logs"
         mkdir -p "$debug_dir"
         local debug_ts
         debug_ts=$(date +%s)
@@ -19945,7 +19940,7 @@ try {
         printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
 
         # Show status feedback
-        _WATCH_STATUS_MSG="Snapshot saved: debug/snapshot-${debug_ts}-${state}.txt"
+        _WATCH_STATUS_MSG="Snapshot saved: debug-logs/snapshot-${debug_ts}-${state}.txt"
         _WATCH_STATUS_EXPIRES=$((SECONDS + 3))
     }
 
