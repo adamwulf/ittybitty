@@ -4674,7 +4674,13 @@ filter_hook_spinners() {
     done <<< "$input_text"
 }
 
-parse_state() {
+# Globals for parse_state/get_state results (avoids subshells in callers)
+_PARSE_STATE_RESULT=""
+_GET_STATE_RESULT=""
+_GET_STATE_CAPTURE=""
+
+# Internal implementation of parse_state. Use parse_state() wrapper instead.
+_parse_state_impl() {
     # Sets _PARSE_STATE_REASON with a human-readable description of which pattern matched.
     # This global is useful when calling parse_state directly (not in a subshell)
     # to avoid losing the reason in command substitution.
@@ -4940,6 +4946,18 @@ parse_state() {
     echo "unknown"
 }
 
+# Wrapper for _parse_state_impl that captures result in _PARSE_STATE_RESULT global.
+# This allows callers to avoid subshells: instead of state=$(parse_state "$input"),
+# they can call parse_state "$input" and read state from _PARSE_STATE_RESULT.
+# Still echoes result for backward compatibility with existing $(parse_state) callers.
+parse_state() {
+    local tmpfile="/tmp/ib-parse-state-$$"
+    _parse_state_impl "$@" > "$tmpfile" 2>/dev/null || true
+    _PARSE_STATE_RESULT=$(<"$tmpfile") || true
+    rm -f "$tmpfile"
+    echo "$_PARSE_STATE_RESULT"
+}
+
 # Encode a file path to Claude Code's project directory name format
 # Example: /Users/foo/bar/.baz/qux -> -Users-foo-bar--baz-qux
 # Both / and . are replaced with -
@@ -5062,6 +5080,8 @@ get_state() {
             local cached_state
             cached_state=$(<"$state_cache")
             if [[ -n "$cached_state" ]]; then
+                _GET_STATE_RESULT="$cached_state"
+                _GET_STATE_CAPTURE=""
                 echo "$cached_state"
                 return
             fi
@@ -5096,8 +5116,12 @@ get_state() {
         if [[ -z "$recent" ]]; then
             # Check if agent is newly created (< 6 seconds old)
             if is_agent_recently_created "$id"; then
+                _GET_STATE_RESULT="creating"
+                _GET_STATE_CAPTURE=""
                 echo "creating"
             else
+                _GET_STATE_RESULT="stopped"
+                _GET_STATE_CAPTURE=""
                 echo "stopped"
             fi
             return
@@ -5110,8 +5134,12 @@ get_state() {
     if [[ -z "$recent" ]]; then
         # Check if agent is newly created (< 6 seconds old)
         if is_agent_recently_created "$id"; then
+            _GET_STATE_RESULT="creating"
+            _GET_STATE_CAPTURE=""
             echo "creating"
         else
+            _GET_STATE_RESULT="stopped"
+            _GET_STATE_CAPTURE=""
             echo "stopped"
         fi
         return
@@ -5147,6 +5175,8 @@ get_state() {
                [[ "$full_history" == *"Allow external CLAUDE.md file imports"* ]]; then
                 # Restore case matching before returning
                 eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
+                _GET_STATE_RESULT="creating"
+                _GET_STATE_CAPTURE=""
                 echo "creating"
                 return
             fi
@@ -5158,13 +5188,18 @@ get_state() {
         local no_newlines="${full_history//$'\n'/}"
         local line_count=$(( ${#full_history} - ${#no_newlines} + 1 ))
         if [[ "$line_count" -lt 10 ]]; then
+            _GET_STATE_RESULT="creating"
+            _GET_STATE_CAPTURE=""
             echo "creating"
             return
         fi
     fi
 
     # Use parse_state for the actual state detection logic
+    # Set _GET_STATE_CAPTURE before calling parse_state, then copy result to _GET_STATE_RESULT
+    _GET_STATE_CAPTURE="$recent"
     parse_state "$recent"
+    _GET_STATE_RESULT="$_PARSE_STATE_RESULT"
 }
 
 # Wait for Claude to start - logo OR permissions screen appears
@@ -9110,33 +9145,26 @@ cmd_hooks_agent_status() {
     fi
     ID="$RESOLVED_ID"
 
-    local state=$(get_state "$ID")
+    # Call get_state and read result from global to avoid subshell
+    get_state "$ID"
+    local state="$_GET_STATE_RESULT"
     log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
 
     local TMUX_SESSION=$(session_name "$ID")
 
     # Save tmux output for ALL Stop hook triggers (debug mode)
-    # This helps study what correct vs incorrect detections look like
+    # Use _GET_STATE_CAPTURE to ensure we're saving EXACTLY what get_state used for detection
     local AGENT_DIR_EARLY="$AGENTS_DIR/$ID"
     local debug_dir="$AGENT_DIR_EARLY/debug-logs"
     mkdir -p "$debug_dir"
     local debug_ts
     debug_ts=$(date +%s)
     local debug_file="$debug_dir/stop-${debug_ts}-${state}.txt"
-    local debug_capture
-    debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
-    if [[ -n "$debug_capture" ]]; then
-        # Strip ANSI codes for consistent pattern matching
-        _strip_ansi "$debug_capture"
-        debug_capture="$_STRIP_ANSI_RESULT"
-        printf '%s\n' "$debug_capture" > "$debug_file"
-        # Call parse_state directly instead of spawning 'ib parse-state' subprocess
-        local parse_tmpfile="/tmp/ib-stop-debug-$$"
-        parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
-        local parsed_state
-        parsed_state=$(<"$parse_tmpfile") || true
-        rm -f "$parse_tmpfile"
-        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
+    if [[ -n "$_GET_STATE_CAPTURE" ]]; then
+        # _GET_STATE_CAPTURE is already ANSI-stripped by get_state
+        printf '%s\n' "$_GET_STATE_CAPTURE" > "$debug_file"
+        # Add parse_state result and reason (already computed by get_state)
+        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
     fi
 
     # Get agent's manager (if any) for worker notifications
@@ -9201,26 +9229,17 @@ cmd_hooks_agent_status() {
         log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
 
         # Save tmux output for debugging false state detections
-        # Capture the same view that get_state used (last 20 lines)
+        # Use _GET_STATE_CAPTURE to ensure we're saving EXACTLY what get_state used
         local debug_dir="$AGENT_DIR/debug-logs"
         mkdir -p "$debug_dir"
         local debug_ts
         debug_ts=$(date +%s)
         local debug_file="$debug_dir/nudge-${debug_ts}-${state}.txt"
-        local debug_capture
-        debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
-        if [[ -n "$debug_capture" ]]; then
-            # Strip ANSI codes for consistent pattern matching
-            _strip_ansi "$debug_capture"
-            debug_capture="$_STRIP_ANSI_RESULT"
-            printf '%s\n' "$debug_capture" > "$debug_file"
-            # Call parse_state directly instead of spawning 'ib parse-state' subprocess
-            local parse_tmpfile="/tmp/ib-nudge-debug-$$"
-            parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
-            local parsed_state
-            parsed_state=$(<"$parse_tmpfile") || true
-            rm -f "$parse_tmpfile"
-            printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
+        if [[ -n "$_GET_STATE_CAPTURE" ]]; then
+            # _GET_STATE_CAPTURE is already ANSI-stripped by get_state
+            printf '%s\n' "$_GET_STATE_CAPTURE" > "$debug_file"
+            # Add parse_state result and reason (already computed by get_state)
+            printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
             log_agent "$ID" "[hook] Saved debug capture to debug-logs/nudge-${debug_ts}-${state}.txt" --quiet
         fi
 
