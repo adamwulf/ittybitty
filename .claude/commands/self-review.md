@@ -14,11 +14,8 @@ Before declaring "I HAVE COMPLETED THE GOAL", you must spawn worker agents to re
 
 Distribute these across your workers. Each worker should focus on 2-3 areas:
 
-- **`set -e` safety**: `[[ ]] && ...` must have `|| true` unless in `if` blocks. Check `grep`, `read -t`, `(( ))` patterns.
-- **Bash 3.2 compatibility**: No `${var,,}`, `declare -A`, `readarray`, `&>>`, `|&`, negative array indices.
-- **Cross-platform**: `date`, `sed -i`, `grep -P`, `base64` differ between macOS and Linux.
-- **Code duplication**: Search for existing helpers (`json_get`, `read_meta_field`, `format_age`, `log_agent`, `tool_matches_pattern`, etc.) that the new code might be reinventing.
-- **jq/osascript consistency**: Both JSON engine paths must produce identical output.
-- **Security**: Variable quoting, command injection from untrusted input.
 - **Correctness**: Edge cases, return values, logic errors.
-- **Tests**: New helpers need `cmd_test_*` + fixtures + test script. Existing `.expected` files updated if output changed.
+- **Security**: Variable quoting, command injection from untrusted input.
+- **Code duplication**: Search for existing helpers that the new code might be reinventing.
+- **Tests**: Are new tests needed? Are existing tests affected by the changes?
+- **Project-specific rules**: Check CLAUDE.md for coding standards, compatibility requirements, and conventions that apply to this codebase.
