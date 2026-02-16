@@ -3,7 +3,6 @@ model: haiku
 fps:
 createPullRequests:
 allowAgentQuestions:
-interceptTasks:
 autoCompactThreshold:
 externalDiffTool:
 permissions.manager:

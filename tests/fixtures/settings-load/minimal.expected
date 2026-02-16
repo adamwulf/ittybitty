@@ -3,7 +3,6 @@ model:
 fps:
 createPullRequests:
 allowAgentQuestions:
-interceptTasks:
 autoCompactThreshold:
 externalDiffTool:
 permissions.manager:
