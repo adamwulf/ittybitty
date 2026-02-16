@@ -854,13 +854,15 @@ JSON.stringify(data, null, 2);
 }
 
 # Build agent settings JSON (replaces complex jq pipeline in build_agent_settings)
-# Usage: build_settings_json "manager|worker" "base_settings" "config_allow_json" "config_deny_json" "agent_id"
+# Usage: build_settings_json "manager|worker" "base_settings" "config_allow_json" "config_deny_json" "agent_id" ["add_intercept"]
+# add_intercept: "true" to add task interception hook (for manager agents with interceptTasks enabled)
 build_settings_json() {
     local agent_type="$1"
     local base_settings="$2"
     local cfg_allow="$3"
     local cfg_deny="$4"
     local agent_id="$5"
+    local add_intercept="${6:-false}"
 
     # Mandatory permissions that are always added
     local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git reset:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
@@ -873,7 +875,8 @@ build_settings_json() {
             --argjson cfg_allow "$cfg_allow" \
             --argjson cfg_deny "$cfg_deny" \
             --arg hook_cmd "$hook_cmd" \
-            --arg agent_id "$agent_id" '
+            --arg agent_id "$agent_id" \
+            --argjson add_intercept "$(if [[ "$add_intercept" == "true" ]]; then echo "true"; else echo "false"; fi)" '
             # Initialize permissions if not present
             .permissions //= {} |
             .permissions.allow //= [] |
@@ -886,7 +889,8 @@ build_settings_json() {
             .hooks //= {} |
             .hooks.Stop = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-status \($agent_id)" }] }] |
             .hooks.PermissionRequest = [{ matcher: "*", hooks: [{ type: "command", command: $hook_cmd }] }] |
-            .hooks.PreToolUse = [{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }] |
+            .hooks.PreToolUse = ([{ matcher: "*", hooks: [{ type: "command", command: "ib hook-check-path \($agent_id)" }] }]
+                + (if $add_intercept then [{ matcher: "Task", hooks: [{ type: "command", command: "ib hooks intercept-task" }] }] else [] end)) |
             .hooks.SessionStart = [{ hooks: [{ type: "command", command: "ib hooks session-start" }] }]
         ' 2>/dev/null || true
     else
@@ -950,6 +954,13 @@ base.hooks.PreToolUse = [{
     matcher: '*',
     hooks: [{ type: 'command', command: 'ib hook-check-path $agent_id' }]
 }];
+
+if ('$add_intercept' === 'true') {
+    base.hooks.PreToolUse.push({
+        matcher: 'Task',
+        hooks: [{ type: 'command', command: 'ib hooks intercept-task' }]
+    });
+}
 
 base.hooks.SessionStart = [{
     hooks: [{ type: 'command', command: 'ib hooks session-start' }]
@@ -3491,8 +3502,14 @@ build_agent_settings() {
         deny_json="${CONFIG_MANAGER_DENY:-[]}"
     fi
 
+    # Determine if task interception should be added for this agent type
+    local add_intercept="false"
+    if [[ "$agent_type" == "manager" && "$CONFIG_INTERCEPT_TASKS" == "true" ]]; then
+        add_intercept="true"
+    fi
+
     # Build settings using the JSON helper
-    build_settings_json "$agent_type" "$base_settings" "$allow_json" "$deny_json" "__AGENT_ID__"
+    build_settings_json "$agent_type" "$base_settings" "$allow_json" "$deny_json" "__AGENT_ID__" "$add_intercept"
 }
 
 # Resolve a partial agent ID to a full ID
@@ -12562,11 +12579,25 @@ cmd_hooks_intercept_task() {
     local tool_name
     tool_name=$(json_get - "tool_name" "" <<< "$json_input")
 
-    # Skip if called from an agent worktree (agents use ib commands directly)
+    # Check if called from an agent worktree
     local cwd
     cwd=$(json_get - "cwd" "" <<< "$json_input")
-    if [[ "$cwd" == *"/.ittybitty/agents/"*"/repo"* ]]; then
-        exit 0
+    local calling_agent_id=""
+
+    if [[ "$cwd" =~ /\.ittybitty/agents/([^/]+)/repo ]]; then
+        calling_agent_id="${BASH_REMATCH[1]}"
+        # Look up the agent's meta.json to check type
+        local agents_base="${cwd%%/.ittybitty/agents/*}/.ittybitty/agents"
+        local agent_meta="$agents_base/$calling_agent_id/meta.json"
+        local is_worker="false"
+        if [[ -f "$agent_meta" ]]; then
+            is_worker=$(read_meta_field "$agent_meta" "worker" "false")
+        fi
+        # Workers don't get interception - they use native Task
+        if [[ "$is_worker" == "true" ]]; then
+            exit 0
+        fi
+        # Managers continue - their Tasks get intercepted as worker sub-agents
     fi
 
     # Load config and check if interception is enabled
@@ -12618,12 +12649,17 @@ cmd_hooks_intercept_task() {
     # Build ib new-agent command as array (avoids eval with untrusted input)
     local -a spawn_args=("ib" "new-agent")
 
+    # If called from a manager agent, spawn as worker under that manager
+    if [[ -n "$calling_agent_id" ]]; then
+        spawn_args+=("--worker" "--manager" "$calling_agent_id")
+    fi
+
     # Pass model if specified
     if [[ -n "$model" ]]; then
         spawn_args+=("--model" "$model")
     fi
 
-    # Spawn the agent (as a manager)
+    # Spawn the agent
     # cmd_new_agent outputs the raw agent ID on success
     local spawn_output
     if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>&1); then
