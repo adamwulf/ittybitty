@@ -12646,7 +12646,7 @@ cmd_hooks_intercept_task() {
     if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>/dev/null); then
         # cmd_new_agent outputs just the raw ID (e.g., "abc12345")
         local agent_id
-        agent_id=$(echo "$spawn_output" | head -1)
+        agent_id=$(echo "$spawn_output" | tail -1)
 
         local reason
         if [[ "$agent_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
