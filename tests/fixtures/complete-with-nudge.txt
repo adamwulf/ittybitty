@@ -1,0 +1,22 @@
+  Summary of changes:
+  - Updated the API endpoint handler
+  - Added input validation
+  - Fixed error handling
+
+  I HAVE COMPLETED THE GOAL
+
+❯ Resume your work, or end with 'WAITING' or 'I HAVE
+  COMPLETED THE GOAL' as your final line.
+
+I have already completed the task as described above.
+
+I HAVE COMPLETED THE GOAL
+
+· Pottered for 3s
+
+────────────────────────────────────────────────────────────
+  repo | Sonnet 4.5
+  agent/test-agent
+  Session: 63% (2h 8m) Weekly: 76% (2d 7h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
+

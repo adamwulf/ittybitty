@@ -4652,6 +4652,28 @@ compute_state_from_content() {
 #
 # Note: Strong running indicators take priority because they indicate active execution
 # that happens AFTER any completion phrase in the output.
+
+# Filter out hook execution spinners from text. Sets _FILTERED_LINES with the result.
+# Hook spinners (e.g., "✢ Schlepping… (running stop hook · 2m 54s · ↓ 4.6k tokens)")
+# should not trigger running detection since they represent the hook itself executing,
+# not the agent doing work. Removes lines starting with a spinner char that contain "hook".
+_FILTERED_LINES=""
+filter_hook_spinners() {
+    local input_text="$1"
+    _FILTERED_LINES=""
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[✽✶✢·✻✳] ]] && [[ "$line" == *hook* ]]; then
+            continue
+        fi
+        if [[ -n "$_FILTERED_LINES" ]]; then
+            _FILTERED_LINES="${_FILTERED_LINES}"$'\n'"${line}"
+        else
+            _FILTERED_LINES="${line}"
+        fi
+    done <<< "$input_text"
+}
+
 parse_state() {
     # Sets _PARSE_STATE_REASON with a human-readable description of which pattern matched.
     # This global is useful when calling parse_state directly (not in a subshell)
@@ -4831,9 +4853,15 @@ parse_state() {
     # Exclude completion time indicators in two formats:
     #   Old: "✻ Cogitated for 4m 4s" (spinner + past-tense verb + "for" at line start)
     #   New: "· Photosynthesizing… (10m 57s · thought for 254s)" (spinner line with "thought for")
-    if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
+    #
+    # First, filter out hook execution spinners (e.g., "running stop hook") which
+    # should not trigger running detection. See filter_hook_spinners() for details.
+    filter_hook_spinners "$last_lines"
+    local filtered_lines="$_FILTERED_LINES"
+
+    if [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         # If the spinner line contains an interruption marker, it's actively thinking
-        if [[ "$last_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+        if [[ "$filtered_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
             _PARSE_STATE_REASON="thinking spinner with interrupt marker"
             echo "running"
             return
@@ -4841,7 +4869,7 @@ parse_state() {
         # If the spinner line contains token transfer arrows (↑/↓), it's actively processing
         # Active: "· Smooshing… (6m 14s · ↑ 16.7k tokens · thought for 12s)"
         # These arrows indicate live token streaming, only present during active thinking
-        if [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*[↑↓] ]]; then
+        if [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳].*[↑↓] ]]; then
             _PARSE_STATE_REASON="thinking spinner with active token transfer"
             echo "running"
             return
@@ -4850,8 +4878,8 @@ parse_state() {
         # Old format: "✻ Cogitated for 4m 4s" - spinner + word + for at line start
         # New format: "· Photosynthesizing… (10m 57s · thought for 254s)" - spinner line with "thought for"
         # If NOT a completion indicator, it's still an active spinner
-        if ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
-           ! [[ "$last_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
+        if ! [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
+           ! [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
             _PARSE_STATE_REASON="active thinking spinner (not completion timer)"
             echo "running"
             return
@@ -4886,8 +4914,10 @@ parse_state() {
     # Only spinners with interrupt markers qualify (excludes completion time indicators)
     local broader_lines
     broader_lines=$(printf '%s' "$input" | tail -20)
-    if [[ "$broader_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
-        if [[ "$broader_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
+    filter_hook_spinners "$broader_lines"
+    local filtered_broader="$_FILTERED_LINES"
+    if [[ "$filtered_broader" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
+        if [[ "$filtered_broader" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
             _PARSE_STATE_REASON="active spinner in broader 20-line window"
             echo "running"
             return
@@ -8296,7 +8326,7 @@ EOF
     echo "Use 'ib look $ID' to view output"
 
     # Send nudge prompt to get the agent to continue working
-    local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
+    local prompt="Resume your work, or end with 'WAITING' or 'I HAVE COMPLETED THE GOAL' as your final line."
     tmux send-keys -t "$TMUX_SESSION" "$prompt"
     sleep 0.1
     tmux send-keys -t "$TMUX_SESSION" Enter
@@ -9195,7 +9225,7 @@ cmd_hooks_agent_status() {
         fi
 
         date +%s > "$nudge_file"
-        local prompt="When you stop working, you must always end your message with either 'WAITING' or 'I HAVE COMPLETED THE GOAL'. IMPORTANT: Write your summary or status update FIRST, then put the status phrase as your FINAL line - nothing should come after it. If you are waiting for input or have nothing more to do without further instruction, say 'WAITING'. If you have completed your goal, say 'I HAVE COMPLETED THE GOAL'. If you have neither completed your goal nor are waiting, then please resume your work."
+        local prompt="Resume your work, or end with 'WAITING' or 'I HAVE COMPLETED THE GOAL' as your final line."
 
         tmux send-keys -t "$TMUX_SESSION" "$prompt"
         sleep 0.1
