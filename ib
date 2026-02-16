@@ -855,7 +855,7 @@ JSON.stringify(data, null, 2);
 
 # Build agent settings JSON (replaces complex jq pipeline in build_agent_settings)
 # Usage: build_settings_json "manager|worker" "base_settings" "config_allow_json" "config_deny_json" "agent_id" ["add_intercept"]
-# add_intercept: "true" to add task interception hook (for manager agents with interceptTasks enabled)
+# add_intercept: "true" to add task interception hook (for manager agents when intercept hook is installed)
 build_settings_json() {
     local agent_type="$1"
     local base_settings="$2"
@@ -3080,7 +3080,6 @@ _config_parse_all() {
     _CFG_AUTO_COMPACT_THRESHOLD=""
     _CFG_HOOKS_INJECT_STATUS=""
     _CFG_HOOKS_STATUS_VISIBLE=""
-    _CFG_INTERCEPT_TASKS=""
 
     [[ -z "$json_content" ]] && return 0
 
@@ -3102,8 +3101,7 @@ _config_parse_all() {
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if .hooks then (if .hooks | has("injectStatus") then .hooks.injectStatus else "__UNSET__" end) else "__UNSET__" end),
-                (if .hooks then (if .hooks | has("statusVisible") then .hooks.statusVisible else "__UNSET__" end) else "__UNSET__" end),
-                (if has("interceptTasks") then .interceptTasks else "__UNSET__" end)
+                (if .hooks then (if .hooks | has("statusVisible") then .hooks.statusVisible else "__UNSET__" end) else "__UNSET__" end)
             ] | @tsv
         ' 2>/dev/null) || return 1
     else
@@ -3135,8 +3133,7 @@ try {
         d.hasOwnProperty('externalDiffTool') ? d.externalDiffTool : '__UNSET__',
         d.hasOwnProperty('autoCompactThreshold') ? d.autoCompactThreshold : '__UNSET__',
         h.hasOwnProperty('injectStatus') ? h.injectStatus : '__UNSET__',
-        h.hasOwnProperty('statusVisible') ? h.statusVisible : '__UNSET__',
-        d.hasOwnProperty('interceptTasks') ? d.interceptTasks : '__UNSET__'
+        h.hasOwnProperty('statusVisible') ? h.statusVisible : '__UNSET__'
     ].join('\t');
 } catch(e) { ''; }
 " 2>/dev/null) || return 1
@@ -3151,7 +3148,6 @@ try {
             _CFG_ALLOW_AGENT_QUESTIONS _CFG_EXTERNAL_DIFF_TOOL \
             _CFG_AUTO_COMPACT_THRESHOLD \
             _CFG_HOOKS_INJECT_STATUS _CFG_HOOKS_STATUS_VISIBLE \
-            _CFG_INTERCEPT_TASKS \
             <<< "$result"
     fi
 
@@ -3170,7 +3166,6 @@ try {
     [[ "$_CFG_AUTO_COMPACT_THRESHOLD" == "__UNSET__" ]] && _CFG_AUTO_COMPACT_THRESHOLD="" || true
     [[ "$_CFG_HOOKS_INJECT_STATUS" == "__UNSET__" ]] && _CFG_HOOKS_INJECT_STATUS="" || true
     [[ "$_CFG_HOOKS_STATUS_VISIBLE" == "__UNSET__" ]] && _CFG_HOOKS_STATUS_VISIBLE="" || true
-    [[ "$_CFG_INTERCEPT_TASKS" == "__UNSET__" ]] && _CFG_INTERCEPT_TASKS="" || true
 
     return 0
 }
@@ -3193,7 +3188,6 @@ _apply_parsed_config() {
     [[ -n "$_CFG_AUTO_COMPACT_THRESHOLD" ]] && CONFIG_AUTO_COMPACT_THRESHOLD="$_CFG_AUTO_COMPACT_THRESHOLD" || true
     [[ -n "$_CFG_HOOKS_INJECT_STATUS" ]] && CONFIG_HOOKS_INJECT_STATUS="$_CFG_HOOKS_INJECT_STATUS" || true
     [[ -n "$_CFG_HOOKS_STATUS_VISIBLE" ]] && CONFIG_HOOKS_STATUS_VISIBLE="$_CFG_HOOKS_STATUS_VISIBLE" || true
-    [[ -n "$_CFG_INTERCEPT_TASKS" ]] && CONFIG_INTERCEPT_TASKS="$_CFG_INTERCEPT_TASKS" || true
 }
 
 load_config() {
@@ -3211,7 +3205,6 @@ load_config() {
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_HOOKS_INJECT_STATUS="true"
     CONFIG_HOOKS_STATUS_VISIBLE="true"
-    CONFIG_INTERCEPT_TASKS="false"
 
     local user_file="$HOME/.ittybitty.json"
     local project_file=".ittybitty.json"
@@ -3503,8 +3496,9 @@ build_agent_settings() {
     fi
 
     # Determine if task interception should be added for this agent type
+    # Check if intercept hook is installed in the main repo's settings
     local add_intercept="false"
-    if [[ "$agent_type" == "manager" && "$CONFIG_INTERCEPT_TASKS" == "true" ]]; then
+    if [[ "$agent_type" == "manager" ]] && json_has_intercept_hook ".claude/settings.local.json"; then
         add_intercept="true"
     fi
 
@@ -10431,7 +10425,6 @@ cmd_test_apply_parsed_config() {
     CONFIG_MODEL=""
     CONFIG_FPS="10"
     CONFIG_ALLOW_AGENT_QUESTIONS="true"
-    CONFIG_INTERCEPT_TASKS="false"
     CONFIG_EXTERNAL_DIFF_TOOL=""
     CONFIG_AUTO_COMPACT_THRESHOLD=""
     CONFIG_HOOKS_INJECT_STATUS="true"
@@ -10454,7 +10447,6 @@ cmd_test_apply_parsed_config() {
     echo "CONFIG_MODEL:${CONFIG_MODEL:+ $CONFIG_MODEL}"
     echo "CONFIG_FPS: $CONFIG_FPS"
     echo "CONFIG_ALLOW_AGENT_QUESTIONS: $CONFIG_ALLOW_AGENT_QUESTIONS"
-    echo "CONFIG_INTERCEPT_TASKS: $CONFIG_INTERCEPT_TASKS"
     echo "CONFIG_EXTERNAL_DIFF_TOOL:${CONFIG_EXTERNAL_DIFF_TOOL:+ $CONFIG_EXTERNAL_DIFF_TOOL}"
     echo "CONFIG_AUTO_COMPACT_THRESHOLD:${CONFIG_AUTO_COMPACT_THRESHOLD:+ $CONFIG_AUTO_COMPACT_THRESHOLD}"
     echo "CONFIG_HOOKS_INJECT_STATUS: $CONFIG_HOOKS_INJECT_STATUS"
@@ -10492,7 +10484,6 @@ cmd_test_settings_load() {
         echo "fps:"
         echo "createPullRequests:"
         echo "allowAgentQuestions:"
-        echo "interceptTasks:"
         echo "autoCompactThreshold:"
         echo "externalDiffTool:"
         echo "permissions.manager:"
@@ -10512,7 +10503,6 @@ cmd_test_settings_load() {
                 (if has("fps") then .fps else "__UNSET__" end),
                 (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                 (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
-                (if has("interceptTasks") then .interceptTasks else "__UNSET__" end),
                 (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                 (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                 ((.permissions.manager.allow // []) | length),
@@ -10541,7 +10531,6 @@ try {
         d.fps !== undefined ? d.fps : '__UNSET__',
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
-        d.interceptTasks !== undefined ? d.interceptTasks : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -10554,11 +10543,11 @@ try {
     fi
 
     # Parse TSV result
-    local maxAgents model fps createPRs allowQuestions interceptTasks autoCompact extDiff
+    local maxAgents model fps createPRs allowQuestions autoCompact extDiff
     local pm_allow pm_deny pw_allow pw_deny
     if [[ -n "$result" ]]; then
         IFS=$'\t' read -r \
-            maxAgents model fps createPRs allowQuestions interceptTasks autoCompact extDiff \
+            maxAgents model fps createPRs allowQuestions autoCompact extDiff \
             pm_allow pm_deny pw_allow pw_deny \
             <<< "$result"
     fi
@@ -10570,7 +10559,6 @@ try {
     [[ "$fps" == "__UNSET__" ]] && fps="" || true
     [[ "$createPRs" == "__UNSET__" ]] && createPRs="" || true
     [[ "$allowQuestions" == "__UNSET__" ]] && allowQuestions="" || true
-    [[ "$interceptTasks" == "__UNSET__" ]] && interceptTasks="" || true
     [[ "$autoCompact" == "__UNSET__" ]] && autoCompact="" || true
     [[ "$extDiff" == "__UNSET__" ]] && extDiff="" || true
 
@@ -10580,7 +10568,6 @@ try {
     echo "fps:${fps:+ $fps}"
     echo "createPullRequests:${createPRs:+ $createPRs}"
     echo "allowAgentQuestions:${allowQuestions:+ $allowQuestions}"
-    echo "interceptTasks:${interceptTasks:+ $interceptTasks}"
     echo "autoCompactThreshold:${autoCompact:+ $autoCompact}"
     echo "externalDiffTool:${extDiff:+ $extDiff}"
 
@@ -12598,12 +12585,6 @@ cmd_hooks_intercept_task() {
             exit 0
         fi
         # Managers continue - their Tasks get intercepted as worker sub-agents
-    fi
-
-    # Load config and check if interception is enabled
-    load_config
-    if [[ "$CONFIG_INTERCEPT_TASKS" != "true" ]]; then
-        exit 0
     fi
 
     # Only handle Task tool - allow everything else (including TaskOutput for
@@ -14715,9 +14696,9 @@ EOF
     local SETTINGS_TAB=0              # 0=Setup, 1=Project Settings, 2=User Settings
     local SETTINGS_FOCUS_USER=0       # Focus index for user settings tab
     local SETTINGS_FOCUS_PROJECT=0    # Focus index for project settings tab
-    # Config keys for settings tabs (8 scalar + 2 permission groups = 10 items + 1 Close button)
-    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "interceptTasks" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
-    local SETTINGS_ITEMS_COUNT=11     # 10 config items + Close button
+    # Config keys for settings tabs (7 scalar + 2 permission groups = 9 items + 1 Close button)
+    local -a SETTINGS_CONFIG_KEYS=("maxAgents" "model" "fps" "createPullRequests" "allowAgentQuestions" "autoCompactThreshold" "externalDiffTool" "permissions.manager" "permissions.worker")
+    local SETTINGS_ITEMS_COUNT=10     # 9 config items + Close button
 
     # Legacy aliases for compatibility
     local HOOKS_INSTALLED=0  # 0=unknown, 1=installed, 2=not installed
@@ -16935,7 +16916,6 @@ EOF
         _SETTINGS_CACHE_fps=""
         _SETTINGS_CACHE_createPullRequests=""
         _SETTINGS_CACHE_allowAgentQuestions=""
-        _SETTINGS_CACHE_interceptTasks=""
         _SETTINGS_CACHE_autoCompactThreshold=""
         _SETTINGS_CACHE_externalDiffTool=""
         _SETTINGS_CACHE_permissions_manager=""
@@ -16962,7 +16942,6 @@ EOF
                     (if has("fps") then .fps else "__UNSET__" end),
                     (if has("createPullRequests") then .createPullRequests else "__UNSET__" end),
                     (if has("allowAgentQuestions") then .allowAgentQuestions else "__UNSET__" end),
-                    (if has("interceptTasks") then .interceptTasks else "__UNSET__" end),
                     (if has("autoCompactThreshold") then .autoCompactThreshold else "__UNSET__" end),
                     (if has("externalDiffTool") then .externalDiffTool else "__UNSET__" end),
                     ((.permissions.manager.allow // []) | length),
@@ -16991,7 +16970,6 @@ try {
         d.fps !== undefined ? d.fps : '__UNSET__',
         d.createPullRequests !== undefined ? d.createPullRequests : '__UNSET__',
         d.allowAgentQuestions !== undefined ? d.allowAgentQuestions : '__UNSET__',
-        d.interceptTasks !== undefined ? d.interceptTasks : '__UNSET__',
         d.autoCompactThreshold !== undefined ? d.autoCompactThreshold : '__UNSET__',
         d.externalDiffTool !== undefined ? d.externalDiffTool : '__UNSET__',
         (pm.allow || []).length,
@@ -17011,7 +16989,6 @@ try {
                 _SETTINGS_CACHE_fps \
                 _SETTINGS_CACHE_createPullRequests \
                 _SETTINGS_CACHE_allowAgentQuestions \
-                _SETTINGS_CACHE_interceptTasks \
                 _SETTINGS_CACHE_autoCompactThreshold \
                 _SETTINGS_CACHE_externalDiffTool \
                 _pm_allow _pm_deny _pw_allow _pw_deny \
@@ -17024,7 +17001,6 @@ try {
             [[ "$_SETTINGS_CACHE_fps" == "__UNSET__" ]] && _SETTINGS_CACHE_fps="" || true
             [[ "$_SETTINGS_CACHE_createPullRequests" == "__UNSET__" ]] && _SETTINGS_CACHE_createPullRequests="" || true
             [[ "$_SETTINGS_CACHE_allowAgentQuestions" == "__UNSET__" ]] && _SETTINGS_CACHE_allowAgentQuestions="" || true
-            [[ "$_SETTINGS_CACHE_interceptTasks" == "__UNSET__" ]] && _SETTINGS_CACHE_interceptTasks="" || true
             [[ "$_SETTINGS_CACHE_autoCompactThreshold" == "__UNSET__" ]] && _SETTINGS_CACHE_autoCompactThreshold="" || true
             [[ "$_SETTINGS_CACHE_externalDiffTool" == "__UNSET__" ]] && _SETTINGS_CACHE_externalDiffTool="" || true
 
@@ -17048,7 +17024,6 @@ try {
         _SETTINGS_USER_FB_fps=""
         _SETTINGS_USER_FB_createPullRequests=""
         _SETTINGS_USER_FB_allowAgentQuestions=""
-        _SETTINGS_USER_FB_interceptTasks=""
         _SETTINGS_USER_FB_autoCompactThreshold=""
         _SETTINGS_USER_FB_externalDiffTool=""
         _SETTINGS_USER_FB_permissions_manager=""
@@ -17063,7 +17038,6 @@ try {
         _SETTINGS_USER_FB_fps="$_SETTINGS_CACHE_fps"
         _SETTINGS_USER_FB_createPullRequests="$_SETTINGS_CACHE_createPullRequests"
         _SETTINGS_USER_FB_allowAgentQuestions="$_SETTINGS_CACHE_allowAgentQuestions"
-        _SETTINGS_USER_FB_interceptTasks="$_SETTINGS_CACHE_interceptTasks"
         _SETTINGS_USER_FB_autoCompactThreshold="$_SETTINGS_CACHE_autoCompactThreshold"
         _SETTINGS_USER_FB_externalDiffTool="$_SETTINGS_CACHE_externalDiffTool"
         _SETTINGS_USER_FB_permissions_manager="$_SETTINGS_CACHE_permissions_manager"
@@ -17104,7 +17078,6 @@ try {
             fps) default_value="10" ;;
             createPullRequests) default_value="false" ;;
             allowAgentQuestions) default_value="true" ;;
-            interceptTasks) default_value="false" ;;
             autoCompactThreshold) default_value="" ;;
             externalDiffTool) default_value="" ;;
             permissions.manager) default_value="allow: 0, deny: 0" ;;
@@ -17119,7 +17092,6 @@ try {
             fps) cached_value="$_SETTINGS_CACHE_fps" ;;
             createPullRequests) cached_value="$_SETTINGS_CACHE_createPullRequests" ;;
             allowAgentQuestions) cached_value="$_SETTINGS_CACHE_allowAgentQuestions" ;;
-            interceptTasks) cached_value="$_SETTINGS_CACHE_interceptTasks" ;;
             autoCompactThreshold) cached_value="$_SETTINGS_CACHE_autoCompactThreshold" ;;
             externalDiffTool) cached_value="$_SETTINGS_CACHE_externalDiffTool" ;;
             permissions.manager) cached_value="$_SETTINGS_CACHE_permissions_manager" ;;
@@ -17138,7 +17110,6 @@ try {
                 fps) user_fb="$_SETTINGS_USER_FB_fps" ;;
                 createPullRequests) user_fb="$_SETTINGS_USER_FB_createPullRequests" ;;
                 allowAgentQuestions) user_fb="$_SETTINGS_USER_FB_allowAgentQuestions" ;;
-                interceptTasks) user_fb="$_SETTINGS_USER_FB_interceptTasks" ;;
                 autoCompactThreshold) user_fb="$_SETTINGS_USER_FB_autoCompactThreshold" ;;
                 externalDiffTool) user_fb="$_SETTINGS_USER_FB_externalDiffTool" ;;
                 permissions.manager) user_fb="$_SETTINGS_USER_FB_permissions_manager" ;;
@@ -17424,7 +17395,7 @@ try {
 
         # Determine action based on key type
         case "$key" in
-            createPullRequests|allowAgentQuestions|interceptTasks)
+            createPullRequests|allowAgentQuestions)
                 # Boolean toggle
                 settings_toggle_boolean "$key" "$config_file"
                 ;;
@@ -22705,7 +22676,6 @@ Available Keys:
   createPullRequests          Auto-create PRs on merge (default: false)
   allowAgentQuestions         Allow agents to ask user questions (default: true)
   autoCompactThreshold        Context % to trigger /compact (1-100, unset=auto)
-  interceptTasks              Intercept Task tool to spawn ib agents (default: false)
   externalDiffTool            External diff tool command
   permissions.manager.allow   Tools allowed for manager agents (JSON array)
   permissions.manager.deny    Tools denied for manager agents (JSON array)
@@ -22764,7 +22734,6 @@ cmd_config() {
                 createPullRequests) default_value="false"; has_default=true ;;
                 allowAgentQuestions) default_value="true"; has_default=true ;;
                 autoCompactThreshold) default_value=""; has_default=true ;;
-                interceptTasks) default_value="false"; has_default=true ;;
                 externalDiffTool) default_value=""; has_default=true ;;
                 permissions.manager.allow) default_value="[]"; has_default=true ;;
                 permissions.manager.deny) default_value="[]"; has_default=true ;;
@@ -22835,7 +22804,7 @@ cmd_config() {
                         exit 1
                     fi
                     ;;
-                createPullRequests|interceptTasks)
+                createPullRequests)
                     if [[ "$VALUE" != "true" && "$VALUE" != "false" ]]; then
                         echo "Error: '$KEY' must be true or false, got '$VALUE'" >&2
                         exit 1
@@ -23024,7 +22993,6 @@ cmd_config() {
                 "createPullRequests|false|Auto-create PRs on merge"
                 "allowAgentQuestions|true|Allow agents to ask user questions"
                 "autoCompactThreshold||Context % to trigger /compact (1-100)"
-                "interceptTasks|false|Intercept Task tool to spawn ib agents"
                 "externalDiffTool||External diff tool command"
                 "hooks.injectStatus|true|Enable status injection via hooks"
                 "hooks.statusVisible|true|Show agent status in user messages"

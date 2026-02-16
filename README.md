@@ -220,7 +220,6 @@ Task interception lets ib automatically redirect Claude's native Task tool calls
 
 ```bash
 # Enable task interception
-ib config set interceptTasks true
 ib hooks install-intercept
 
 # Disable task interception
@@ -266,7 +265,6 @@ ib config --global list                     # Show user config only
 | `fps` | 10 | Refresh rate for `ib watch` |
 | `createPullRequests` | false | Create PRs instead of leaving changes on branch |
 | `allowAgentQuestions` | true | Allow root managers to ask user questions via `ib ask` |
-| `interceptTasks` | false | Intercept Task tool calls to spawn ib agents instead |
 | `autoCompactThreshold` | (none) | Context % to trigger `/compact` (1-100, unset=auto) |
 | `externalDiffTool` | (none) | External diff tool for reviewing agent changes |
 | `hooks.injectStatus` | true | Enable status injection via hooks |

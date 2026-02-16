@@ -150,7 +150,6 @@ Configuration is loaded from two files with the following precedence:
 - `permissions.manager.allow/deny` - tools for manager agents
 - `permissions.worker.allow/deny` - tools for worker agents
 - `allowAgentQuestions` - allow root managers to ask user questions via `ib ask` (default: true)
-- `interceptTasks` - intercept Task tool calls and spawn ib agents instead (default: false)
 - `autoCompactThreshold` - context usage % at which watchdog sends `/compact` (1-100, unset = auto)
 - `externalDiffTool` - external diff tool command for `ib diff --external`
 - `Bash(ib:*)` and `Bash(./ib:*)` are always added automatically
@@ -233,7 +232,6 @@ In `ib watch`, press `h` to open the setup dialog for easy install/uninstall of 
 Task interception redirects Claude's native Task tool calls to spawn ib agents instead. When enabled, Claude's attempts to use `Task(subagent_type=Explore)`, `Task(subagent_type=general-purpose)`, etc. will create ib manager agents rather than native subagents.
 
 ```bash
-ib config set interceptTasks true      # Enable interception
 ib hooks install-intercept             # Install the PreToolUse hook
 ib hooks uninstall-intercept           # Remove it
 ib hooks status --intercept            # Check if installed
@@ -243,7 +241,7 @@ ib hooks status --intercept            # Check if installed
 
 **Skipped types** (use native Task): Bash, statusline-setup, claude-code-guide, meta-agent, ib-merge
 
-Both the config key (`interceptTasks=true`) and the hook must be enabled for interception to work. The hook checks the config at runtime and falls through to native Task if disabled. If agent spawning fails, the native Task tool is allowed as a fallback.
+The hook being installed in `.claude/settings.local.json` is the sole signal that interception is enabled. If agent spawning fails, the native Task tool is allowed as a fallback.
 
 The hook can also be toggled in `ib watch` via the setup dialog (`h` key) under "Task interception".
 
