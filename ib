@@ -12641,21 +12641,24 @@ cmd_hooks_intercept_task() {
     fi
 
     # Spawn the agent
-    # cmd_new_agent outputs the raw agent ID on success
+    # cmd_new_agent outputs the raw agent ID on stdout; discard stderr (git messages)
     local spawn_output
-    if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>&1); then
+    if spawn_output=$("${spawn_args[@]}" "$agent_prompt" 2>/dev/null); then
         # cmd_new_agent outputs just the raw ID (e.g., "abc12345")
         local agent_id
         agent_id=$(echo "$spawn_output" | head -1)
 
+        local reason
         if [[ "$agent_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-            echo "Task intercepted and redirected to ib agent '$agent_id'. Use 'ib look $agent_id' to view progress, 'ib send $agent_id \"message\"' to communicate, 'ib diff $agent_id' to review changes, and 'ib merge $agent_id' to merge when done. Use 'ib list' to see all agents." >&2
-            exit 2
+            reason="Task intercepted and redirected to ib agent '$agent_id'. Use 'ib look $agent_id' to view progress, 'ib send $agent_id \"message\"' to communicate, 'ib diff $agent_id' to review changes, and 'ib merge $agent_id' to merge when done. Use 'ib list' to see all agents."
         else
             # Spawned but couldn't parse ID - still deny since agent was created
-            echo "Task intercepted and redirected to an ib agent. Use 'ib list' to find it, then 'ib look <id>' to view progress." >&2
-            exit 2
+            reason="Task intercepted and redirected to an ib agent. Use 'ib list' to find it, then 'ib look <id>' to view progress."
         fi
+        # Output proper JSON deny decision so Claude sees the reason
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+            "$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        exit 0
     else
         # Spawn failed - allow native Task as fallback
         exit 0
