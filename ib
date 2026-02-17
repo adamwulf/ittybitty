@@ -4951,7 +4951,7 @@ _parse_state_impl() {
 # they can call parse_state "$input" and read state from _PARSE_STATE_RESULT.
 # Still echoes result for backward compatibility with existing $(parse_state) callers.
 parse_state() {
-    local tmpfile="/tmp/ib-parse-state-$$"
+    local tmpfile="/tmp/ib-parse-state-impl-$$"
     _parse_state_impl "$@" > "$tmpfile" 2>/dev/null || true
     _PARSE_STATE_RESULT=$(<"$tmpfile") || true
     rm -f "$tmpfile"
@@ -9622,13 +9622,10 @@ EOF
         input=$(cat)
     fi
 
-    # Call parse_state directly (not in a subshell) so _PARSE_STATE_REASON is preserved.
-    # Redirect stdout to a temp file to capture the state string.
-    local tmpfile="/tmp/ib-parse-state-$$"
-    parse_state "$input" > "$tmpfile"
-    local state
-    state=$(<"$tmpfile")
-    rm -f "$tmpfile"
+    # Call parse_state directly so _PARSE_STATE_REASON and _PARSE_STATE_RESULT are preserved.
+    # Suppress echo output; read result from _PARSE_STATE_RESULT global.
+    parse_state "$input" > /dev/null
+    local state="$_PARSE_STATE_RESULT"
 
     if $verbose; then
         echo "$state (matched: $_PARSE_STATE_REASON)"
