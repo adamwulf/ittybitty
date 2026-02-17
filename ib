@@ -9146,7 +9146,9 @@ cmd_hooks_agent_status() {
     ID="$RESOLVED_ID"
 
     # Call get_state and read result from global to avoid subshell
-    get_state "$ID"
+    # Redirect stdout to /dev/null - get_state echoes for backward compat but callers
+    # that use the global don't want that output leaking to the hook's stdout.
+    get_state "$ID" > /dev/null
     local state="$_GET_STATE_RESULT"
     log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
 
