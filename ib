@@ -2820,7 +2820,8 @@ get_children() {
                 fi
             else
                 # Check state for filtering
-                local state=$(get_state "$child_id")
+                get_state "$child_id"
+                local state="$_GET_STATE_RESULT"
 
                 if [[ "$filter" == "unfinished" ]]; then
                     # Unfinished = creating, running, waiting, or complete
@@ -4586,13 +4587,15 @@ capture_tmux() {
 # Compute full state from tmux content (used by background monitor)
 # This combines the creating-state check (from get_state) with parse_state logic
 # Args: $1 = full tmux content (should be at least 100 lines for creating detection)
-# Output: State string to stdout (creating, running, waiting, complete, rate_limited, unknown)
+# Sets: _COMPUTE_STATE_RESULT - the detected state string
+_COMPUTE_STATE_RESULT=""
 compute_state_from_content() {
+    _COMPUTE_STATE_RESULT=""
     local input="$1"
 
     # Empty input = unknown (caller handles stopped for non-existent sessions)
     if [[ -z "$input" ]]; then
-        echo "unknown"
+        _COMPUTE_STATE_RESULT="unknown"
         return
     fi
 
@@ -4619,7 +4622,7 @@ compute_state_from_content() {
             if [[ "$first_lines" == *"trust"* ]] || \
                [[ "$first_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
                 eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
-                echo "creating"
+                _COMPUTE_STATE_RESULT="creating"
                 return
             fi
         fi
@@ -4629,13 +4632,14 @@ compute_state_from_content() {
         local no_newlines="${first_lines//$'\n'/}"
         local line_count=$(( ${#first_lines} - ${#no_newlines} + 1 ))
         if [[ "$line_count" -lt 10 ]]; then
-            echo "creating"
+            _COMPUTE_STATE_RESULT="creating"
             return
         fi
     fi
 
     # Use parse_state for the actual state detection logic
     parse_state "$input"
+    _COMPUTE_STATE_RESULT="$_PARSE_STATE_RESULT"
 }
 
 # Parse state from tmux output text
@@ -4674,10 +4678,19 @@ filter_hook_spinners() {
     done <<< "$input_text"
 }
 
+# Globals for parse_state/get_state results (avoids subshells in callers)
+_PARSE_STATE_RESULT=""
+_GET_STATE_RESULT=""
+_GET_STATE_CAPTURE=""
+
+# Parse state from tmux output text. Sets _PARSE_STATE_RESULT global (no stdout output).
+# States: running, waiting, complete, compacting, rate_limited, creating, unknown
+# Input: Text content passed as first argument (or empty string)
+# Sets: _PARSE_STATE_RESULT - the detected state string
+#       _PARSE_STATE_REASON - human-readable description of which pattern matched
 parse_state() {
+    _PARSE_STATE_RESULT=""
     # Sets _PARSE_STATE_REASON with a human-readable description of which pattern matched.
-    # This global is useful when calling parse_state directly (not in a subshell)
-    # to avoid losing the reason in command substitution.
     _PARSE_STATE_REASON=""
 
     local input
@@ -4690,7 +4703,7 @@ parse_state() {
     # Empty input = unknown (caller handles stopped for tmux sessions)
     if [[ -z "$input" ]]; then
         _PARSE_STATE_REASON="empty input"
-        echo "unknown"
+        _PARSE_STATE_RESULT="unknown"
         return
     fi
 
@@ -4707,7 +4720,7 @@ parse_state() {
                [[ "$input" == *"trust this folder"* ]] || \
                [[ "$input" == *"Allow external CLAUDE.md file imports"* ]]; then
                 _PARSE_STATE_REASON="permission prompt (workspace trust or external imports)"
-                echo "creating"
+                _PARSE_STATE_RESULT="creating"
                 return
             fi
         fi
@@ -4737,7 +4750,7 @@ parse_state() {
     # Must check before running indicators since compacting also has "(esc to interrupt)"
     if [[ "$very_recent" == *"Compacting conversation"* ]]; then
         _PARSE_STATE_REASON="Compacting conversation in last 5 lines"
-        echo "compacting"
+        _PARSE_STATE_RESULT="compacting"
         return
     fi
 
@@ -4749,7 +4762,7 @@ parse_state() {
     # fundamental state is "waiting on a tool".
     if [[ "$last_lines" =~ ⎿[[:space:]]*Waiting ]]; then
         _PARSE_STATE_REASON="tool waiting (⎿ Waiting)"
-        echo "waiting"
+        _PARSE_STATE_RESULT="waiting"
         return
     fi
 
@@ -4765,7 +4778,7 @@ parse_state() {
     # Note: We require opening parenthesis to distinguish from discussion text
     if [[ "$very_recent" =~ \([Ee]sc\ to\ interrupt|\(ctrl\+c\ to\ interrupt|⎿\ \ Running ]]; then
         _PARSE_STATE_REASON="active execution indicator in last 5 lines"
-        echo "running"
+        _PARSE_STATE_RESULT="running"
         return
     fi
 
@@ -4780,7 +4793,7 @@ parse_state() {
     # Use case-insensitive matching for "usage limit" phrases
     if [[ "$last_lines" == *"rate_limit_error"* ]]; then
         _PARSE_STATE_REASON="rate_limit_error in output"
-        echo "rate_limited"
+        _PARSE_STATE_RESULT="rate_limited"
         return
     fi
     # Case-insensitive check for usage limit patterns
@@ -4793,7 +4806,7 @@ parse_state() {
        [[ "$last_lines" == *"/upgrade to increase your usage limit"* ]]; then
         eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
         _PARSE_STATE_REASON="usage limit pattern in output"
-        echo "rate_limited"
+        _PARSE_STATE_RESULT="rate_limited"
         return
     fi
     eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
@@ -4805,7 +4818,7 @@ parse_state() {
     local lines_unquoted="${last_lines//"'I HAVE COMPLETED THE GOAL'"/}"
     if [[ "$lines_unquoted" == *'I HAVE COMPLETED THE GOAL'* ]]; then
         _PARSE_STATE_REASON="I HAVE COMPLETED THE GOAL in last 15 lines"
-        echo "complete"
+        _PARSE_STATE_RESULT="complete"
         return
     fi
 
@@ -4827,11 +4840,11 @@ parse_state() {
         local after_waiting="${last_lines##*WAITING}"
         if [[ "$after_waiting" == *"⏺"* ]]; then
             _PARSE_STATE_REASON="agent output ⏺ after stale WAITING"
-            echo "running"
+            _PARSE_STATE_RESULT="running"
             return
         fi
         _PARSE_STATE_REASON="WAITING in last 15 lines"
-        echo "waiting"
+        _PARSE_STATE_RESULT="waiting"
         return
     fi
 
@@ -4843,7 +4856,7 @@ parse_state() {
     # Only checked in last 15 lines to avoid matching historical text
     if [[ "$last_lines" =~ ctrl\+b\ ctrl\+b|thinking\) ]]; then
         _PARSE_STATE_REASON="ctrl+b ctrl+b or thinking) in last 15 lines"
-        echo "running"
+        _PARSE_STATE_RESULT="running"
         return
     fi
 
@@ -4863,7 +4876,7 @@ parse_state() {
         # If the spinner line contains an interruption marker, it's actively thinking
         if [[ "$filtered_lines" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
             _PARSE_STATE_REASON="thinking spinner with interrupt marker"
-            echo "running"
+            _PARSE_STATE_RESULT="running"
             return
         fi
         # If the spinner line contains token transfer arrows (↑/↓), it's actively processing
@@ -4871,7 +4884,7 @@ parse_state() {
         # These arrows indicate live token streaming, only present during active thinking
         if [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳].*[↑↓] ]]; then
             _PARSE_STATE_REASON="thinking spinner with active token transfer"
-            echo "running"
+            _PARSE_STATE_RESULT="running"
             return
         fi
         # Check if it's a completion time indicator:
@@ -4881,7 +4894,7 @@ parse_state() {
         if ! [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]]+[A-Za-z]+[[:space:]]+for ]] && \
            ! [[ "$filtered_lines" =~ (^|$'\n')[✽✶✢·✻✳].*thought[[:space:]]+for ]]; then
             _PARSE_STATE_REASON="active thinking spinner (not completion timer)"
-            echo "running"
+            _PARSE_STATE_RESULT="running"
             return
         fi
     fi
@@ -4903,7 +4916,7 @@ parse_state() {
            [[ "$last_lines" == *"trust this folder"* ]] || \
            [[ "$last_lines" == *"Allow external CLAUDE.md file imports"* ]]; then
             _PARSE_STATE_REASON="permission prompt in last 15 lines"
-            echo "creating"
+            _PARSE_STATE_RESULT="creating"
             return
         fi
     fi
@@ -4919,7 +4932,7 @@ parse_state() {
     if [[ "$filtered_broader" =~ (^|$'\n')[✽✶✢·✻✳][[:space:]] ]]; then
         if [[ "$filtered_broader" =~ (Esc|ctrl\+c)[[:space:]]+to[[:space:]]+interrupt ]]; then
             _PARSE_STATE_REASON="active spinner in broader 20-line window"
-            echo "running"
+            _PARSE_STATE_RESULT="running"
             return
         fi
     fi
@@ -4931,13 +4944,13 @@ parse_state() {
     # If background tasks exist, the agent is still running even if no other indicators
     if [[ "$last_lines" =~ ⏵⏵.*·[[:space:]][0-9]+[[:space:]] ]]; then
         _PARSE_STATE_REASON="background tasks in status bar"
-        echo "running"
+        _PARSE_STATE_RESULT="running"
         return
     fi
 
     # No explicit state indicators found
     _PARSE_STATE_REASON="no patterns matched"
-    echo "unknown"
+    _PARSE_STATE_RESULT="unknown"
 }
 
 # Encode a file path to Claude Code's project directory name format
@@ -5048,8 +5061,10 @@ is_agent_recently_created() {
     return 1
 }
 
-# Detect agent state from tmux
+# Detect agent state from tmux. Sets _GET_STATE_RESULT global (no stdout output).
 # States: creating, running, waiting, stopped, complete, compacting, rate_limited, unknown
+# Sets: _GET_STATE_RESULT - the detected state string
+#       _GET_STATE_CAPTURE - the tmux content used for state detection (ANSI-stripped)
 # Also sets LAST_TMUX_CAPTURE for debugging via capture_tmux
 get_state() {
     local id="$1"
@@ -5062,7 +5077,8 @@ get_state() {
             local cached_state
             cached_state=$(<"$state_cache")
             if [[ -n "$cached_state" ]]; then
-                echo "$cached_state"
+                _GET_STATE_RESULT="$cached_state"
+                _GET_STATE_CAPTURE=""
                 return
             fi
         fi
@@ -5096,9 +5112,11 @@ get_state() {
         if [[ -z "$recent" ]]; then
             # Check if agent is newly created (< 6 seconds old)
             if is_agent_recently_created "$id"; then
-                echo "creating"
+                _GET_STATE_RESULT="creating"
+                _GET_STATE_CAPTURE=""
             else
-                echo "stopped"
+                _GET_STATE_RESULT="stopped"
+                _GET_STATE_CAPTURE=""
             fi
             return
         fi
@@ -5110,9 +5128,11 @@ get_state() {
     if [[ -z "$recent" ]]; then
         # Check if agent is newly created (< 6 seconds old)
         if is_agent_recently_created "$id"; then
-            echo "creating"
+            _GET_STATE_RESULT="creating"
+            _GET_STATE_CAPTURE=""
         else
-            echo "stopped"
+            _GET_STATE_RESULT="stopped"
+            _GET_STATE_CAPTURE=""
         fi
         return
     fi
@@ -5147,7 +5167,8 @@ get_state() {
                [[ "$full_history" == *"Allow external CLAUDE.md file imports"* ]]; then
                 # Restore case matching before returning
                 eval "$old_nocasematch" 2>/dev/null || shopt -u nocasematch
-                echo "creating"
+                _GET_STATE_RESULT="creating"
+                _GET_STATE_CAPTURE=""
                 return
             fi
         fi
@@ -5158,13 +5179,17 @@ get_state() {
         local no_newlines="${full_history//$'\n'/}"
         local line_count=$(( ${#full_history} - ${#no_newlines} + 1 ))
         if [[ "$line_count" -lt 10 ]]; then
-            echo "creating"
+            _GET_STATE_RESULT="creating"
+            _GET_STATE_CAPTURE=""
             return
         fi
     fi
 
     # Use parse_state for the actual state detection logic
+    # Set _GET_STATE_CAPTURE before calling parse_state, then copy result to _GET_STATE_RESULT
+    _GET_STATE_CAPTURE="$recent"
     parse_state "$recent"
+    _GET_STATE_RESULT="$_PARSE_STATE_RESULT"
 }
 
 # Wait for Claude to start - logo OR permissions screen appears
@@ -5308,7 +5333,8 @@ bypass_rate_limit() {
 
         # Use parse_state to check for rate_limited
         local state
-        state=$(parse_state "$recent_output")
+        parse_state "$recent_output"
+        state="$_PARSE_STATE_RESULT"
         if [[ "$state" != "rate_limited" ]]; then
             return 0  # Rate limit screen dismissed
         fi
@@ -5325,7 +5351,8 @@ bypass_rate_limit() {
     local final_output
     final_output=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 2>/dev/null) || return 1
     local final_state
-    final_state=$(parse_state "$final_output")
+    parse_state "$final_output"
+    final_state="$_PARSE_STATE_RESULT"
     if [[ "$final_state" != "rate_limited" ]]; then
         return 0
     fi
@@ -5404,7 +5431,8 @@ generate_status_block() {
         fi
 
         # Get state
-        local state=$(get_state "$id")
+        get_state "$id"
+        local state="$_GET_STATE_RESULT"
         [[ "$state" == "unknown" ]] && state="waiting"
 
         # Write line: id|manager|state|age|model|prompt|worker
@@ -6102,7 +6130,8 @@ build_agent_data_file() {
                     # Debug timing: duplicates get_ms() because get_ms is defined inside cmd_watch and not accessible here
                     local t_state_start t_state_end
                     [[ $DEBUG_WATCH_MODE -eq 1 ]] && t_state_start=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000)
-                    state=$(get_state "$id")
+                    get_state "$id"
+                    state="$_GET_STATE_RESULT"
                     [[ $DEBUG_WATCH_MODE -eq 1 ]] && { t_state_end=$(perl -MTime::HiRes -e 'printf "%d", Time::HiRes::time * 1000' 2>/dev/null || date +%s000); _debug_timing_record "state_detection" $((t_state_end - t_state_start)); }
                     [[ "$state" == "unknown" ]] && state="waiting"
                     # Update cache
@@ -7142,7 +7171,8 @@ EOF
         fi
 
         # Get state
-        local state=$(get_state "$id")
+        get_state "$id"
+        local state="$_GET_STATE_RESULT"
 
         found_any=true
 
@@ -8109,7 +8139,8 @@ EOF
     fi
 
     # Check agent state - must NOT be stopped
-    local state=$(get_state "$ID")
+    get_state "$ID"
+    local state="$_GET_STATE_RESULT"
     if [[ "$state" == "stopped" ]]; then
         echo "Error: agent '$ID' is already stopped" >&2
         exit 1
@@ -8204,7 +8235,8 @@ EOF
     fi
 
     # Check agent state - must be stopped
-    local state=$(get_state "$ID")
+    get_state "$ID"
+    local state="$_GET_STATE_RESULT"
     if [[ "$state" != "stopped" ]]; then
         echo "Error: agent '$ID' is not stopped (current state: $state)" >&2
         case "$state" in
@@ -9110,33 +9142,26 @@ cmd_hooks_agent_status() {
     fi
     ID="$RESOLVED_ID"
 
-    local state=$(get_state "$ID")
+    # Call get_state and read result from global.
+    get_state "$ID"
+    local state="$_GET_STATE_RESULT"
     log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
 
     local TMUX_SESSION=$(session_name "$ID")
 
     # Save tmux output for ALL Stop hook triggers (debug mode)
-    # This helps study what correct vs incorrect detections look like
+    # Use _GET_STATE_CAPTURE to ensure we're saving EXACTLY what get_state used for detection
     local AGENT_DIR_EARLY="$AGENTS_DIR/$ID"
     local debug_dir="$AGENT_DIR_EARLY/debug-logs"
     mkdir -p "$debug_dir"
     local debug_ts
     debug_ts=$(date +%s)
     local debug_file="$debug_dir/stop-${debug_ts}-${state}.txt"
-    local debug_capture
-    debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
-    if [[ -n "$debug_capture" ]]; then
-        # Strip ANSI codes for consistent pattern matching
-        _strip_ansi "$debug_capture"
-        debug_capture="$_STRIP_ANSI_RESULT"
-        printf '%s\n' "$debug_capture" > "$debug_file"
-        # Call parse_state directly instead of spawning 'ib parse-state' subprocess
-        local parse_tmpfile="/tmp/ib-stop-debug-$$"
-        parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
-        local parsed_state
-        parsed_state=$(<"$parse_tmpfile") || true
-        rm -f "$parse_tmpfile"
-        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
+    if [[ -n "$_GET_STATE_CAPTURE" ]]; then
+        # _GET_STATE_CAPTURE is already ANSI-stripped by get_state
+        printf '%s\n' "$_GET_STATE_CAPTURE" > "$debug_file"
+        # Add parse_state result and reason (already computed by get_state)
+        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
     fi
 
     # Get agent's manager (if any) for worker notifications
@@ -9201,26 +9226,17 @@ cmd_hooks_agent_status() {
         log_agent "$ID" "[hook] State $state, sending nudge prompt" --quiet
 
         # Save tmux output for debugging false state detections
-        # Capture the same view that get_state used (last 20 lines)
+        # Use _GET_STATE_CAPTURE to ensure we're saving EXACTLY what get_state used
         local debug_dir="$AGENT_DIR/debug-logs"
         mkdir -p "$debug_dir"
         local debug_ts
         debug_ts=$(date +%s)
         local debug_file="$debug_dir/nudge-${debug_ts}-${state}.txt"
-        local debug_capture
-        debug_capture=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 -E - 2>/dev/null) || true
-        if [[ -n "$debug_capture" ]]; then
-            # Strip ANSI codes for consistent pattern matching
-            _strip_ansi "$debug_capture"
-            debug_capture="$_STRIP_ANSI_RESULT"
-            printf '%s\n' "$debug_capture" > "$debug_file"
-            # Call parse_state directly instead of spawning 'ib parse-state' subprocess
-            local parse_tmpfile="/tmp/ib-nudge-debug-$$"
-            parse_state "$debug_capture" > "$parse_tmpfile" 2>/dev/null || true
-            local parsed_state
-            parsed_state=$(<"$parse_tmpfile") || true
-            rm -f "$parse_tmpfile"
-            printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
+        if [[ -n "$_GET_STATE_CAPTURE" ]]; then
+            # _GET_STATE_CAPTURE is already ANSI-stripped by get_state
+            printf '%s\n' "$_GET_STATE_CAPTURE" > "$debug_file"
+            # Add parse_state result and reason (already computed by get_state)
+            printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
             log_agent "$ID" "[hook] Saved debug capture to debug-logs/nudge-${debug_ts}-${state}.txt" --quiet
         fi
 
@@ -9601,13 +9617,9 @@ EOF
         input=$(cat)
     fi
 
-    # Call parse_state directly (not in a subshell) so _PARSE_STATE_REASON is preserved.
-    # Redirect stdout to a temp file to capture the state string.
-    local tmpfile="/tmp/ib-parse-state-$$"
-    parse_state "$input" > "$tmpfile"
-    local state
-    state=$(<"$tmpfile")
-    rm -f "$tmpfile"
+    # Call parse_state directly so _PARSE_STATE_REASON and _PARSE_STATE_RESULT are preserved.
+    parse_state "$input"
+    local state="$_PARSE_STATE_RESULT"
 
     if $verbose; then
         echo "$state (matched: $_PARSE_STATE_REASON)"
@@ -13048,7 +13060,8 @@ EOF
     for agent_dir in "$AGENTS_DIR"/*/; do
         [[ -d "$agent_dir" && -f "$agent_dir/meta.json" ]] || continue
         local id="${agent_dir%/}"; id="${id##*/}"
-        local state=$(get_state "$id")
+        get_state "$id"
+        local state="$_GET_STATE_RESULT"
         case "$state" in
             running|compacting) running=$((running + 1)) ;;
             waiting) waiting=$((waiting + 1)) ;;
@@ -14198,7 +14211,8 @@ cmd_watchdog() {
 
     # Main monitoring loop - runs while agent's worktree exists
     while [[ -d "$AGENT_DIR/repo" ]]; do
-        state=$(get_state "$AGENT_ID")
+        get_state "$AGENT_ID"
+        state="$_GET_STATE_RESULT"
 
         # Check context usage and trigger /compact if threshold exceeded
         # Only check if: threshold is set (1-100), not currently compacting, and not already sent /compact
@@ -15810,7 +15824,8 @@ EOF
                             [[ -d "$agent_dir" ]] || continue
                             [[ -f "$agent_dir/meta.json" ]] || continue
                             local agent_id="${agent_dir%/}"; agent_id="${agent_id##*/}"
-                            local state=$(get_state "$agent_id")
+                            get_state "$agent_id"
+                            local state="$_GET_STATE_RESULT"
                             if [[ "$state" == "running" || "$state" == "waiting" || "$state" == "complete" ]]; then
                                 cmd_send "$agent_id" "$SEND_TEXT" >/dev/null 2>&1 &
                             fi
@@ -20390,7 +20405,8 @@ try {
 
         # Get current state for filename
         local state
-        state=$(get_state "$agent_id")
+        get_state "$agent_id"
+        state="$_GET_STATE_RESULT"
 
         # Save to debug directory
         local debug_dir="$agent_dir/debug-logs"
@@ -20404,12 +20420,8 @@ try {
         # Append parse-state verbose output by calling parse_state directly
         # (avoids spawning an 'ib parse-state' subprocess which can take 1-3+ seconds
         # and cause the status message to expire before it's ever rendered)
-        local parse_tmpfile="/tmp/ib-snapshot-$$"
-        parse_state "$capture" > "$parse_tmpfile" 2>/dev/null || true
-        local parsed_state
-        parsed_state=$(<"$parse_tmpfile") || true
-        rm -f "$parse_tmpfile"
-        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$parsed_state" "$_PARSE_STATE_REASON" >> "$debug_file"
+        parse_state "$capture"
+        printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
 
         # Show status feedback
         _WATCH_STATUS_MSG="Snapshot saved: debug-logs/snapshot-${debug_ts}-${state}.txt"
@@ -22496,8 +22508,8 @@ try {
                     printf '%s' "$_STRIP_ANSI_RESULT" > "$tmux_cache_dir/$agent_id.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.tmp" "$tmux_cache_dir/$agent_id" 2>/dev/null || true
                     # Compute and cache state from the stripped content
-                    local computed_state
-                    computed_state=$(compute_state_from_content "$_STRIP_ANSI_RESULT")
+                    compute_state_from_content "$_STRIP_ANSI_RESULT"
+                    local computed_state="$_COMPUTE_STATE_RESULT"
                     printf '%s' "$computed_state" > "$tmux_cache_dir/$agent_id.state.tmp" && \
                         mv "$tmux_cache_dir/$agent_id.state.tmp" "$tmux_cache_dir/$agent_id.state" 2>/dev/null || true
                 fi
