@@ -101,17 +101,10 @@ The following characters are escaped when building the `msg` field:
 
 **Known limitation:** Other control characters (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) are not escaped. These are extremely unlikely in agent status messages. If needed, a full JSON escaping pass can be added later using `sed` or a helper function.
 
+**Use existing `json_escape_string()` function** (defined at ~line 407 of the `ib` script). Do NOT create a new `json_escape_notify()` — it would be an exact duplicate. Usage:
+
 ```bash
-# JSON escaping implementation (order matters — backslash first)
-json_escape_notify() {
-    local str="$1"
-    str="${str//\\/\\\\}"          # backslash → \\
-    str="${str//\"/\\\"}"          # double quote → \"
-    str="${str//$'\n'/\\n}"        # newline → \n
-    str="${str//$'\r'/\\r}"        # carriage return → \r
-    str="${str//$'\t'/\\t}"        # tab → \t
-    echo "$str"
-}
+escaped_msg=$(json_escape_string "$message")
 ```
 
 ## What Claude Sees
@@ -180,7 +173,6 @@ This is injected into Claude's context via `additionalContext` in the hook respo
 ```bash
 cmd_listen() {
     local timeout=570    # ~9.5 minutes default
-    local poll_interval=2  # seconds between checks
 
     # ... parse --timeout arg ...
 
@@ -191,6 +183,13 @@ cmd_listen() {
     local pid_path="$notify_dir/listener.pid"
 
     mkdir -p "$notify_dir"
+
+    # Guard against multiple simultaneous listeners
+    is_listener_alive
+    if [[ "$_LISTENER_ALIVE" == "true" ]]; then
+        echo "Listener already running (PID $(<"$pid_path")). Exiting." >&2
+        exit 0
+    fi
 
     # Register PID for liveness checks
     echo $$ > "$pid_path"
@@ -204,8 +203,8 @@ cmd_listen() {
             exit 0
         fi
 
-        sleep "$poll_interval"
-        elapsed=$((elapsed + poll_interval))
+        sleep 2
+        elapsed=$((elapsed + 2))
     done
 
     # Timeout — print reminder and exit cleanly
@@ -223,10 +222,10 @@ drain_and_print() {
     # complete to the old inode. After mv, new >> creates a fresh file.
     mv "$queue_path" "$drain_file" 2>/dev/null || true
 
-    if [[ -f "$drain_file" && -s "$drain_file" ]]; then
+    if [[ -s "$drain_file" ]]; then
         cat "$drain_file"
-        rm -f "$drain_file"
     fi
+    rm -f "$drain_file"
 }
 ```
 
@@ -234,7 +233,7 @@ drain_and_print() {
 - **Polling, not FIFO.** A `sleep 2` loop is dramatically simpler than FIFO management. The 2-second worst-case latency is negligible for Claude's workflow.
 - **`mv` for drain is atomic.** No lock needed. Concurrent writers' in-flight `echo >>` either completes to the old inode (included in drain) or creates a new queue file (picked up next cycle).
 - **Always exit 0.** Timeout is not an error — it's the expected heartbeat cycle. Claude Code won't report it as a failure.
-- **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. `is_listener_alive()` validates with `kill -0`.
+- **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. `is_listener_alive()` validates with `kill -0` and sets `_LISTENER_ALIVE` global (safe under `set -e`).
 
 ### `ib notify`
 
@@ -308,9 +307,9 @@ cmd_notify() {
     local ts
     ts=$(date +%Y-%m-%dT%H:%M:%S%z)
 
-    # Escape message for JSON
+    # Escape message for JSON (uses existing json_escape_string from ib script)
     local escaped_msg
-    escaped_msg=$(json_escape_notify "$message")
+    escaped_msg=$(json_escape_string "$message")
 
     # Build JSON line
     local json_line="{\"ts\":\"$ts\",\"from\":\"$from_id\",\"type\":\"$msg_type\",\"msg\":\"$escaped_msg\"}"
@@ -324,20 +323,31 @@ cmd_notify() {
 
 ### `is_listener_alive()` helper
 
+**Uses global variable pattern** (`_LISTENER_ALIVE`) instead of return codes to avoid `set -e` landmines. Safe to call anywhere — not just inside `if` blocks.
+
 ```bash
 is_listener_alive() {
+    _LISTENER_ALIVE=false
     local pid_path="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
 
     if [[ -f "$pid_path" ]]; then
         local pid
         pid=$(<"$pid_path")
         if kill -0 "$pid" 2>/dev/null; then
-            return 0  # alive
+            _LISTENER_ALIVE=true
+        else
+            rm -f "$pid_path"
         fi
-        rm -f "$pid_path"
     fi
-    return 1  # not alive
 }
+```
+
+**Usage pattern:**
+```bash
+is_listener_alive
+if [[ "$_LISTENER_ALIVE" == "true" ]]; then
+    # listener is running
+fi
 ```
 
 ## Hook Changes
@@ -362,21 +372,21 @@ is_listener_alive() {
     if [[ -n "$manager" ]]; then
         log_agent "$ID" "[hook] Notifying manager $manager: just completed"
         ib send "$manager" "[hook]: Your subtask $ID just completed"
-        ib notify --from "$ID" --type complete "Agent $ID completed (worker of $manager)"  # NEW
+        ib notify --from "$ID" --type complete "Agent $ID completed (worker of $manager)" || true  # NEW
     else
         # ... existing unfinished children check ...
         # After the check, if truly complete with no children:
-        ib notify --from "$ID" --type complete "Manager $ID completed its goal"  # NEW
+        ib notify --from "$ID" --type complete "Manager $ID completed its goal" || true  # NEW
     fi
 
 # In the waiting branch (after existing ib send):
     if [[ -n "$manager" ]]; then
         log_agent "$ID" "[hook] Notifying manager $manager: now waiting"
         ib send "$manager" "[hook]: Your subtask $ID is now waiting for input"
-        ib notify --from "$ID" --type waiting "Agent $ID is waiting for input"  # NEW
+        ib notify --from "$ID" --type waiting "Agent $ID is waiting for input" || true  # NEW
     else
         log_agent "$ID" "[hook] Waiting with no manager, no action" --quiet
-        ib notify --from "$ID" --type waiting "Manager $ID is waiting"  # NEW
+        ib notify --from "$ID" --type waiting "Manager $ID is waiting" || true  # NEW
     fi
 ```
 
@@ -387,7 +397,7 @@ is_listener_alive() {
 ```bash
 # At the end of cmd_ask(), after the question is stored:
     ib notify --from "$AGENT_ID" --type question \
-        "Agent $AGENT_ID asks: $QUESTION"
+        "Agent $AGENT_ID asks: $QUESTION" || true
 ```
 
 **Relationship to ib ask / ib questions:** These systems remain distinct and complementary:
@@ -434,13 +444,20 @@ If the listener times out with no messages, just re-spawn it.
 # In cmd_hooks_inject_status(), after building the status context:
 
 # Check listener liveness (only for primary Claude, not agents)
+# NOTE: $agent_count is already computed earlier in cmd_hooks_inject_status()
+# by the loop that scans agent directories (lines ~13039-13073 of ib script).
+# Do NOT call a separate count_active_agents helper — it doesn't exist.
 local listener_warning=""
-if ! is_listener_alive; then
+is_listener_alive
+if [[ "$_LISTENER_ALIVE" != "true" ]]; then
     # Only warn if there are active agents
-    local agent_count
-    agent_count=$(count_active_agents)  # existing helper or simple ls count
     if [[ "$agent_count" -gt 0 ]]; then
-        listener_warning='\n\n[ib] WARNING: Notification listener is not running. Restart it now:\nBash(command: \"ib listen\", run_in_background: true)'
+        # Use real newlines (not \n in single quotes, which would be literal)
+        # json_escape_string() will handle escaping for the JSON output
+        listener_warning='
+
+[ib] WARNING: Notification listener is not running. Restart it now:
+Bash(command: "ib listen", run_in_background: true)'
     fi
 fi
 
@@ -460,6 +477,7 @@ fi
 1. Check if `listener.pid` file exists (stat syscall)
 2. Read PID from file (read syscall)
 3. `kill -0 $pid` (kill syscall)
+4. Set `_LISTENER_ALIVE` global (no subprocess, no return code)
 
 This adds ~1ms per tool call. The status injection hook already does much more expensive work (scanning agent directories, computing status). The liveness check is negligible.
 
@@ -540,14 +558,17 @@ mv "$queue_path" "$drain_file" 2>/dev/null || true  # queue may not exist
 kill -0 "$pid" 2>/dev/null                          # used inside if — safe
 rm -f "$pid_path"                                   # -f prevents non-zero exit
 rm -f "$drain_file"                                 # -f prevents non-zero exit
+ib notify ... || true                               # advisory — must not kill hook
 ```
 
 All `[[ ]] && action` patterns need `|| true` unless inside an `if` block. All commands that may return non-zero outside `if`/`while` need `|| true`.
 
+**`is_listener_alive()` uses global variable pattern** — sets `_LISTENER_ALIVE` instead of using return codes. This is safe to call anywhere, not just inside `if` blocks. Never use `if is_listener_alive` or `! is_listener_alive` — always check `$_LISTENER_ALIVE` after calling.
+
 **Specific patterns in the listener loop:**
 ```bash
 # sleep in loop — always succeeds
-sleep "$poll_interval"
+sleep 2
 
 # [[ -s ]] in while condition — safe (inside while test)
 while [[ $elapsed -lt $timeout ]]; do
@@ -614,26 +635,24 @@ rm -f /tmp/listen-output.$$
 
 ### Phase 1: Core Commands (standalone, testable)
 
-1. **`json_escape_notify()` helper** — JSON escaping function
-   - Handles: backslash, double quote, newline, carriage return, tab
-   - Pure bash parameter expansion, no subprocesses
-
-2. **`cmd_notify()`** — Write side
+1. **`cmd_notify()`** — Write side
    - Argument parsing (--from, --type, positional message)
    - Auto-detect sender from worktree
-   - JSON line formatting with `json_escape_notify()`
+   - JSON line formatting with existing `json_escape_string()`
    - Atomic append to queue file
    - Add to dispatcher: `notify) shift; cmd_notify "$@" ;;`
 
+2. **`is_listener_alive()`** — Liveness helper
+   - PID file + `kill -0` check
+   - Sets `_LISTENER_ALIVE` global variable (safe under `set -e`)
+
 3. **`cmd_listen()`** + `drain_and_print()` — Read side
+   - Guard against multiple simultaneous listeners via `is_listener_alive()`
    - PID management with trap EXIT
-   - 2-second polling loop with timeout
+   - 2-second polling loop with timeout (`sleep 2` directly, no variable)
    - Atomic drain with `mv`
    - Timeout message on expiry
    - Add to dispatcher: `listen) shift; cmd_listen "$@" ;;`
-
-4. **`is_listener_alive()`** — Liveness helper
-   - PID file + `kill -0` check
 
 5. **Manual testing** — Verify in two terminal windows:
    - Terminal 1: `ib listen --timeout 30`
@@ -649,14 +668,14 @@ rm -f /tmp/listen-output.$$
 
 ### Phase 3: Tests
 
-10. **Add `cmd_test_notify_format()`** and fixtures
-11. **Add `cmd_test_notify_drain()`** and fixtures
-12. **Add `tests/test-notify.sh`** with fixture tests + integration test
-13. **Add to `tests/test-all.sh`**
+9. **Add `cmd_test_notify_format()`** and fixtures
+10. **Add `cmd_test_notify_drain()`** and fixtures
+11. **Add `tests/test-notify.sh`** with fixture tests + integration test
+12. **Add to `tests/test-all.sh`**
 
 ### Phase 4: Cleanup
 
-14. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
+13. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
     ```bash
     local listener_pid_file="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
     if [[ -f "$listener_pid_file" ]]; then
@@ -667,9 +686,9 @@ rm -f /tmp/listen-output.$$
     fi
     rm -rf "$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
     ```
-15. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
-16. **Update CLAUDE.md** — Document the notification system
-17. **Update README.md** — User-facing documentation
+14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
+15. **Update CLAUDE.md** — Document the notification system
+16. **Update README.md** — User-facing documentation
 
 ## Design Rationale — Why Polling + Queue
 
