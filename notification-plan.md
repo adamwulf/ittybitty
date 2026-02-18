@@ -51,7 +51,7 @@ Enable running ib agents to push notifications to the primary Claude session (th
 
 **Why this works:** The primary Claude is NOT in a tmux session — it runs in the user's terminal directly. The only reliable way to "wake" it is via Claude Code's background task completion notification. The listener is a background bash process that exits when messages arrive (or on timeout), which triggers that notification.
 
-**Why polling, not FIFO:** A FIFO (named pipe) provides instant wakeup but adds significant complexity: mkfifo lifecycle management, non-blocking write edge cases, drain race conditions, and `<>` mode subtleties. A 2-second polling loop is dramatically simpler and the latency difference is negligible for Claude's workflow (Claude needs seconds to process notifications anyway).
+**Why polling, not FIFO:** See [Design Rationale](#design-rationale--why-polling--queue) section for why polling was chosen over FIFO.
 
 ## File Paths
 
@@ -149,7 +149,7 @@ Claude sees this and re-spawns the listener. This creates a ~10-minute heartbeat
 
 ### When listener is dead (liveness check)
 
-If Claude makes a tool call and the listener is not running, the PreToolUse/PostToolUse hook injects:
+If Claude makes a tool call and the listener is not running, the PostToolUse/UserPromptSubmit hook injects (PostToolUse fires after every tool call, UserPromptSubmit fires on every user message — both trigger the status injection hook):
 
 ```
 [ib] WARNING: Notification listener is not running. Restart it now:
@@ -234,7 +234,7 @@ drain_and_print() {
 ```
 
 **Key design decisions:**
-- **Polling, not FIFO.** A `sleep 2` loop is dramatically simpler than FIFO management. The 2-second worst-case latency is negligible for Claude's workflow.
+- **Polling, not FIFO.** See [Design Rationale](#design-rationale--why-polling--queue) section for why polling was chosen over FIFO.
 - **`mv` for drain is atomic.** No lock needed. Concurrent writers' in-flight `echo >>` either completes to the old inode (included in drain) or creates a new queue file (picked up next cycle).
 - **Always exit 0.** Timeout is not an error — it's the expected heartbeat cycle. Claude Code won't report it as a failure.
 - **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. `is_listener_alive()` validates with `kill -0` and sets `_LISTENER_ALIVE` global (safe under `set -e`).
@@ -393,8 +393,12 @@ fi
 |-------|-----------------|--------------|
 | `complete` (worker) | `ib send $manager "[hook]: completed"` | Add: `ib notify --from "$ID" --type complete "Agent $ID completed (worker of $manager)"` |
 | `complete` (root manager, no children) | Log only | Add: `ib notify --from "$ID" --type complete "Manager $ID completed its goal"` |
+| `complete` (mid-level manager) | `ib send $manager "[hook]: completed"` | Add: `ib notify --from "$ID" --type complete "Manager $ID completed (sub-manager of $manager)"` |
 | `waiting` (worker) | `ib send $manager "[hook]: waiting"` | Add: `ib notify --from "$ID" --type waiting "Agent $ID is waiting for input"` |
 | `waiting` (root manager) | Log only | Add: `ib notify --from "$ID" --type waiting "Manager $ID is waiting"` |
+| `waiting` (mid-level manager) | `ib send $manager "[hook]: waiting"` | Add: `ib notify --from "$ID" --type waiting "Manager $ID is waiting (sub-manager of $manager)"` |
+
+**Mid-level managers** (agents that have both a manager parent and their own workers) get `ib notify` on `complete` and `waiting`, same as root managers and workers. The notification always goes to the primary Claude's listener queue regardless of hierarchy depth — `ib notify` appends to the shared `.ittybitty/notify/queue` file, which only the primary Claude's `ib listen` process drains. The existing `ib send` to the parent manager is unchanged and continues in parallel.
 
 **Do NOT notify on:** `running`, `unknown`, `creating`, `compacting`, `rate_limited` — these are transient states that would create noise.
 
@@ -467,7 +471,7 @@ Do NOT skip step 2. Missing notifications means missing agent completions.
 If the listener times out with no messages, just re-spawn it.
 ```
 
-### 4. PreToolUse/PostToolUse Hooks — Listener Liveness Check
+### 4. PostToolUse/UserPromptSubmit Hooks — Listener Liveness Check
 
 **This is the primary mechanism to keep the listener alive.** On every tool call, the existing status injection hook also checks listener liveness. If the listener is dead and agents are running, inject a reminder.
 
@@ -567,7 +571,7 @@ If the disk is full when `ib notify` tries to append to the queue file (`echo >>
 
 | NOT building | Why |
 |-------------|-----|
-| FIFO / named pipe | Polling is simpler and the 2s latency is negligible |
+| FIFO / named pipe | See [Design Rationale](#design-rationale--why-polling--queue) for full comparison |
 | Bidirectional notification channel | One-way: agents → primary. Primary uses `ib send` for the reverse. |
 | `question_id` in notifications | Claude uses `ib questions` to get IDs. Less coupling. |
 | `stuck` / `error` notification types | Nothing generates them yet. Reserved for future use. |
