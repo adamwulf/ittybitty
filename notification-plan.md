@@ -309,7 +309,7 @@ cmd_notify() {
         if [[ "$current_dir" =~ /.ittybitty/agents/([^/]+)/repo ]]; then
             local agent_dir="${current_dir%/repo*}"
             if [[ -f "$agent_dir/meta.json" ]]; then
-                from_id=$(read_meta_field "$agent_dir/meta.json" "id" "unknown")
+                from_id=$(read_meta_field "$agent_dir/meta.json" "id" "unknown") || true
             fi
         fi
         if [[ -z "$from_id" ]]; then
@@ -485,8 +485,11 @@ is_listener_alive
 if [[ "$_LISTENER_ALIVE" != "true" ]]; then
     # Only warn if there are active agents
     if [[ "$agent_count" -gt 0 ]]; then
-        # Use real newlines (not \n in single quotes, which would be literal)
-        # json_escape_string() will handle escaping for the JSON output
+        # Escaping chain: raw newlines in this bash string
+        # → json_escape_string() converts them to literal \n
+        # → placed into JSON additionalContext field (line ~13172 of ib)
+        # → Claude Code parses the JSON, \n becomes real newlines in tool result
+        # Single-quoted string with real newlines is correct here.
         listener_warning='
 
 [ib] WARNING: Notification listener is not running. Restart it now:
