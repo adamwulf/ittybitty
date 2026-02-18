@@ -176,6 +176,7 @@ cmd_listen() {
 
     # ... parse --timeout arg ...
 
+    # require_git_repo() (ib ~line 3657) sets ROOT_REPO_PATH and validates we are in a git repo
     require_git_repo
 
     local notify_dir="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
@@ -382,6 +383,66 @@ if [[ "$_LISTENER_ALIVE" == "true" ]]; then
     # listener is running
 fi
 ```
+
+## Implementation Order
+
+### Phase 1: Core Commands (standalone, testable)
+
+1. **`cmd_notify()`** — Write side
+   - Argument parsing (--from, --type, positional message) with `shift 2` guards
+   - Type validation (only `complete`, `waiting`, `question`)
+   - Auto-detect sender from worktree
+   - JSON line formatting — escape ALL fields with `json_escape_string()`
+   - Atomic append to queue file
+   - Add to dispatcher: `notify) shift; cmd_notify "$@" ;;`
+
+2. **`is_listener_alive()`** — Liveness helper
+   - PID file + `kill -0` check + process name verification (`ps -p PID -o args=`)
+   - Sets `_LISTENER_ALIVE` global variable (safe under `set -e`)
+
+3. **`cmd_listen()`** + `drain_and_print()` — Read side
+   - Guard against multiple simultaneous listeners via `is_listener_alive()`
+   - PID management with trap EXIT
+   - 2-second polling loop with timeout (`sleep 2` directly, no variable)
+   - Atomic drain with `mv`
+   - Timeout message on expiry
+   - Add to dispatcher: `listen) shift; cmd_listen "$@" ;;`
+
+4. **Manual testing** — Verify in two terminal windows:
+   - Terminal 1: `ib listen --timeout 30`
+   - Terminal 2: `ib notify "hello world"`
+   - Verify Terminal 1 prints the message and exits within ~2 seconds
+
+### Phase 2: Hook Integration
+
+5. **Modify `cmd_hooks_agent_status()`** — Add `ib notify` for `complete` and `waiting`
+6. **Modify `cmd_ask()`** — Add `ib notify --type question` after storing question
+7. **Modify `cmd_hooks_inject_status()`** — Add listener liveness check + warning injection
+8. **Modify `get_ittybitty_instructions()`** — Add listener bootstrap for `primary` role
+
+### Phase 3: Tests
+
+9. **Add `cmd_test_notify_format()`** and fixtures
+10. **Add `cmd_test_notify_drain()`** and fixtures
+11. **Add `tests/test-notify.sh`** with fixture tests + integration test
+12. **Add to `tests/test-all.sh`**
+
+### Phase 4: Cleanup
+
+13. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
+    ```bash
+    local listener_pid_file="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
+    if [[ -f "$listener_pid_file" ]]; then
+        local lpid
+        lpid=$(<"$listener_pid_file")
+        kill "$lpid" 2>/dev/null || true
+        rm -f "$listener_pid_file"
+    fi
+    rm -rf "$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
+    ```
+14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
+15. **Update CLAUDE.md** — Document the notification system
+16. **Update README.md** — User-facing documentation
 
 ## Hook Changes
 
@@ -646,7 +707,8 @@ Each fixture contains input fields (`from`, `type`, `msg`) and the test verifies
 |---------|----------|-------|
 | `tests/fixtures/notify/drain-single.jsonl` | 1 line output | Single message drain |
 | `tests/fixtures/notify/drain-multiple.jsonl` | 3 lines output | Multiple messages, order preserved |
-| `tests/fixtures/notify/drain-empty.jsonl` | empty output | Empty/missing queue returns nothing |
+| `tests/fixtures/notify/drain-missing-no-queue-file.jsonl` | empty output | Queue file does not exist at all |
+| `tests/fixtures/notify/drain-empty-zero-byte-file.jsonl` | empty output | Queue file exists but is empty (0 bytes) |
 
 **Integration test in `tests/test-notify.sh`:**
 ```bash
@@ -679,67 +741,9 @@ fi
 | `ib test-notify-format FILE` | `cmd_test_notify_format` | Test JSON line formatting from fixture input |
 | `ib test-notify-drain FILE` | `cmd_test_notify_drain` | Test queue drain given a fixture queue file |
 
-## Implementation Order
-
-### Phase 1: Core Commands (standalone, testable)
-
-1. **`cmd_notify()`** — Write side
-   - Argument parsing (--from, --type, positional message) with `shift 2` guards
-   - Type validation (only `complete`, `waiting`, `question`)
-   - Auto-detect sender from worktree
-   - JSON line formatting — escape ALL fields with `json_escape_string()`
-   - Atomic append to queue file
-   - Add to dispatcher: `notify) shift; cmd_notify "$@" ;;`
-
-2. **`is_listener_alive()`** — Liveness helper
-   - PID file + `kill -0` check + process name verification (`ps -p PID -o args=`)
-   - Sets `_LISTENER_ALIVE` global variable (safe under `set -e`)
-
-3. **`cmd_listen()`** + `drain_and_print()` — Read side
-   - Guard against multiple simultaneous listeners via `is_listener_alive()`
-   - PID management with trap EXIT
-   - 2-second polling loop with timeout (`sleep 2` directly, no variable)
-   - Atomic drain with `mv`
-   - Timeout message on expiry
-   - Add to dispatcher: `listen) shift; cmd_listen "$@" ;;`
-
-4. **Manual testing** — Verify in two terminal windows:
-   - Terminal 1: `ib listen --timeout 30`
-   - Terminal 2: `ib notify "hello world"`
-   - Verify Terminal 1 prints the message and exits within ~2 seconds
-
-### Phase 2: Hook Integration
-
-5. **Modify `cmd_hooks_agent_status()`** — Add `ib notify` for `complete` and `waiting`
-6. **Modify `cmd_ask()`** — Add `ib notify --type question` after storing question
-7. **Modify `cmd_hooks_inject_status()`** — Add listener liveness check + warning injection
-8. **Modify `get_ittybitty_instructions()`** — Add listener bootstrap for `primary` role
-
-### Phase 3: Tests
-
-9. **Add `cmd_test_notify_format()`** and fixtures
-10. **Add `cmd_test_notify_drain()`** and fixtures
-11. **Add `tests/test-notify.sh`** with fixture tests + integration test
-12. **Add to `tests/test-all.sh`**
-
-### Phase 4: Cleanup
-
-13. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
-    ```bash
-    local listener_pid_file="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
-    if [[ -f "$listener_pid_file" ]]; then
-        local lpid
-        lpid=$(<"$listener_pid_file")
-        kill "$lpid" 2>/dev/null || true
-        rm -f "$listener_pid_file"
-    fi
-    rm -rf "$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
-    ```
-14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
-15. **Update CLAUDE.md** — Document the notification system
-16. **Update README.md** — User-facing documentation
-
 ### Placement in ib script
+
+> **Note:** Line numbers are approximate and were accurate as of the initial plan writing. Use the function/variable names to locate the exact positions — search for the function name rather than relying on line numbers.
 
 Each new function should be placed near related existing code:
 
@@ -851,6 +855,7 @@ EOF
     local input
     input=$(<"$input_file")
 
+    # json_get() (ib ~line 183) extracts a field from a JSON string or file
     # Extract fields using json_get (existing ib helper)
     local from_id msg_type message
     from_id=$(json_get "$input" "from")
@@ -897,8 +902,10 @@ Test notification queue drain logic.
 Reads a JSONL fixture file, copies it to a temp queue file,
 runs drain_and_print(), and prints the drained output.
 
-For empty fixture files (drain-empty.jsonl), tests that drain
-produces no output when queue is empty or missing.
+Handles two empty-queue scenarios based on fixture filename:
+- drain-missing-*: Queue file does not exist (not created at all)
+- drain-empty-*: Queue file exists but is empty (0 bytes, via touch)
+Both should produce no output.
 
 Options:
   -h, --help      Show this help
@@ -909,7 +916,8 @@ Input format:
 Examples:
   ib test-notify-drain tests/fixtures/notify/drain-single.jsonl
   ib test-notify-drain tests/fixtures/notify/drain-multiple.jsonl
-  ib test-notify-drain tests/fixtures/notify/drain-empty.jsonl
+  ib test-notify-drain tests/fixtures/notify/drain-missing-no-queue-file.jsonl
+  ib test-notify-drain tests/fixtures/notify/drain-empty-zero-byte-file.jsonl
 EOF
                 exit 0
                 ;;
@@ -941,12 +949,20 @@ EOF
     trap 'rm -rf "$tmp_dir"' EXIT
 
     local queue_path="$tmp_dir/queue"
+    local basename
+    basename=$(basename "$input_file")
 
-    # Copy fixture to queue (only if non-empty)
-    if [[ -s "$input_file" ]]; then
+    # Determine queue setup based on fixture filename:
+    # - drain-missing-*: don't create queue file at all (tests missing file case)
+    # - drain-empty-*: create empty file via touch (tests zero-byte file case)
+    # - anything else: copy fixture contents to queue file
+    if [[ "$basename" == drain-missing-* ]]; then
+        : # Leave queue_path missing — tests behavior when queue file does not exist
+    elif [[ "$basename" == drain-empty-* ]]; then
+        touch "$queue_path"  # Create empty file — tests behavior when queue exists but is 0 bytes
+    elif [[ -s "$input_file" ]]; then
         cp "$input_file" "$queue_path"
     fi
-    # If fixture is empty, leave queue_path missing — tests empty/missing case
 
     # Run drain_and_print (the function under test)
     drain_and_print "$tmp_dir" "$queue_path"
