@@ -547,6 +547,9 @@ The liveness check injects a warning on **every** tool call. Claude cannot ignor
 ### Stale drain files after crash
 If the listener is killed between `mv` and `rm -f` of the drain file (e.g., `kill -9`), a `queue.drain.<PID>` file is left behind. These are cleaned up at the next listener startup (`rm -f "$notify_dir"/queue.drain.*`). The stale drain file may contain already-printed messages, but since the listener that drained them was killed, those messages may not have been delivered to Claude. This is an accepted edge case — `kill -9` is inherently unsafe and messages in the drain file are not recoverable.
 
+### Disk full
+If the disk is full when `ib notify` tries to append to the queue file (`echo >> "$queue_path"` fails), the notification is silently lost. If `mv` fails during `drain_and_print()`, the drain file is not created and `cat` has nothing to print — the queue file remains in place and the next poll cycle retries. **Mitigation:** These are best-effort operations. Notification failure should never break agent workflow, which is why all `ib notify` calls in hooks use `|| true`. A disk-full condition affects the entire system (git commits fail, logs fail, etc.), so notification loss is the least of the problems. No special handling is needed — the `|| true` guards already prevent cascading failures.
+
 ### Multiple listeners (shouldn't happen)
 `cmd_listen()` checks `is_listener_alive()` at startup and exits if a listener is already running. If two listeners somehow run simultaneously (e.g., race condition between check and PID write), both poll the same queue file. The first one to `mv` gets the messages; the other sees no file and continues polling. The `trap EXIT` only removes the PID file if it still contains the exiting listener's PID, so the surviving listener's PID is preserved.
 
@@ -731,6 +734,226 @@ fi
 14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
 15. **Update CLAUDE.md** — Document the notification system
 16. **Update README.md** — User-facing documentation
+
+### Placement in ib script
+
+Each new function should be placed near related existing code:
+
+| Function | Placement | Rationale |
+|----------|-----------|-----------|
+| `cmd_notify()` | After `cmd_log()` at ~line 13812 | Notification is a sibling of logging — both are agent communication utilities. Place in the same section before `cmd_ask()`. |
+| `cmd_listen()` | Immediately after `cmd_notify()` | Keep listen/notify together as a pair. |
+| `drain_and_print()` | Immediately before `cmd_listen()` | Helper used only by `cmd_listen()`, define before use. |
+| `is_listener_alive()` | Immediately before `drain_and_print()` | Helper used by both `cmd_listen()` and `cmd_hooks_inject_status()`. Placed near the notification functions. |
+| `cmd_test_notify_format()` | After existing test commands (~line 11256, after `cmd_test_questions()`) | Groups with other `cmd_test_*` functions. |
+| `cmd_test_notify_drain()` | Immediately after `cmd_test_notify_format()` | Keep notification test commands together. |
+
+**Dispatcher entries** (in the main `case` statement starting at ~line 23200):
+- `notify)` and `listen)` — add after the `log)` entry at ~line 23497, before `ask)`
+- `test-notify-format)` and `test-notify-drain)` — add after the `test-json-array-contains)` entry at ~line 23458, before `test-agent-worktree)`
+
+### Dispatcher entries
+
+Add these entries to the main `case`/`esac` dispatcher. Place `notify` and `listen` after the `log` entry (~line 23497):
+
+```bash
+    notify)
+        shift
+        cmd_notify "$@"
+        ;;
+    listen)
+        shift
+        cmd_listen "$@"
+        ;;
+```
+
+Place `test-notify-format` and `test-notify-drain` after the `test-json-array-contains` entry (~line 23458):
+
+```bash
+    test-notify-format)
+        shift
+        cmd_test_notify_format "$@"
+        ;;
+    test-notify-drain)
+        shift
+        cmd_test_notify_drain "$@"
+        ;;
+```
+
+### Test command function bodies
+
+**`cmd_test_notify_format()`** — Tests JSON line formatting from fixture input.
+
+Each fixture is a JSON file with `from`, `type`, and `msg` input fields. The test builds a notification JSON line (same logic as `cmd_notify`) and prints it. The test runner compares the output against expected values.
+
+Fixture format (`tests/fixtures/notify/format-basic.json`):
+```json
+{"from":"agent-abc123","type":"complete","msg":"Agent completed"}
+```
+
+The expected output is a valid JSONL line with a `ts` field added and all fields properly escaped. Since `ts` varies, the test script validates: (1) output is valid JSON-like, (2) the `from`, `type`, and `msg` fields match after unescaping.
+
+```bash
+cmd_test_notify_format() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-notify-format [options] <file>
+
+Test notification JSON line formatting.
+
+Reads a JSON fixture file with "from", "type", and "msg" fields.
+Builds a notification JSON line (same as cmd_notify) and prints it.
+
+The test runner verifies the output contains correctly escaped fields.
+
+Options:
+  -h, --help      Show this help
+
+Input format:
+  JSON file with "from", "type", and "msg" fields
+
+Examples:
+  ib test-notify-format tests/fixtures/notify/format-basic.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-notify-format <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    local input
+    input=$(<"$input_file")
+
+    # Extract fields using json_get (existing ib helper)
+    local from_id msg_type message
+    from_id=$(json_get "$input" "from")
+    msg_type=$(json_get "$input" "type")
+    message=$(json_get "$input" "msg")
+
+    # Build JSON line — same logic as cmd_notify
+    local ts
+    ts=$(date +%Y-%m-%dT%H:%M:%S%z)
+
+    local escaped_msg escaped_from escaped_type
+    escaped_msg=$(json_escape_string "$message")
+    escaped_from=$(json_escape_string "$from_id")
+    escaped_type=$(json_escape_string "$msg_type")
+
+    echo "{\"ts\":\"$ts\",\"from\":\"$escaped_from\",\"type\":\"$escaped_type\",\"msg\":\"$escaped_msg\"}"
+}
+```
+
+**`cmd_test_notify_drain()`** — Tests queue drain logic from a fixture queue file.
+
+Each fixture is a `.jsonl` file containing zero or more notification lines. The test copies the fixture to a temp directory as a queue file, calls `drain_and_print()`, and prints the output. The test runner verifies line count and content match.
+
+Fixture format (`tests/fixtures/notify/drain-single.jsonl`):
+```jsonl
+{"ts":"2026-02-17T14:30:05-0600","from":"agent-abc123","type":"complete","msg":"Agent completed"}
+```
+
+Expected output: the exact contents of the fixture (drain should print all lines).
+
+```bash
+cmd_test_notify_drain() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-notify-drain [options] <file>
+
+Test notification queue drain logic.
+
+Reads a JSONL fixture file, copies it to a temp queue file,
+runs drain_and_print(), and prints the drained output.
+
+For empty fixture files (drain-empty.jsonl), tests that drain
+produces no output when queue is empty or missing.
+
+Options:
+  -h, --help      Show this help
+
+Input format:
+  JSONL file (zero or more notification lines)
+
+Examples:
+  ib test-notify-drain tests/fixtures/notify/drain-single.jsonl
+  ib test-notify-drain tests/fixtures/notify/drain-multiple.jsonl
+  ib test-notify-drain tests/fixtures/notify/drain-empty.jsonl
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-notify-drain <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # Create temp directory for drain test
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    local queue_path="$tmp_dir/queue"
+
+    # Copy fixture to queue (only if non-empty)
+    if [[ -s "$input_file" ]]; then
+        cp "$input_file" "$queue_path"
+    fi
+    # If fixture is empty, leave queue_path missing — tests empty/missing case
+
+    # Run drain_and_print (the function under test)
+    drain_and_print "$tmp_dir" "$queue_path"
+
+    # Verify queue file was removed by drain
+    if [[ -f "$queue_path" ]]; then
+        echo "ERROR: queue file still exists after drain" >&2
+        exit 1
+    fi
+}
+```
 
 ## Design Rationale — Why Polling + Queue
 
