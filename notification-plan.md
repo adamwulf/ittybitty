@@ -27,7 +27,7 @@ Enable running ib agents to push notifications to the primary Claude session (th
 ┌──────────────────────────────────────────────┐
 │  ib listen (background bash process)         │
 │                                              │
-│  - Writes PID to .ittybitty/notify/pid       │
+│  - Writes PID to .ittybitty/notify/listener.pid │
 │  - Polls queue file every 2 seconds          │
 │  - When messages found: mv queue → drain     │
 │  - Prints drained messages to stdout         │
@@ -66,6 +66,37 @@ All notification files live under `.ittybitty/notify/`. Since `.ittybitty/` is a
 ```
 
 **No REPO_ID in filenames.** The `.ittybitty/` directory is unique per repo. Multiple repos on the same machine each have their own `.ittybitty/notify/` directory. This is consistent with how other `.ittybitty/` files work (e.g., `user-questions.json`, `repo-id`).
+
+### Worktree Path Resolution
+
+`ib notify` is called from agent Stop hooks, which run inside agent worktrees. In a git worktree, `git rev-parse --show-toplevel` (used by `require_git_repo`) returns the **worktree root** (e.g., `.ittybitty/agents/agent-abc123/repo`), not the main repo root. The notify queue must live under the **main repo's** `.ittybitty/notify/` — not inside the agent worktree's `.ittybitty/`.
+
+**Resolution strategy:** After `require_git_repo` sets `ROOT_REPO_PATH`, check if `$ROOT_REPO_PATH/.git` is a file (not a directory). A `.git` file means we are in a worktree. Its contents are of the form `gitdir: /path/to/main/.git/worktrees/<name>`. Parse out the main repo path from that `gitdir:` value.
+
+```bash
+# After require_git_repo (which sets ROOT_REPO_PATH):
+local NOTIFY_ROOT="$ROOT_REPO_PATH"
+
+if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
+    # We are in a git worktree. .git is a file, not a directory.
+    # Contents: "gitdir: /absolute/path/to/main/.git/worktrees/<name>"
+    local git_file_content
+    git_file_content=$(<"$ROOT_REPO_PATH/.git")
+    # Strip "gitdir: " prefix, then strip the trailing "/worktrees/<name>" suffix
+    local gitdir="${git_file_content#gitdir: }"
+    # gitdir points into .git/worktrees/<name> — go up two levels to reach main .git
+    # then one more to reach the main repo root
+    local main_git_dir
+    main_git_dir=$(dirname "$(dirname "$gitdir")")   # /path/to/main/.git
+    NOTIFY_ROOT=$(dirname "$main_git_dir")            # /path/to/main
+fi
+
+local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
+```
+
+This `NOTIFY_ROOT` variable replaces `ROOT_REPO_PATH` in all notify-directory path constructions. The variable name `NOTIFY_ROOT` makes the purpose clear: it is always the main repo root, even when called from inside a worktree.
+
+**Where this appears:** `cmd_notify()`, `cmd_listen()`, `is_listener_alive()`, and the `cmd_nuke()` cleanup snippet all use `$NOTIFY_ROOT/$ITTYBITTY_DIR/notify` instead of `$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify`.
 
 ## Queue Message Format
 
@@ -179,7 +210,19 @@ cmd_listen() {
     # require_git_repo() (ib ~line 3657) sets ROOT_REPO_PATH and validates we are in a git repo
     require_git_repo
 
-    local notify_dir="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
+    # Resolve main repo root — may differ from ROOT_REPO_PATH when called from a worktree.
+    # See "Worktree Path Resolution" in File Paths section for full explanation.
+    local NOTIFY_ROOT="$ROOT_REPO_PATH"
+    if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
+        local git_file_content
+        git_file_content=$(<"$ROOT_REPO_PATH/.git")
+        local gitdir="${git_file_content#gitdir: }"
+        local main_git_dir
+        main_git_dir=$(dirname "$(dirname "$gitdir")")
+        NOTIFY_ROOT=$(dirname "$main_git_dir")
+    fi
+
+    local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
     local queue_path="$notify_dir/queue"
     local pid_path="$notify_dir/listener.pid"
 
@@ -197,8 +240,37 @@ cmd_listen() {
 
     # Register PID for liveness checks
     echo "$$" > "$pid_path"
-    # Only remove PID file if it still contains our PID (guards against overwrite by second listener)
-    trap 'if [[ -f "$pid_path" ]] && [[ "$(<"$pid_path")" == "$$" ]]; then rm -f "$pid_path"; fi' EXIT
+
+    # TOCTOU guard: re-check after writing the PID file.
+    # Two listeners can both pass is_listener_alive() before either writes the PID file.
+    # After writing our PID, wait briefly and check again. If the PID file no longer contains
+    # our PID, another listener won the race — yield to it and exit quietly.
+    sleep 0.1
+    is_listener_alive
+    if [[ "$_LISTENER_ALIVE" == "true" ]]; then
+        local other_pid
+        other_pid=$(<"$pid_path")
+        if [[ "$other_pid" != "$$" ]]; then
+            # Another listener won the race — let it run
+            exit 0
+        fi
+    fi
+
+    # _DRAIN_FILE tracks the active drain file so the EXIT trap can rescue messages
+    # if we are killed by SIGTERM mid-drain (trap fires on SIGTERM, not SIGKILL).
+    _DRAIN_FILE=""
+
+    # Cleanup on exit: rescue any in-progress drain, then remove the PID file.
+    # Only remove PID file if it still contains our PID (guards against overwrite by second listener).
+    trap '
+        if [[ -n "$_DRAIN_FILE" ]] && [[ -f "$_DRAIN_FILE" ]]; then
+            cat "$_DRAIN_FILE"
+            rm -f "$_DRAIN_FILE"
+        fi
+        if [[ -f "$pid_path" ]] && [[ "$(<"$pid_path")" == "$$" ]]; then
+            rm -f "$pid_path"
+        fi
+    ' EXIT
 
     local elapsed=0
     while [[ $elapsed -lt $timeout ]]; do
@@ -212,16 +284,26 @@ cmd_listen() {
         elapsed=$((elapsed + 2))
     done
 
+    # Final check — a message may have arrived during the last sleep window before timeout.
+    if [[ -s "$queue_path" ]]; then
+        drain_and_print "$notify_dir" "$queue_path"
+        exit 0
+    fi
+
     # Timeout — print reminder and exit cleanly
     echo "No messages received. Background listener has stopped. Please restart with: ib listen"
     exit 0
 }
 
-# Atomic drain: mv queue to temp, print, clean up
+# Atomic drain: mv queue to temp, print, clean up.
+# Sets/clears _DRAIN_FILE so the EXIT trap can rescue messages if SIGTERM fires mid-drain.
 drain_and_print() {
     local notify_dir="$1"
     local queue_path="$2"
     local drain_file="$notify_dir/queue.drain.$$"
+
+    # Record the drain file path before mv so EXIT trap can recover it on SIGTERM.
+    _DRAIN_FILE="$drain_file"
 
     # mv is atomic on same filesystem — writers that started before mv
     # complete to the old inode. After mv, new >> creates a fresh file.
@@ -231,6 +313,9 @@ drain_and_print() {
         cat "$drain_file"
     fi
     rm -f "$drain_file"
+
+    # Clear drain file tracker — normal path completed, no rescue needed.
+    _DRAIN_FILE=""
 }
 ```
 
@@ -239,6 +324,9 @@ drain_and_print() {
 - **`mv` for drain is atomic.** No lock needed. Concurrent writers' in-flight `echo >>` either completes to the old inode (included in drain) or creates a new queue file (picked up next cycle).
 - **Always exit 0.** Timeout is not an error — it's the expected heartbeat cycle. Claude Code won't report it as a failure.
 - **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. `is_listener_alive()` validates with `kill -0` and sets `_LISTENER_ALIVE` global (safe under `set -e`).
+- **TOCTOU guard after PID write.** A 0.1s sleep + re-check after writing the PID file guards against two listeners simultaneously passing the initial `is_listener_alive()` check. The one whose PID is not in the file yields.
+- **SIGTERM drain rescue.** `_DRAIN_FILE` is set before `mv` and cleared after `rm`. The EXIT trap checks this variable: if set and the file exists, it cats the file before cleanup. This ensures SIGTERM mid-drain does not silently drop messages. SIGKILL cannot be trapped — message loss on `kill -9` is accepted.
+- **Final queue check after timeout.** After the polling loop exits, one last `[[ -s "$queue_path" ]]` check catches messages that arrived during the final `sleep 2` window before the timeout message is printed.
 
 ### `ib notify`
 
@@ -320,7 +408,19 @@ cmd_notify() {
 
     require_git_repo
 
-    local notify_dir="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
+    # Resolve main repo root — may differ from ROOT_REPO_PATH when called from a worktree.
+    # See "Worktree Path Resolution" in File Paths section for full explanation.
+    local NOTIFY_ROOT="$ROOT_REPO_PATH"
+    if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
+        local git_file_content
+        git_file_content=$(<"$ROOT_REPO_PATH/.git")
+        local gitdir="${git_file_content#gitdir: }"
+        local main_git_dir
+        main_git_dir=$(dirname "$(dirname "$gitdir")")
+        NOTIFY_ROOT=$(dirname "$main_git_dir")
+    fi
+
+    local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
     local queue_path="$notify_dir/queue"
 
     mkdir -p "$notify_dir"
@@ -351,10 +451,19 @@ cmd_notify() {
 
 **Uses global variable pattern** (`_LISTENER_ALIVE`) instead of return codes to avoid `set -e` landmines. Safe to call anywhere — not just inside `if` blocks.
 
+**Prerequisites:** `is_listener_alive()` requires that the caller has already resolved `NOTIFY_ROOT` (the main repo root, accounting for worktree path resolution). It uses `NOTIFY_ROOT` — not `ROOT_REPO_PATH` — to build the pid file path. Each call site must ensure `NOTIFY_ROOT` is set before calling `is_listener_alive()`:
+
+- In `cmd_listen()`: `NOTIFY_ROOT` is resolved immediately after `require_git_repo` (see worktree path resolution block in `cmd_listen()`).
+- In `cmd_hooks_inject_status()`: `ROOT_REPO_PATH` is already set by the hook infrastructure (hooks run in the main repo context, so `ROOT_REPO_PATH` equals `NOTIFY_ROOT` — a worktree resolution block should still be added here for consistency, since hooks could theoretically be called from a worktree context).
+
 ```bash
 is_listener_alive() {
+    # PREREQUISITE: NOTIFY_ROOT must be set by the caller (the main repo root,
+    # resolved via worktree detection if necessary — see "Worktree Path Resolution"
+    # in the File Paths section). Do NOT use ROOT_REPO_PATH directly here, as
+    # ROOT_REPO_PATH may point to a git worktree rather than the main repo root.
     _LISTENER_ALIVE=false
-    local pid_path="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
+    local pid_path="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify/listener.pid"
 
     if [[ -f "$pid_path" ]]; then
         local pid
@@ -378,7 +487,18 @@ is_listener_alive() {
 
 **Usage pattern:**
 ```bash
-is_listener_alive
+# Caller must resolve NOTIFY_ROOT first (see "Worktree Path Resolution"):
+local NOTIFY_ROOT="$ROOT_REPO_PATH"
+if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
+    local git_file_content
+    git_file_content=$(<"$ROOT_REPO_PATH/.git")
+    local gitdir="${git_file_content#gitdir: }"
+    local main_git_dir
+    main_git_dir=$(dirname "$(dirname "$gitdir")")
+    NOTIFY_ROOT=$(dirname "$main_git_dir")
+fi
+
+is_listener_alive  # uses $NOTIFY_ROOT internally
 if [[ "$_LISTENER_ALIVE" == "true" ]]; then
     # listener is running
 fi
@@ -431,14 +551,17 @@ fi
 
 13. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
     ```bash
-    local listener_pid_file="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
+    # cmd_nuke() runs in the main repo context (ROOT_REPO_PATH is the main repo root),
+    # so no worktree resolution is needed here. NOTIFY_ROOT equals ROOT_REPO_PATH.
+    local NOTIFY_ROOT="$ROOT_REPO_PATH"
+    local listener_pid_file="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify/listener.pid"
     if [[ -f "$listener_pid_file" ]]; then
         local lpid
         lpid=$(<"$listener_pid_file")
         kill "$lpid" 2>/dev/null || true
         rm -f "$listener_pid_file"
     fi
-    rm -rf "$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
+    rm -rf "$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
     ```
 14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
 15. **Update CLAUDE.md** — Document the notification system
@@ -534,6 +657,8 @@ If the listener times out with no messages, just re-spawn it.
 
 ### 4. PostToolUse/UserPromptSubmit Hooks — Listener Liveness Check
 
+**Hook installation prerequisite:** The PostToolUse/UserPromptSubmit hook must be installed via `ib hooks install` for liveness checking to work. Without the hook installed, no liveness check fires and no warnings are injected into Claude's context. The fallback in this case is the ~9.5-minute timeout heartbeat cycle from the listener itself (it exits with a reminder message, prompting Claude to re-spawn it), plus the instructions in `get_ittybitty_instructions()` telling Claude to always re-spawn the listener after processing notifications. The hook-based liveness check is the preferred mechanism — faster and more reliable — but the system degrades gracefully without it.
+
 **This is the primary mechanism to keep the listener alive.** On every tool call, the existing status injection hook also checks listener liveness. If the listener is dead and agents are running, inject a reminder.
 
 **Implementation:** Add liveness checking to `cmd_hooks_inject_status()` (the PostToolUse/UserPromptSubmit hook that already runs on every tool call).
@@ -544,9 +669,26 @@ If the listener times out with no messages, just re-spawn it.
 # Check listener liveness (only for primary Claude, not agents)
 # NOTE: $agent_count is already computed earlier in cmd_hooks_inject_status()
 # by the loop that scans agent directories (lines ~13039-13073 of ib script).
+# Verified: the variable is declared as `local agent_count=0` at ~line 13039.
 # Do NOT call a separate count_active_agents helper — it doesn't exist.
+#
+# NOTIFY_ROOT must be resolved before calling is_listener_alive().
+# In cmd_hooks_inject_status(), hooks run in the main repo context, so
+# ROOT_REPO_PATH should already equal the main repo root. However, add the
+# worktree detection block for safety in case hooks are ever called from a
+# worktree context:
+local NOTIFY_ROOT="$ROOT_REPO_PATH"
+if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
+    local git_file_content
+    git_file_content=$(<"$ROOT_REPO_PATH/.git")
+    local gitdir="${git_file_content#gitdir: }"
+    local main_git_dir
+    main_git_dir=$(dirname "$(dirname "$gitdir")")
+    NOTIFY_ROOT=$(dirname "$main_git_dir")
+fi
+
 local listener_warning=""
-is_listener_alive
+is_listener_alive  # uses $NOTIFY_ROOT internally (set above)
 if [[ "$_LISTENER_ALIVE" != "true" ]]; then
     # Only warn if there are active agents
     if [[ "$agent_count" -gt 0 ]]; then
@@ -562,11 +704,14 @@ Bash(command: "ib listen", run_in_background: true)'
     fi
 fi
 
-# Append warning to additionalContext if needed
+# PREPEND warning to status_content so it appears first and is most visible to Claude.
+# The warning must not be buried at the end of potentially long status output.
 if [[ -n "$listener_warning" ]]; then
-    status_content="${status_content}${listener_warning}"
+    status_content="${listener_warning}${status_content}"
 fi
 ```
+
+**Why the warning is prepended:** Appending the warning after potentially long status text risks it being overlooked. Prepending ensures the listener restart reminder is the first thing Claude sees in the injected context, making it impossible to miss.
 
 **Why this is in the status injection hook (not a separate hook):**
 - The status injection hook already runs on every PostToolUse and UserPromptSubmit for the primary Claude
@@ -585,6 +730,11 @@ This adds ~1ms per tool call. The status injection hook already does much more e
 **Throttling:** No throttling needed. If the listener is alive, the check returns immediately. If dead, the warning is injected on every tool call until Claude restarts it. This is intentional — persistent reminders ensure Claude doesn't ignore the warning.
 
 ## Edge Cases
+
+### Worktree path resolution in Stop hook
+`ib notify` is called from agent Stop hooks running inside git worktrees. In a worktree, `require_git_repo` sets `ROOT_REPO_PATH` to the worktree root (e.g., `.ittybitty/agents/agent-abc123/repo`), not the main repo root. Without the worktree resolution block, `cmd_notify()` would write to `.ittybitty/agents/agent-abc123/repo/.ittybitty/notify/queue` instead of the main repo's `.ittybitty/notify/queue`, and the listener would never see the message.
+
+**Resolution:** Both `cmd_notify()` and `cmd_listen()` resolve `NOTIFY_ROOT` from `ROOT_REPO_PATH` by checking if `.git` is a file (worktree indicator) and parsing the `gitdir:` path. The worktree resolution is a cheap one-time operation per command invocation, not per-poll-cycle. See the "Worktree Path Resolution" subsection in File Paths for the full implementation.
 
 ### Listener not running when notification arrives
 Message is appended to queue file. Next `ib listen` finds it within 2 seconds of starting. Liveness check on tool calls reminds Claude to restart the listener. **No message loss.**
@@ -615,8 +765,12 @@ If the listener is killed between `mv` and `rm -f` of the drain file (e.g., `kil
 ### Disk full
 If the disk is full when `ib notify` tries to append to the queue file (`echo >> "$queue_path"` fails), the notification is silently lost. If `mv` fails during `drain_and_print()`, the drain file is not created and `cat` has nothing to print — the queue file remains in place and the next poll cycle retries. **Mitigation:** These are best-effort operations. Notification failure should never break agent workflow, which is why all `ib notify` calls in hooks use `|| true`. A disk-full condition affects the entire system (git commits fail, logs fail, etc.), so notification loss is the least of the problems. No special handling is needed — the `|| true` guards already prevent cascading failures.
 
-### Multiple listeners (shouldn't happen)
-`cmd_listen()` checks `is_listener_alive()` at startup and exits if a listener is already running. If two listeners somehow run simultaneously (e.g., race condition between check and PID write), both poll the same queue file. The first one to `mv` gets the messages; the other sees no file and continues polling. The `trap EXIT` only removes the PID file if it still contains the exiting listener's PID, so the surviving listener's PID is preserved.
+### Stale queue entries from a previous session
+When a new `ib listen` starts, it drains **whatever is in the queue file** — including messages that were written during a prior Claude session that ended before the listener had a chance to drain them. This behavior is intentional: stale messages are not discarded. They are delivered to the current session's Claude on the first poll that finds them.
+
+**What Claude should do with stale notifications:** Claude must verify that the agent referenced in a notification's `from` field actually exists and is in the expected state before acting. An agent listed in a stale notification may have already been killed or merged in the previous session. Claude can verify by running `ib list` or checking `.ittybitty/agents/<id>/meta.json` before taking action (e.g., before running `ib merge <id>`).
+
+**Cleanup of stale messages:** `cmd_nuke()` removes the entire `.ittybitty/notify/` directory as part of its cleanup. This clears any stale queue entries. After a nuke, the next session starts with a clean queue. Short of a nuke, stale messages persist until a listener drains them — this is the correct behavior, since a message that survived a session boundary is still actionable if the agent is still alive.
 
 ## Relationship to Existing Systems
 
@@ -690,25 +844,70 @@ if [[ -s "$queue_path" ]]; then
 
 **Fixture-based tests for `ib test-notify-format`:**
 
+Fixture names follow `{expected-output}-{description}.json`. All format fixtures produce valid JSON output, so the prefix is `valid-`. Error fixtures use `error-` prefix.
+
 | Fixture | Expected | Tests |
 |---------|----------|-------|
-| `tests/fixtures/notify/format-basic.json` | valid JSON with all fields | Basic message formatting |
-| `tests/fixtures/notify/format-quotes.json` | properly escaped `\"` | Message with double quotes |
-| `tests/fixtures/notify/format-newlines.json` | properly escaped `\n` | Message with newlines |
-| `tests/fixtures/notify/format-tabs.json` | properly escaped `\t` | Message with tab characters |
-| `tests/fixtures/notify/format-cr.json` | properly escaped `\r` | Message with carriage returns |
-| `tests/fixtures/notify/format-backslash.json` | properly escaped `\\` | Message with backslashes |
+| `tests/fixtures/notify/valid-basic.json` | valid JSON with all fields | Basic message formatting |
+| `tests/fixtures/notify/valid-quotes.json` | properly escaped `\"` | Message with double quotes |
+| `tests/fixtures/notify/valid-newlines.json` | properly escaped `\n` | Message with newlines |
+| `tests/fixtures/notify/valid-tabs.json` | properly escaped `\t` | Message with tab characters |
+| `tests/fixtures/notify/valid-cr.json` | properly escaped `\r` | Message with carriage returns |
+| `tests/fixtures/notify/valid-backslash.json` | properly escaped `\\` | Message with backslashes |
+| `tests/fixtures/notify/valid-mixed.json` | all special chars escaped correctly | Message with newlines, quotes, backslashes, and tabs combined |
+| `tests/fixtures/notify/error-empty-message.json` | non-zero exit with error message to stderr | Empty `msg` field — `ib notify ""` should exit with error |
 
-Each fixture contains input fields (`from`, `type`, `msg`) and the test verifies the output is valid JSONL with correct escaping.
+Each fixture contains input fields (`from`, `type`, `msg`) and the test verifies the output is valid JSONL with correct escaping. The `error-empty-message.json` fixture has an empty `msg` field; `cmd_test_notify_format` should detect this and exit non-zero so the test runner captures the error path.
+
+**Format test runner validation approach:** The `valid-*` fixtures use a round-trip validation strategy instead of comparing against a static expected-output string (because the `ts` field is dynamic). The test runner for each `valid-*` fixture:
+1. Runs `ib test-notify-format <fixture>` and captures stdout
+2. Extracts the `from`, `type`, and `msg` fields from the output using `json_get`
+3. Compares each extracted field against the original fixture's input fields
+4. If all fields match after the round-trip (input → `cmd_notify` JSON building → output → `json_get` extraction), the test passes
+
+For `error-*` fixtures, the test runner verifies non-zero exit and checks stderr for an error message. This matches the existing pattern used by other test suites that validate error paths.
+
+```bash
+# Sketch of format test runner validation (in tests/test-notify.sh):
+for fixture in tests/fixtures/notify/valid-*.json; do
+    basename=$(basename "$fixture")
+    output=$(ib test-notify-format "$fixture") || { echo "FAIL: $basename (non-zero exit)"; failures=$((failures+1)); continue; }
+    # Round-trip check: extract fields from output and compare to input
+    out_from=$(json_get "-" "from" <<< "$output")
+    in_from=$(json_get "$fixture" "from")
+    if [[ "$out_from" != "$in_from" ]]; then
+        echo "FAIL: $basename (from mismatch: expected '$in_from', got '$out_from')"
+        failures=$((failures+1))
+        continue
+    fi
+    # ... same for type, msg ...
+    echo "PASS: $basename"
+done
+```
 
 **Fixture-based tests for `ib test-notify-drain`:**
 
+Fixture names follow `{expected-output}-{description}.jsonl`. Fixtures that produce printed output use `output-`. Fixtures that produce no output use `empty-`.
+
 | Fixture | Expected | Tests |
 |---------|----------|-------|
-| `tests/fixtures/notify/drain-single.jsonl` | 1 line output | Single message drain |
-| `tests/fixtures/notify/drain-multiple.jsonl` | 3 lines output | Multiple messages, order preserved |
-| `tests/fixtures/notify/drain-missing-no-queue-file.jsonl` | empty output | Queue file does not exist at all |
-| `tests/fixtures/notify/drain-empty-zero-byte-file.jsonl` | empty output | Queue file exists but is empty (0 bytes) |
+| `tests/fixtures/notify/output-single.jsonl` | 1 line output | Single message drain |
+| `tests/fixtures/notify/output-multiple.jsonl` | 3 lines output | Multiple messages, order preserved |
+| `tests/fixtures/notify/empty-missing.jsonl` | empty output | Queue file does not exist at all |
+| `tests/fixtures/notify/empty-zero-bytes.jsonl` | empty output | Queue file exists but is empty (0 bytes) |
+
+**Fixture-based tests for `ib test-listener-alive`:**
+
+Fixture names follow `{expected-output}-{description}.json`. Fixtures representing a live listener use `alive-`. Fixtures representing a dead/stale listener use `dead-`.
+
+| Fixture | Expected | Tests |
+|---------|----------|-------|
+| `tests/fixtures/notify/alive-live-pid.json` | prints `true` | PID of a running process — `is_listener_alive()` should set `_LISTENER_ALIVE=true` |
+| `tests/fixtures/notify/dead-stale-pid.json` | prints `false` | PID of an already-exited process — `is_listener_alive()` should set `_LISTENER_ALIVE=false` |
+
+`cmd_test_listener_alive` reads a fixture JSON file containing a `pid` field, writes that PID to a temp `listener.pid` file, calls `is_listener_alive()`, and prints the resulting value of `_LISTENER_ALIVE` (`true` or `false`). The test runner compares the output against the expected value encoded in the fixture filename prefix (`alive-` → expects `true`, `dead-` → expects `false`).
+
+For `alive-live-pid.json`, the test script must supply a live PID at runtime — the fixture contains a placeholder that the test script replaces with `$$` (the test script's own PID) or the PID of a background `sleep` process spawned for the test.
 
 **Integration test in `tests/test-notify.sh`:**
 ```bash
@@ -740,6 +939,7 @@ fi
 |---------|----------|---------|
 | `ib test-notify-format FILE` | `cmd_test_notify_format` | Test JSON line formatting from fixture input |
 | `ib test-notify-drain FILE` | `cmd_test_notify_drain` | Test queue drain given a fixture queue file |
+| `ib test-listener-alive FILE` | `cmd_test_listener_alive` | Test `is_listener_alive()` logic given a fixture with a PID field |
 
 ### Placement in ib script
 
@@ -755,10 +955,11 @@ Each new function should be placed near related existing code:
 | `is_listener_alive()` | Immediately before `drain_and_print()` | Helper used by both `cmd_listen()` and `cmd_hooks_inject_status()`. Placed near the notification functions. |
 | `cmd_test_notify_format()` | After existing test commands (~line 11256, after `cmd_test_questions()`) | Groups with other `cmd_test_*` functions. |
 | `cmd_test_notify_drain()` | Immediately after `cmd_test_notify_format()` | Keep notification test commands together. |
+| `cmd_test_listener_alive()` | Immediately after `cmd_test_notify_drain()` | Keep notification test commands together. |
 
 **Dispatcher entries** (in the main `case` statement starting at ~line 23200):
 - `notify)` and `listen)` — add after the `log)` entry at ~line 23497, before `ask)`
-- `test-notify-format)` and `test-notify-drain)` — add after the `test-json-array-contains)` entry at ~line 23458, before `test-agent-worktree)`
+- `test-notify-format)`, `test-notify-drain)`, and `test-listener-alive)` — add after the `test-json-array-contains)` entry at ~line 23458, before `test-agent-worktree)`
 
 ### Dispatcher entries
 
@@ -775,7 +976,7 @@ Add these entries to the main `case`/`esac` dispatcher. Place `notify` and `list
         ;;
 ```
 
-Place `test-notify-format` and `test-notify-drain` after the `test-json-array-contains` entry (~line 23458):
+Place `test-notify-format`, `test-notify-drain`, and `test-listener-alive` after the `test-json-array-contains` entry (~line 23458):
 
 ```bash
     test-notify-format)
@@ -786,6 +987,10 @@ Place `test-notify-format` and `test-notify-drain` after the `test-json-array-co
         shift
         cmd_test_notify_drain "$@"
         ;;
+    test-listener-alive)
+        shift
+        cmd_test_listener_alive "$@"
+        ;;
 ```
 
 ### Test command function bodies
@@ -794,7 +999,7 @@ Place `test-notify-format` and `test-notify-drain` after the `test-json-array-co
 
 Each fixture is a JSON file with `from`, `type`, and `msg` input fields. The test builds a notification JSON line (same logic as `cmd_notify`) and prints it. The test runner compares the output against expected values.
 
-Fixture format (`tests/fixtures/notify/format-basic.json`):
+Fixture format (`tests/fixtures/notify/valid-basic.json`):
 ```json
 {"from":"agent-abc123","type":"complete","msg":"Agent completed"}
 ```
@@ -826,7 +1031,7 @@ Input format:
   JSON file with "from", "type", and "msg" fields
 
 Examples:
-  ib test-notify-format tests/fixtures/notify/format-basic.json
+  ib test-notify-format tests/fixtures/notify/valid-basic.json
 EOF
                 exit 0
                 ;;
@@ -852,15 +1057,12 @@ EOF
         exit 1
     fi
 
-    local input
-    input=$(<"$input_file")
-
-    # json_get() (ib ~line 183) extracts a field from a JSON string or file
-    # Extract fields using json_get (existing ib helper)
+    # json_get() (ib ~line 183) extracts a field from a file path or stdin
+    # Pass the file path directly — json_get reads from the file, not a string variable
     local from_id msg_type message
-    from_id=$(json_get "$input" "from")
-    msg_type=$(json_get "$input" "type")
-    message=$(json_get "$input" "msg")
+    from_id=$(json_get "$input_file" "from")
+    msg_type=$(json_get "$input_file" "type")
+    message=$(json_get "$input_file" "msg")
 
     # Build JSON line — same logic as cmd_notify
     local ts
@@ -879,7 +1081,7 @@ EOF
 
 Each fixture is a `.jsonl` file containing zero or more notification lines. The test copies the fixture to a temp directory as a queue file, calls `drain_and_print()`, and prints the output. The test runner verifies line count and content match.
 
-Fixture format (`tests/fixtures/notify/drain-single.jsonl`):
+Fixture format (`tests/fixtures/notify/output-single.jsonl`):
 ```jsonl
 {"ts":"2026-02-17T14:30:05-0600","from":"agent-abc123","type":"complete","msg":"Agent completed"}
 ```
@@ -903,8 +1105,8 @@ Reads a JSONL fixture file, copies it to a temp queue file,
 runs drain_and_print(), and prints the drained output.
 
 Handles two empty-queue scenarios based on fixture filename:
-- drain-missing-*: Queue file does not exist (not created at all)
-- drain-empty-*: Queue file exists but is empty (0 bytes, via touch)
+- empty-missing-*: Queue file does not exist (not created at all)
+- empty-zero-bytes-*: Queue file exists but is empty (0 bytes, via touch)
 Both should produce no output.
 
 Options:
@@ -914,10 +1116,10 @@ Input format:
   JSONL file (zero or more notification lines)
 
 Examples:
-  ib test-notify-drain tests/fixtures/notify/drain-single.jsonl
-  ib test-notify-drain tests/fixtures/notify/drain-multiple.jsonl
-  ib test-notify-drain tests/fixtures/notify/drain-missing-no-queue-file.jsonl
-  ib test-notify-drain tests/fixtures/notify/drain-empty-zero-byte-file.jsonl
+  ib test-notify-drain tests/fixtures/notify/output-single.jsonl
+  ib test-notify-drain tests/fixtures/notify/output-multiple.jsonl
+  ib test-notify-drain tests/fixtures/notify/empty-missing.jsonl
+  ib test-notify-drain tests/fixtures/notify/empty-zero-bytes.jsonl
 EOF
                 exit 0
                 ;;
@@ -953,12 +1155,12 @@ EOF
     basename=$(basename "$input_file")
 
     # Determine queue setup based on fixture filename:
-    # - drain-missing-*: don't create queue file at all (tests missing file case)
-    # - drain-empty-*: create empty file via touch (tests zero-byte file case)
-    # - anything else: copy fixture contents to queue file
-    if [[ "$basename" == drain-missing-* ]]; then
+    # - empty-missing-*: don't create queue file at all (tests missing file case)
+    # - empty-zero-bytes-*: create empty file via touch (tests zero-byte file case)
+    # - anything else (output-*): copy fixture contents to queue file
+    if [[ "$basename" == empty-missing* ]]; then
         : # Leave queue_path missing — tests behavior when queue file does not exist
-    elif [[ "$basename" == drain-empty-* ]]; then
+    elif [[ "$basename" == empty-zero-bytes* ]]; then
         touch "$queue_path"  # Create empty file — tests behavior when queue exists but is 0 bytes
     elif [[ -s "$input_file" ]]; then
         cp "$input_file" "$queue_path"
@@ -972,6 +1174,95 @@ EOF
         echo "ERROR: queue file still exists after drain" >&2
         exit 1
     fi
+}
+```
+
+**`cmd_test_listener_alive()`** — Tests `is_listener_alive()` logic from a fixture.
+
+Each fixture is a JSON file with a `pid` field. The test writes that PID to a temp `listener.pid` file, calls `is_listener_alive()`, and prints the resulting value of `_LISTENER_ALIVE` (`true` or `false`). The test runner compares the output against the expected value encoded in the fixture filename prefix (`alive-` → expects `true`, `dead-` → expects `false`).
+
+For `alive-live-pid.json`, the fixture contains a placeholder PID field (e.g., `0`) that the test script replaces with `$$` at runtime. The test script spawns a brief `sleep` subprocess and uses that PID, or simply uses `$$`, to ensure a live process exists during the check.
+
+```bash
+cmd_test_listener_alive() {
+    local input_file=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: ib test-listener-alive [options] <file>
+
+Test is_listener_alive() liveness check logic.
+
+Reads a JSON fixture file with a "pid" field.
+Writes that PID to a temp listener.pid file, calls is_listener_alive(),
+and prints the resulting value of _LISTENER_ALIVE (true or false).
+
+For alive-* fixtures: the test script replaces the PID field with $$ at runtime
+(so the test process itself acts as the live listener PID).
+
+Options:
+  -h, --help      Show this help
+
+Input format:
+  JSON file with "pid" field (integer process ID)
+
+Examples:
+  ib test-listener-alive tests/fixtures/notify/alive-live-pid.json
+  ib test-listener-alive tests/fixtures/notify/dead-stale-pid.json
+EOF
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                input_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$input_file" ]]; then
+        echo "Error: file argument required" >&2
+        echo "Usage: ib test-listener-alive <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$input_file" ]]; then
+        echo "Error: file not found: $input_file" >&2
+        exit 1
+    fi
+
+    # json_get() reads from file path directly — do not load into a variable
+    local pid
+    pid=$(json_get "$input_file" "pid")
+
+    local basename
+    basename=$(basename "$input_file")
+
+    # For alive-* fixtures, use the test script's own PID as the live PID
+    # (the fixture's pid value is a placeholder — runtime PID is substituted)
+    if [[ "$basename" == alive-* ]]; then
+        pid="$$"
+    fi
+
+    # Create temp directory for the PID file
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    # Set NOTIFY_ROOT so is_listener_alive() can find the PID file
+    local NOTIFY_ROOT="$tmp_dir"
+    local ITTYBITTY_DIR=".ittybitty"
+    mkdir -p "$tmp_dir/.ittybitty/notify"
+    echo "$pid" > "$tmp_dir/.ittybitty/notify/listener.pid"
+
+    is_listener_alive
+    echo "$_LISTENER_ALIVE"
 }
 ```
 
