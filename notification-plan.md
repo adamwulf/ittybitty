@@ -83,7 +83,7 @@ Each line in the queue file is a self-contained JSON object (JSONL):
 | `type` | string | One of: `complete`, `waiting`, `question` |
 | `msg` | string | Human-readable message text |
 
-**Only three types for v1:** `complete`, `waiting`, `question`. The `stuck` and `error` types are reserved for future use — nothing generates them yet.
+**Exactly three types for v1:** `complete`, `waiting`, `question`. The `--type` argument is validated — unknown types are rejected with an error. Default type (when `--type` is omitted) is `complete`.
 
 **No `question_id` field.** When Claude receives a `type=question` notification, it should run `ib questions` to get the question ID, then `ib acknowledge <id>` + `ib send <agent> "answer"`. This keeps the notification format simple and avoids coupling between the notification and question systems.
 
@@ -184,6 +184,9 @@ cmd_listen() {
 
     mkdir -p "$notify_dir"
 
+    # Clean up stale drain files from previous crashes (kill -9, machine crash, etc.)
+    rm -f "$notify_dir"/queue.drain.* 2>/dev/null || true
+
     # Guard against multiple simultaneous listeners
     is_listener_alive
     if [[ "$_LISTENER_ALIVE" == "true" ]]; then
@@ -192,8 +195,9 @@ cmd_listen() {
     fi
 
     # Register PID for liveness checks
-    echo $$ > "$pid_path"
-    trap 'rm -f "$pid_path"' EXIT
+    echo "$$" > "$pid_path"
+    # Only remove PID file if it still contains our PID (guards against overwrite by second listener)
+    trap 'if [[ -f "$pid_path" ]] && [[ "$(<"$pid_path")" == "$$" ]]; then rm -f "$pid_path"; fi' EXIT
 
     local elapsed=0
     while [[ $elapsed -lt $timeout ]]; do
@@ -245,15 +249,23 @@ drain_and_print() {
 
 ```bash
 cmd_notify() {
-    local from_id="" msg_type="status" message=""
+    local from_id="" msg_type="complete" message=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --from)
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --from requires a value" >&2
+                    exit 1
+                fi
                 from_id="$2"
                 shift 2
                 ;;
             --type)
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --type requires a value" >&2
+                    exit 1
+                fi
                 msg_type="$2"
                 shift 2
                 ;;
@@ -281,6 +293,15 @@ cmd_notify() {
         exit 1
     fi
 
+    # Validate type
+    case "$msg_type" in
+        complete|waiting|question) ;;
+        *)
+            echo "Error: unknown type: $msg_type (expected: complete, waiting, question)" >&2
+            exit 1
+            ;;
+    esac
+
     # Auto-detect sender from worktree path (same pattern as cmd_log)
     if [[ -z "$from_id" ]]; then
         local current_dir
@@ -307,19 +328,23 @@ cmd_notify() {
     local ts
     ts=$(date +%Y-%m-%dT%H:%M:%S%z)
 
-    # Escape message for JSON (uses existing json_escape_string from ib script)
+    # Escape ALL fields for JSON (uses existing json_escape_string from ib script)
     local escaped_msg
     escaped_msg=$(json_escape_string "$message")
+    local escaped_from
+    escaped_from=$(json_escape_string "$from_id")
+    local escaped_type
+    escaped_type=$(json_escape_string "$msg_type")
 
     # Build JSON line
-    local json_line="{\"ts\":\"$ts\",\"from\":\"$from_id\",\"type\":\"$msg_type\",\"msg\":\"$escaped_msg\"}"
+    local json_line="{\"ts\":\"$ts\",\"from\":\"$escaped_from\",\"type\":\"$escaped_type\",\"msg\":\"$escaped_msg\"}"
 
-    # Append to queue (>> is atomic for lines < PIPE_BUF = 512 bytes on macOS)
+    # Append to queue — atomic for regular files with O_APPEND (POSIX guarantee)
     echo "$json_line" >> "$queue_path"
 }
 ```
 
-**Simplicity:** No FIFO signal, no background subshells, no kill timers. Just append a line to a file. The listener will find it within 2 seconds.
+**Simplicity:** Just append a line to a file. No background subshells, no signal handling, no lock files. The listener will find it within 2 seconds.
 
 ### `is_listener_alive()` helper
 
@@ -334,7 +359,15 @@ is_listener_alive() {
         local pid
         pid=$(<"$pid_path")
         if kill -0 "$pid" 2>/dev/null; then
-            _LISTENER_ALIVE=true
+            # Verify it's actually our listener (guards against PID reuse)
+            local cmd_check
+            cmd_check=$(ps -p "$pid" -o args= 2>/dev/null) || true
+            if [[ "$cmd_check" == *"ib listen"* ]]; then
+                _LISTENER_ALIVE=true
+            else
+                # PID was reused by a different process — stale
+                rm -f "$pid_path"
+            fi
         else
             rm -f "$pid_path"
         fi
@@ -489,7 +522,7 @@ This adds ~1ms per tool call. The status injection hook already does much more e
 Message is appended to queue file. Next `ib listen` finds it within 2 seconds of starting. Liveness check on tool calls reminds Claude to restart the listener. **No message loss.**
 
 ### Multiple simultaneous writers
-`echo "..." >> file` is atomic for writes smaller than PIPE_BUF (512 bytes on macOS). Our JSON lines are well under this limit. Multiple agents can call `ib notify` simultaneously without corruption.
+`echo "..." >> file` uses `O_APPEND` mode, which POSIX guarantees will atomically seek-to-end-and-write for regular files. Our notification JSON lines are short (well under 1KB), so multiple agents can call `ib notify` simultaneously without corruption. (Note: this guarantee applies to regular files on local filesystems — NFS does not honor `O_APPEND` atomicity, but `.ittybitty/` is always local.)
 
 ### Gap between listener exit and re-spawn
 Messages accumulate in queue file. Next listener finds them on first poll iteration (within 2 seconds). Liveness check ensures Claude re-spawns promptly. **No message loss.**
@@ -500,7 +533,7 @@ Messages accumulate in queue file. Next listener finds them on first poll iterat
 **Subtlety:** If a writer opens the file descriptor before `mv` but writes after, the data goes to the old inode (now the drain file). The listener's `cat` will include this data because the write completes before or during the `cat`. This relies on standard POSIX behavior where writes to an open fd are visible to all holders of the same inode.
 
 ### Stale PID file
-`trap EXIT` removes PID file on normal exit and signal delivery. `is_listener_alive()` validates with `kill -0` before trusting the PID file — stale PIDs are detected and the file is cleaned up.
+`trap EXIT` removes PID file on normal exit and signal delivery (but only if the file still contains our PID — guards against a second listener that overwrote it). `is_listener_alive()` validates with `kill -0` AND verifies the process name contains `ib listen` (via `ps -p PID -o args=`). This guards against both stale PIDs and PID reuse by unrelated processes.
 
 ### Claude session ends
 Listener polls until timeout (~9.5 min), then exits cleanly. PID file is stale but harmless — next session's `is_listener_alive()` detects it as dead and the liveness hook prompts Claude to restart.
@@ -508,8 +541,11 @@ Listener polls until timeout (~9.5 min), then exits cleanly. PID file is stale b
 ### Claude ignores liveness warning
 The liveness check injects a warning on **every** tool call. Claude cannot ignore it indefinitely — the persistent reminder appears in every tool result until the listener is restarted. This is the most robust liveness mechanism available.
 
+### Stale drain files after crash
+If the listener is killed between `mv` and `rm -f` of the drain file (e.g., `kill -9`), a `queue.drain.<PID>` file is left behind. These are cleaned up at the next listener startup (`rm -f "$notify_dir"/queue.drain.*`). The stale drain file may contain already-printed messages, but since the listener that drained them was killed, those messages may not have been delivered to Claude. This is an accepted edge case — `kill -9` is inherently unsafe and messages in the drain file are not recoverable.
+
 ### Multiple listeners (shouldn't happen)
-If two listeners run simultaneously, both poll the same queue file. The first one to `mv` gets the messages; the other sees an empty file and continues polling. Not ideal but safe — only one listener should exist. The `listener.pid` file can be used to detect this case in the future.
+`cmd_listen()` checks `is_listener_alive()` at startup and exits if a listener is already running. If two listeners somehow run simultaneously (e.g., race condition between check and PID write), both poll the same queue file. The first one to `mv` gets the messages; the other sees no file and continues polling. The `trap EXIT` only removes the PID file if it still contains the exiting listener's PID, so the surviving listener's PID is preserved.
 
 ## Relationship to Existing Systems
 
@@ -540,7 +576,7 @@ If two listeners run simultaneously, both poll the same queue file. The first on
 |---------|-----------|-------|
 | `sleep 2` | Yes | POSIX standard |
 | `mv` (same filesystem) | Yes | Atomic rename |
-| `echo >> file` | Yes | Atomic for < PIPE_BUF |
+| `echo >> file` | Yes | Atomic via O_APPEND on regular files |
 | `trap EXIT` | Yes | Standard signal handling |
 | `kill -0` | Yes | POSIX process check |
 | `${var//pat/rep}` | Yes | Parameter expansion in 3.2 |
@@ -549,7 +585,7 @@ If two listeners run simultaneously, both poll the same queue file. The first on
 | `[[ -f file ]]` | Yes | Check file exists |
 | Arithmetic: `$((elapsed + 2))` | Yes | POSIX arithmetic |
 
-**Nothing in this design requires Bash 4.0+.** No FIFO, no mkfifo, no `read <>`, no `read -t` with fractional seconds.
+**Nothing in this design requires Bash 4.0+.** No `read -t` with fractional seconds, no associative arrays, no process substitution features beyond 3.2.
 
 ## `set -e` Safety
 
@@ -604,6 +640,9 @@ Each fixture contains input fields (`from`, `type`, `msg`) and the test verifies
 
 **Integration test in `tests/test-notify.sh`:**
 ```bash
+# Clean up temp file on exit (even if test is killed)
+trap 'rm -f /tmp/listen-output.$$' EXIT
+
 # Spawn listener in background with short timeout
 ib listen --timeout 5 > /tmp/listen-output.$$ 2>&1 &
 listener_pid=$!
@@ -621,7 +660,6 @@ if grep -q "Test message" /tmp/listen-output.$$; then
 else
     echo "FAIL: integration"
 fi
-rm -f /tmp/listen-output.$$
 ```
 
 ### Test commands to add to `ib`
@@ -636,14 +674,15 @@ rm -f /tmp/listen-output.$$
 ### Phase 1: Core Commands (standalone, testable)
 
 1. **`cmd_notify()`** — Write side
-   - Argument parsing (--from, --type, positional message)
+   - Argument parsing (--from, --type, positional message) with `shift 2` guards
+   - Type validation (only `complete`, `waiting`, `question`)
    - Auto-detect sender from worktree
-   - JSON line formatting with existing `json_escape_string()`
+   - JSON line formatting — escape ALL fields with `json_escape_string()`
    - Atomic append to queue file
    - Add to dispatcher: `notify) shift; cmd_notify "$@" ;;`
 
 2. **`is_listener_alive()`** — Liveness helper
-   - PID file + `kill -0` check
+   - PID file + `kill -0` check + process name verification (`ps -p PID -o args=`)
    - Sets `_LISTENER_ALIVE` global variable (safe under `set -e`)
 
 3. **`cmd_listen()`** + `drain_and_print()` — Read side
@@ -654,17 +693,17 @@ rm -f /tmp/listen-output.$$
    - Timeout message on expiry
    - Add to dispatcher: `listen) shift; cmd_listen "$@" ;;`
 
-5. **Manual testing** — Verify in two terminal windows:
+4. **Manual testing** — Verify in two terminal windows:
    - Terminal 1: `ib listen --timeout 30`
    - Terminal 2: `ib notify "hello world"`
    - Verify Terminal 1 prints the message and exits within ~2 seconds
 
 ### Phase 2: Hook Integration
 
-6. **Modify `cmd_hooks_agent_status()`** — Add `ib notify` for `complete` and `waiting`
-7. **Modify `cmd_ask()`** — Add `ib notify --type question` after storing question
-8. **Modify `cmd_hooks_inject_status()`** — Add listener liveness check + warning injection
-9. **Modify `get_ittybitty_instructions()`** — Add listener bootstrap for `primary` role
+5. **Modify `cmd_hooks_agent_status()`** — Add `ib notify` for `complete` and `waiting`
+6. **Modify `cmd_ask()`** — Add `ib notify --type question` after storing question
+7. **Modify `cmd_hooks_inject_status()`** — Add listener liveness check + warning injection
+8. **Modify `get_ittybitty_instructions()`** — Add listener bootstrap for `primary` role
 
 ### Phase 3: Tests
 
