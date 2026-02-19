@@ -235,10 +235,11 @@ cmd_listen() {
             cat "$_DRAIN_FILE" 2>/dev/null || true
             rm -f "$_DRAIN_FILE"
         fi
-        local _trap_pid
-        _trap_pid=$(<"$pid_path" 2>/dev/null) || true
-        if [[ "$_trap_pid" == "$$" ]]; then
-            rm -f "$pid_path"
+        if [[ -f "$pid_path" ]]; then
+            _trap_pid=$(cat "$pid_path" 2>/dev/null) || true
+            if [[ "$_trap_pid" == "$$" ]]; then
+                rm -f "$pid_path"
+            fi
         fi
     ' EXIT
 
