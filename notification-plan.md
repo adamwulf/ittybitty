@@ -12,7 +12,7 @@ Enable running ib agents to push notifications to the primary Claude session (th
 ┌─────────────────────────────────────────────────────────────────┐
 │  Primary Claude (user's terminal, NOT in tmux)                  │
 │                                                                 │
-│  1. Bash(command:"ib listen", run_in_background: true)          │
+│  1. Bash(command:"ib listen", run_in_background:true, timeout:540000) │
 │                                                                 │
 │  4. Claude Code notifies: "Background task completed"           │
 │     → Claude reads output (JSONL lines)                         │
@@ -32,7 +32,7 @@ Enable running ib agents to push notifications to the primary Claude session (th
 │  - When messages found: mv queue → drain     │
 │  - Prints drained messages to stdout         │
 │  - Exits (triggers Claude Code notification) │
-│  - After ~9.5 min: exits with reminder       │
+│  - After ~8.8 min: exits with reminder       │
 └──────────────────────────────────────────────┘
            ▲
            │ appends to queue file
@@ -141,12 +141,12 @@ Claude should parse each JSONL line and take action based on `type`:
 
 After processing ALL notifications, Claude **must** re-spawn the listener:
 ```
-Bash(command: "ib listen", run_in_background: true)
+Bash(command: "ib listen", run_in_background: true, timeout: 540000)
 ```
 
 ### When listener times out (no messages)
 
-After ~9.5 minutes with no messages, the listener exits with a reminder:
+After ~8.8 minutes with no messages, the listener exits with a reminder:
 
 ```
 Background task completed: ib listen
@@ -155,7 +155,7 @@ Output:
 No messages received. Background listener has stopped. Please restart with: ib listen
 ```
 
-Claude sees this and re-spawns the listener. This creates a ~10-minute heartbeat cycle that keeps the listener alive indefinitely.
+Claude sees this and re-spawns the listener. This creates a ~9-minute heartbeat cycle that keeps the listener alive indefinitely.
 
 ### When listener is dead (liveness check)
 
@@ -163,7 +163,7 @@ If Claude makes a tool call and the listener is not running, the PostToolUse/Use
 
 ```
 [ib] WARNING: Notification listener is not running. Restart it now:
-Bash(command: "ib listen", run_in_background: true)
+Bash(command: "ib listen", run_in_background: true, timeout: 540000)
 ```
 
 This is injected into Claude's context via `additionalContext` in the hook response, similar to how status injection works.
@@ -176,13 +176,13 @@ This is injected into Claude's context via `additionalContext` in the hook respo
 
 **Usage:** `ib listen [--timeout SECONDS]`
 
-**Default timeout:** 570 seconds (~9.5 minutes). This stays under Claude Code's ~10 minute background task limit while maximizing the listening window.
+**Default timeout:** 530 seconds (~8.8 minutes). The script exits cleanly at 530s with a "please restart" message. Claude Code enforces a hard 540s (9 minute) timeout via `timeout: 540000` on the Bash tool call, giving a 10-second buffer for the script to exit gracefully before Claude Code kills it.
 
 **Implementation:** `cmd_listen()`
 
 ```bash
 cmd_listen() {
-    local timeout=570    # ~9.5 minutes default
+    local timeout=530    # ~8.8 minutes default (Claude Code hard limit at 540s)
 
     # ... parse --timeout arg ...
 
@@ -209,32 +209,8 @@ cmd_listen() {
     # Register PID for liveness checks
     echo "$$" > "$pid_path"
 
-    # TOCTOU guard: re-check after writing the PID file.
-    # Two listeners can both pass is_listener_alive() before either writes the PID file.
-    # After writing our PID, wait briefly and check again. If the PID file no longer contains
-    # our PID, another listener won the race — yield to it and exit quietly.
-    sleep 0.1
-    is_listener_alive
-    if [[ "$_LISTENER_ALIVE" == "true" ]]; then
-        local other_pid
-        other_pid=$(<"$pid_path")
-        if [[ "$other_pid" != "$$" ]]; then
-            # Another listener won the race — let it run
-            exit 0
-        fi
-    fi
-
-    # _DRAIN_FILE tracks the active drain file so the EXIT trap can rescue messages
-    # if we are killed by SIGTERM mid-drain (trap fires on SIGTERM, not SIGKILL).
-    _DRAIN_FILE=""
-
-    # Cleanup on exit: rescue any in-progress drain, then remove the PID file.
-    # Only remove PID file if it still contains our PID (guards against overwrite by second listener).
+    # Cleanup on exit: remove PID file if it still contains our PID.
     trap '
-        if [[ -n "$_DRAIN_FILE" ]] && [[ -f "$_DRAIN_FILE" ]]; then
-            cat "$_DRAIN_FILE" 2>/dev/null || true
-            rm -f "$_DRAIN_FILE"
-        fi
         if [[ -f "$pid_path" ]]; then
             _trap_pid=$(cat "$pid_path" 2>/dev/null) || true
             if [[ "$_trap_pid" == "$$" ]]; then
@@ -267,14 +243,10 @@ cmd_listen() {
 }
 
 # Atomic drain: mv queue to temp, print, clean up.
-# Sets/clears _DRAIN_FILE so the EXIT trap can rescue messages if SIGTERM fires mid-drain.
 drain_and_print() {
     local notify_dir="$1"
     local queue_path="$2"
     local drain_file="$notify_dir/queue.drain.$$"
-
-    # Record the drain file path before mv so EXIT trap can recover it on SIGTERM.
-    _DRAIN_FILE="$drain_file"
 
     # mv is atomic on same filesystem — writers that started before mv
     # complete to the old inode. After mv, new >> creates a fresh file.
@@ -284,9 +256,6 @@ drain_and_print() {
         cat "$drain_file"
     fi
     rm -f "$drain_file"
-
-    # Clear drain file tracker — normal path completed, no rescue needed.
-    _DRAIN_FILE=""
 }
 ```
 
@@ -294,9 +263,7 @@ drain_and_print() {
 - **Polling, not FIFO.** See [Design Rationale](#design-rationale--why-polling--queue) section for why polling was chosen over FIFO.
 - **`mv` for drain is atomic.** No lock needed. Concurrent writers' in-flight `echo >>` either completes to the old inode (included in drain) or creates a new queue file (picked up next cycle).
 - **Always exit 0.** Timeout is not an error — it's the expected heartbeat cycle. Claude Code won't report it as a failure.
-- **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. `is_listener_alive()` validates with `kill -0` and sets `_LISTENER_ALIVE` global (safe under `set -e`).
-- **TOCTOU guard after PID write.** A 0.1s sleep + re-check after writing the PID file guards against two listeners simultaneously passing the initial `is_listener_alive()` check. The one whose PID is not in the file yields.
-- **SIGTERM drain rescue.** `_DRAIN_FILE` is set before `mv` and cleared after `rm`. The EXIT trap checks this variable: if set and the file exists, it cats the file before cleanup. This ensures SIGTERM mid-drain does not silently drop messages. SIGKILL cannot be trapped — message loss on `kill -9` is accepted.
+- **PID file with `trap EXIT`.** Cleaned up on normal exit, signal, or timeout. Only removes the PID file if it still contains our PID (guards against overwrite by a second listener). `is_listener_alive()` validates with `kill -0` and sets `_LISTENER_ALIVE` global (safe under `set -e`).
 - **Final queue check after timeout.** After the polling loop exits, one last `[[ -s "$queue_path" ]]` check catches messages that arrived during the final `sleep 2` window before the timeout message is printed.
 
 ### `ib notify`
@@ -576,7 +543,7 @@ Add to the `primary` role section of `get_ittybitty_instructions()`:
 
 When you spawn agents, start a background listener to receive live updates:
 
-    Bash(command: "ib listen", run_in_background: true)
+    Bash(command: "ib listen", run_in_background: true, timeout: 540000)
 
 When the listener exits with output, you'll see JSONL notification lines. Each line has:
 - `type`: "complete", "waiting", or "question"
@@ -590,7 +557,7 @@ Process each notification based on type:
 
 After processing all notifications:
 1. Take action on each notification
-2. IMMEDIATELY re-spawn: Bash(command: "ib listen", run_in_background: true)
+2. IMMEDIATELY re-spawn: Bash(command: "ib listen", run_in_background: true, timeout: 540000)
 Do NOT skip step 2. Missing notifications means missing agent completions.
 
 If the listener times out with no messages, just re-spawn it.
@@ -598,7 +565,7 @@ If the listener times out with no messages, just re-spawn it.
 
 ### 4. PostToolUse/UserPromptSubmit Hooks — Listener Liveness Check
 
-**Hook installation prerequisite:** The PostToolUse/UserPromptSubmit hook must be installed via `ib hooks install` for liveness checking to work. Without the hook installed, no liveness check fires and no warnings are injected into Claude's context. The fallback in this case is the ~9.5-minute timeout heartbeat cycle from the listener itself (it exits with a reminder message, prompting Claude to re-spawn it), plus the instructions in `get_ittybitty_instructions()` telling Claude to always re-spawn the listener after processing notifications. The hook-based liveness check is the preferred mechanism — faster and more reliable — but the system degrades gracefully without it.
+**Hook installation prerequisite:** The PostToolUse/UserPromptSubmit hook must be installed via `ib hooks install` for liveness checking to work. Without the hook installed, no liveness check fires and no warnings are injected into Claude's context. The fallback in this case is the ~9-minute timeout heartbeat cycle from the listener itself (it exits with a reminder message, prompting Claude to re-spawn it), plus the instructions in `get_ittybitty_instructions()` telling Claude to always re-spawn the listener after processing notifications. The hook-based liveness check is the preferred mechanism — faster and more reliable — but the system degrades gracefully without it.
 
 **This is the primary mechanism to keep the listener alive.** On every tool call, the existing status injection hook also checks listener liveness. If the listener is dead and agents are running, inject a reminder.
 
@@ -630,7 +597,7 @@ if [[ "$_LISTENER_ALIVE" != "true" ]]; then
         listener_warning='
 
 [ib] WARNING: Notification listener is not running. Restart it now:
-Bash(command: "ib listen", run_in_background: true)'
+Bash(command: "ib listen", run_in_background: true, timeout: 540000)'
     fi
 fi
 
@@ -682,7 +649,7 @@ Messages accumulate in queue file. Next listener finds them on first poll iterat
 `trap EXIT` removes PID file on normal exit and signal delivery (but only if the file still contains our PID — guards against a second listener that overwrote it). `is_listener_alive()` validates with `kill -0` AND verifies the process name contains `ib listen` (via `ps -p PID -o args=`). This guards against both stale PIDs and PID reuse by unrelated processes.
 
 ### Claude session ends
-Listener polls until timeout (~9.5 min), then exits cleanly. PID file is stale but harmless — next session's `is_listener_alive()` detects it as dead and the liveness hook prompts Claude to restart.
+Listener polls until timeout (~8.8 min), then exits cleanly. PID file is stale but harmless — next session's `is_listener_alive()` detects it as dead and the liveness hook prompts Claude to restart.
 
 ### Claude ignores liveness warning
 The liveness check injects a warning on **every** tool call. Claude cannot ignore it indefinitely — the persistent reminder appears in every tool result until the listener is restarted. This is the most robust liveness mechanism available.
