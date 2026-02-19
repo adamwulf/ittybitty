@@ -67,36 +67,15 @@ All notification files live under `.ittybitty/notify/`. Since `.ittybitty/` is a
 
 **No REPO_ID in filenames.** The `.ittybitty/` directory is unique per repo. Multiple repos on the same machine each have their own `.ittybitty/notify/` directory. This is consistent with how other `.ittybitty/` files work (e.g., `user-questions.json`, `repo-id`).
 
-### Worktree Path Resolution
+### Worktree Path Resolution — NOT Needed
 
-`ib notify` is called from agent Stop hooks, which run inside agent worktrees. In a git worktree, `git rev-parse --show-toplevel` (used by `require_git_repo`) returns the **worktree root** (e.g., `.ittybitty/agents/agent-abc123/repo`), not the main repo root. The notify queue must live under the **main repo's** `.ittybitty/notify/` — not inside the agent worktree's `.ittybitty/`.
+`ib notify` is called from agent Stop hooks, which run inside agent worktrees. A naive approach would need to resolve the worktree path back to the main repo root. However, **`ROOT_REPO_PATH` already handles this.**
 
-**Resolution strategy:** After `require_git_repo` sets `ROOT_REPO_PATH`, check if `$ROOT_REPO_PATH/.git` is a file (not a directory). A `.git` file means we are in a worktree. Its contents are of the form `gitdir: /path/to/main/.git/worktrees/<name>`. Parse out the main repo path from that `gitdir:` value.
+The `ib` script calls `init_paths()` → `get_root_repo()` at startup (line ~23214). `get_root_repo()` uses `git rev-parse --git-common-dir` to resolve worktree paths back to the main repo root. This means `ROOT_REPO_PATH` is **always the main repo root**, even when `ib` runs inside a worktree.
 
-```bash
-# After require_git_repo (which sets ROOT_REPO_PATH):
-local NOTIFY_ROOT="$ROOT_REPO_PATH"
+**Therefore:** All notify code simply uses `$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify` directly. No `NOTIFY_ROOT` variable, no `.git` file parsing, no worktree detection. The path resolution is already handled by the existing infrastructure.
 
-if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
-    # We are in a git worktree. .git is a file, not a directory.
-    # Contents: "gitdir: /absolute/path/to/main/.git/worktrees/<name>"
-    local git_file_content
-    git_file_content=$(<"$ROOT_REPO_PATH/.git")
-    # Strip "gitdir: " prefix, then strip the trailing "/worktrees/<name>" suffix
-    local gitdir="${git_file_content#gitdir: }"
-    # gitdir points into .git/worktrees/<name> — go up two levels to reach main .git
-    # then one more to reach the main repo root
-    local main_git_dir
-    main_git_dir=$(dirname "$(dirname "$gitdir")")   # /path/to/main/.git
-    NOTIFY_ROOT=$(dirname "$main_git_dir")            # /path/to/main
-fi
-
-local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
-```
-
-This `NOTIFY_ROOT` variable replaces `ROOT_REPO_PATH` in all notify-directory path constructions. The variable name `NOTIFY_ROOT` makes the purpose clear: it is always the main repo root, even when called from inside a worktree.
-
-**Where this appears:** `cmd_notify()`, `cmd_listen()`, `is_listener_alive()`, and the `cmd_nuke()` cleanup snippet all use `$NOTIFY_ROOT/$ITTYBITTY_DIR/notify` instead of `$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify`.
+**Note:** `require_git_repo()` (line ~3657) does NOT set `ROOT_REPO_PATH` — it only validates that it's non-empty. `ROOT_REPO_PATH` is set by `init_paths()` at script startup, well before any command function runs.
 
 ## Queue Message Format
 
@@ -207,22 +186,11 @@ cmd_listen() {
 
     # ... parse --timeout arg ...
 
-    # require_git_repo() (ib ~line 3657) sets ROOT_REPO_PATH and validates we are in a git repo
+    # require_git_repo() validates ROOT_REPO_PATH is set (init_paths() already resolved
+    # worktree paths to main repo root via get_root_repo() at script startup)
     require_git_repo
 
-    # Resolve main repo root — may differ from ROOT_REPO_PATH when called from a worktree.
-    # See "Worktree Path Resolution" in File Paths section for full explanation.
-    local NOTIFY_ROOT="$ROOT_REPO_PATH"
-    if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
-        local git_file_content
-        git_file_content=$(<"$ROOT_REPO_PATH/.git")
-        local gitdir="${git_file_content#gitdir: }"
-        local main_git_dir
-        main_git_dir=$(dirname "$(dirname "$gitdir")")
-        NOTIFY_ROOT=$(dirname "$main_git_dir")
-    fi
-
-    local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
+    local notify_dir="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
     local queue_path="$notify_dir/queue"
     local pid_path="$notify_dir/listener.pid"
 
@@ -408,19 +376,7 @@ cmd_notify() {
 
     require_git_repo
 
-    # Resolve main repo root — may differ from ROOT_REPO_PATH when called from a worktree.
-    # See "Worktree Path Resolution" in File Paths section for full explanation.
-    local NOTIFY_ROOT="$ROOT_REPO_PATH"
-    if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
-        local git_file_content
-        git_file_content=$(<"$ROOT_REPO_PATH/.git")
-        local gitdir="${git_file_content#gitdir: }"
-        local main_git_dir
-        main_git_dir=$(dirname "$(dirname "$gitdir")")
-        NOTIFY_ROOT=$(dirname "$main_git_dir")
-    fi
-
-    local notify_dir="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
+    local notify_dir="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
     local queue_path="$notify_dir/queue"
 
     mkdir -p "$notify_dir"
@@ -451,19 +407,14 @@ cmd_notify() {
 
 **Uses global variable pattern** (`_LISTENER_ALIVE`) instead of return codes to avoid `set -e` landmines. Safe to call anywhere — not just inside `if` blocks.
 
-**Prerequisites:** `is_listener_alive()` requires that the caller has already resolved `NOTIFY_ROOT` (the main repo root, accounting for worktree path resolution). It uses `NOTIFY_ROOT` — not `ROOT_REPO_PATH` — to build the pid file path. Each call site must ensure `NOTIFY_ROOT` is set before calling `is_listener_alive()`:
-
-- In `cmd_listen()`: `NOTIFY_ROOT` is resolved immediately after `require_git_repo` (see worktree path resolution block in `cmd_listen()`).
-- In `cmd_hooks_inject_status()`: `ROOT_REPO_PATH` is already set by the hook infrastructure (hooks run in the main repo context, so `ROOT_REPO_PATH` equals `NOTIFY_ROOT` — a worktree resolution block should still be added here for consistency, since hooks could theoretically be called from a worktree context).
+**No prerequisites beyond `init_paths()`.** `ROOT_REPO_PATH` is set at script startup by `init_paths()` → `get_root_repo()`, which already resolves worktree paths to the main repo root. No caller setup needed.
 
 ```bash
 is_listener_alive() {
-    # PREREQUISITE: NOTIFY_ROOT must be set by the caller (the main repo root,
-    # resolved via worktree detection if necessary — see "Worktree Path Resolution"
-    # in the File Paths section). Do NOT use ROOT_REPO_PATH directly here, as
-    # ROOT_REPO_PATH may point to a git worktree rather than the main repo root.
+    # Uses ROOT_REPO_PATH directly — init_paths() already resolved worktree paths
+    # to the main repo root via get_root_repo() at script startup.
     _LISTENER_ALIVE=false
-    local pid_path="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify/listener.pid"
+    local pid_path="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
 
     if [[ -f "$pid_path" ]]; then
         local pid
@@ -487,18 +438,7 @@ is_listener_alive() {
 
 **Usage pattern:**
 ```bash
-# Caller must resolve NOTIFY_ROOT first (see "Worktree Path Resolution"):
-local NOTIFY_ROOT="$ROOT_REPO_PATH"
-if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
-    local git_file_content
-    git_file_content=$(<"$ROOT_REPO_PATH/.git")
-    local gitdir="${git_file_content#gitdir: }"
-    local main_git_dir
-    main_git_dir=$(dirname "$(dirname "$gitdir")")
-    NOTIFY_ROOT=$(dirname "$main_git_dir")
-fi
-
-is_listener_alive  # uses $NOTIFY_ROOT internally
+is_listener_alive  # uses $ROOT_REPO_PATH internally (set by init_paths at startup)
 if [[ "$_LISTENER_ALIVE" == "true" ]]; then
     # listener is running
 fi
@@ -551,17 +491,15 @@ fi
 
 13. **Add cleanup to `cmd_nuke()`** — Kill listener, remove notify directory:
     ```bash
-    # cmd_nuke() runs in the main repo context (ROOT_REPO_PATH is the main repo root),
-    # so no worktree resolution is needed here. NOTIFY_ROOT equals ROOT_REPO_PATH.
-    local NOTIFY_ROOT="$ROOT_REPO_PATH"
-    local listener_pid_file="$NOTIFY_ROOT/$ITTYBITTY_DIR/notify/listener.pid"
+    # ROOT_REPO_PATH is always the main repo root (resolved by init_paths at startup)
+    local listener_pid_file="$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify/listener.pid"
     if [[ -f "$listener_pid_file" ]]; then
         local lpid
         lpid=$(<"$listener_pid_file")
         kill "$lpid" 2>/dev/null || true
         rm -f "$listener_pid_file"
     fi
-    rm -rf "$NOTIFY_ROOT/$ITTYBITTY_DIR/notify"
+    rm -rf "$ROOT_REPO_PATH/$ITTYBITTY_DIR/notify"
     ```
 14. **Add to help text** — `ib --help`, `ib listen --help`, `ib notify --help`
 15. **Update CLAUDE.md** — Document the notification system
@@ -672,23 +610,12 @@ If the listener times out with no messages, just re-spawn it.
 # Verified: the variable is declared as `local agent_count=0` at ~line 13039.
 # Do NOT call a separate count_active_agents helper — it doesn't exist.
 #
-# NOTIFY_ROOT must be resolved before calling is_listener_alive().
-# In cmd_hooks_inject_status(), hooks run in the main repo context, so
-# ROOT_REPO_PATH should already equal the main repo root. However, add the
-# worktree detection block for safety in case hooks are ever called from a
-# worktree context:
-local NOTIFY_ROOT="$ROOT_REPO_PATH"
-if [[ -f "$ROOT_REPO_PATH/.git" ]]; then
-    local git_file_content
-    git_file_content=$(<"$ROOT_REPO_PATH/.git")
-    local gitdir="${git_file_content#gitdir: }"
-    local main_git_dir
-    main_git_dir=$(dirname "$(dirname "$gitdir")")
-    NOTIFY_ROOT=$(dirname "$main_git_dir")
-fi
+# ROOT_REPO_PATH is already set by init_paths() at script startup,
+# which resolves worktree paths to the main repo root via get_root_repo().
+# No additional worktree resolution needed.
 
 local listener_warning=""
-is_listener_alive  # uses $NOTIFY_ROOT internally (set above)
+is_listener_alive  # uses $ROOT_REPO_PATH internally
 if [[ "$_LISTENER_ALIVE" != "true" ]]; then
     # Only warn if there are active agents
     if [[ "$agent_count" -gt 0 ]]; then
@@ -732,9 +659,7 @@ This adds ~1ms per tool call. The status injection hook already does much more e
 ## Edge Cases
 
 ### Worktree path resolution in Stop hook
-`ib notify` is called from agent Stop hooks running inside git worktrees. In a worktree, `require_git_repo` sets `ROOT_REPO_PATH` to the worktree root (e.g., `.ittybitty/agents/agent-abc123/repo`), not the main repo root. Without the worktree resolution block, `cmd_notify()` would write to `.ittybitty/agents/agent-abc123/repo/.ittybitty/notify/queue` instead of the main repo's `.ittybitty/notify/queue`, and the listener would never see the message.
-
-**Resolution:** Both `cmd_notify()` and `cmd_listen()` resolve `NOTIFY_ROOT` from `ROOT_REPO_PATH` by checking if `.git` is a file (worktree indicator) and parsing the `gitdir:` path. The worktree resolution is a cheap one-time operation per command invocation, not per-poll-cycle. See the "Worktree Path Resolution" subsection in File Paths for the full implementation.
+`ib notify` is called from agent Stop hooks running inside git worktrees. This is handled automatically: `init_paths()` calls `get_root_repo()` at script startup, which uses `git rev-parse --git-common-dir` to resolve worktree paths back to the main repo root. `ROOT_REPO_PATH` is always the main repo root, even when `ib` runs inside a worktree. No special handling is needed in the notification code.
 
 ### Listener not running when notification arrives
 Message is appended to queue file. Next `ib listen` finds it within 2 seconds of starting. Liveness check on tool calls reminds Claude to restart the listener. **No message loss.**
@@ -907,7 +832,7 @@ Fixture names follow `{expected-output}-{description}.json`. Fixtures representi
 
 `cmd_test_listener_alive` reads a fixture JSON file containing a `pid` field, writes that PID to a temp `listener.pid` file, calls `is_listener_alive()`, and prints the resulting value of `_LISTENER_ALIVE` (`true` or `false`). The test runner compares the output against the expected value encoded in the fixture filename prefix (`alive-` → expects `true`, `dead-` → expects `false`).
 
-For `alive-live-pid.json`, the test script must supply a live PID at runtime — the fixture contains a placeholder that the test script replaces with `$$` (the test script's own PID) or the PID of a background `sleep` process spawned for the test.
+For `alive-live-pid.json`, the test script must supply a live PID at runtime. The fixture contains a placeholder PID. At runtime, `cmd_test_listener_alive` spawns a background process via `bash -c 'exec -a "ib listen --timeout 30" sleep 30'` and uses that process's PID. The `exec -a` sets the process's `args` to contain `"ib listen"`, which is what `is_listener_alive()` checks via `ps -p PID -o args=`. The background process is killed in the EXIT trap after the test.
 
 **Integration test in `tests/test-notify.sh`:**
 ```bash
@@ -1102,12 +1027,13 @@ Usage: ib test-notify-drain [options] <file>
 Test notification queue drain logic.
 
 Reads a JSONL fixture file, copies it to a temp queue file,
-runs drain_and_print(), and prints the drained output.
+then mirrors the production guard: only calls drain_and_print()
+when the queue file exists and is non-empty (same as cmd_listen).
 
 Handles two empty-queue scenarios based on fixture filename:
 - empty-missing-*: Queue file does not exist (not created at all)
 - empty-zero-bytes-*: Queue file exists but is empty (0 bytes, via touch)
-Both should produce no output.
+Both skip drain_and_print (matching production behavior) and produce no output.
 
 Options:
   -h, --help      Show this help
@@ -1166,14 +1092,20 @@ EOF
         cp "$input_file" "$queue_path"
     fi
 
-    # Run drain_and_print (the function under test)
-    drain_and_print "$tmp_dir" "$queue_path"
+    # Mirror the production guard from cmd_listen(): only call drain_and_print
+    # when the queue file exists and is non-empty. This tests the same code path
+    # that actually runs in production.
+    if [[ -s "$queue_path" ]]; then
+        drain_and_print "$tmp_dir" "$queue_path"
 
-    # Verify queue file was removed by drain
-    if [[ -f "$queue_path" ]]; then
-        echo "ERROR: queue file still exists after drain" >&2
-        exit 1
+        # Verify queue file was removed by drain
+        if [[ -f "$queue_path" ]]; then
+            echo "ERROR: queue file still exists after drain" >&2
+            exit 1
+        fi
     fi
+    # For empty-missing and empty-zero-bytes fixtures, we reach here without
+    # calling drain_and_print — same as production. No output is printed.
 }
 ```
 
@@ -1181,7 +1113,7 @@ EOF
 
 Each fixture is a JSON file with a `pid` field. The test writes that PID to a temp `listener.pid` file, calls `is_listener_alive()`, and prints the resulting value of `_LISTENER_ALIVE` (`true` or `false`). The test runner compares the output against the expected value encoded in the fixture filename prefix (`alive-` → expects `true`, `dead-` → expects `false`).
 
-For `alive-live-pid.json`, the fixture contains a placeholder PID field (e.g., `0`) that the test script replaces with `$$` at runtime. The test script spawns a brief `sleep` subprocess and uses that PID, or simply uses `$$`, to ensure a live process exists during the check.
+For `alive-live-pid.json`, the fixture contains a placeholder PID field (e.g., `0`). At runtime, `cmd_test_listener_alive` spawns a background process via `bash -c 'exec -a "ib listen --timeout 30" sleep 30'` and uses that process's PID. The `exec -a` sets the process's `args` to contain `"ib listen"`, satisfying the `is_listener_alive()` process name check. The background process is killed in the EXIT trap after the test.
 
 ```bash
 cmd_test_listener_alive() {
@@ -1200,8 +1132,8 @@ Reads a JSON fixture file with a "pid" field.
 Writes that PID to a temp listener.pid file, calls is_listener_alive(),
 and prints the resulting value of _LISTENER_ALIVE (true or false).
 
-For alive-* fixtures: the test script replaces the PID field with $$ at runtime
-(so the test process itself acts as the live listener PID).
+For alive-* fixtures: the test spawns a background process with args containing
+"ib listen" (via exec -a) and uses that process's PID for the liveness check.
 
 Options:
   -h, --help      Show this help
@@ -1244,20 +1176,27 @@ EOF
     local basename
     basename=$(basename "$input_file")
 
-    # For alive-* fixtures, use the test script's own PID as the live PID
-    # (the fixture's pid value is a placeholder — runtime PID is substituted)
-    if [[ "$basename" == alive-* ]]; then
-        pid="$$"
-    fi
-
     # Create temp directory for the PID file
     local tmp_dir
     tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT
 
-    # Set NOTIFY_ROOT so is_listener_alive() can find the PID file
-    local NOTIFY_ROOT="$tmp_dir"
-    local ITTYBITTY_DIR=".ittybitty"
+    # For alive-* fixtures, spawn a background process whose args contain "ib listen"
+    # so is_listener_alive()'s process name check passes. The fixture's pid is a placeholder.
+    local bg_pid=""
+    if [[ "$basename" == alive-* ]]; then
+        # exec -a sets the process name in ps output
+        bash -c 'exec -a "ib listen --timeout 30" sleep 30' &
+        bg_pid=$!
+        pid="$bg_pid"
+    fi
+
+    trap '
+        [[ -n "$bg_pid" ]] && kill "$bg_pid" 2>/dev/null || true
+        rm -rf "$tmp_dir"
+    ' EXIT
+
+    # Override ROOT_REPO_PATH so is_listener_alive() finds the temp PID file
+    ROOT_REPO_PATH="$tmp_dir"
     mkdir -p "$tmp_dir/.ittybitty/notify"
     echo "$pid" > "$tmp_dir/.ittybitty/notify/listener.pid"
 
