@@ -32,7 +32,7 @@ Enable running ib agents to push notifications to the primary Claude session (th
 │  - When messages found: mv queue → drain     │
 │  - Prints drained messages to stdout         │
 │  - Exits (triggers Claude Code notification) │
-│  - After ~9 min: exits with reminder       │
+│  - On timeout: exits with reminder          │
 └──────────────────────────────────────────────┘
            ▲
            │ appends to queue file
@@ -146,7 +146,7 @@ Bash(command: "ib listen", run_in_background: true)
 
 ### When listener times out (no messages)
 
-After ~9 minutes with no messages, the listener exits with a reminder:
+When the listener times out with no messages (timeout auto-detected from `BASH_MAX_TIMEOUT_MS`), it exits with a reminder:
 
 ```
 Background task completed: ib listen
@@ -155,7 +155,7 @@ Output:
 No messages received. Background listener has stopped. Please restart with: ib listen
 ```
 
-Claude sees this and re-spawns the listener. This creates a ~9-minute heartbeat cycle that keeps the listener alive indefinitely.
+Claude sees this and re-spawns the listener. This creates a heartbeat cycle that keeps the listener alive indefinitely (cycle length depends on `BASH_MAX_TIMEOUT_MS`).
 
 ### When listener is dead (liveness check)
 
@@ -176,17 +176,28 @@ This is injected into Claude's context via `additionalContext` in the hook respo
 
 **Usage:** `ib listen [--timeout SECONDS]`
 
-**Default timeout:** 540 seconds (9 minutes). The script exits cleanly at 540s with a "please restart" message, staying 1 minute under Claude Code's 10-minute hard cap (`BASH_MAX_TIMEOUT_MS=600000`).
+**Default timeout:** Auto-detected from `BASH_MAX_TIMEOUT_MS` environment variable (a Claude Code setting inherited by subprocesses). The listener sets its timeout to `(BASH_MAX_TIMEOUT_MS / 1000) - 10` seconds, exiting cleanly 10 seconds before Claude Code's hard cap. If the env var is not set, defaults to 110 seconds.
 
-**Background task timeout note:** Claude Code's default background task timeout is 2 minutes (`BASH_DEFAULT_TIMEOUT_MS=120000`). Users who haven't raised this will have the listener killed silently at 2 minutes — the liveness check on the next tool call will detect the dead listener and prompt Claude to restart it. This is acceptable degraded behavior: the notification system still works, just with more frequent restarts. Users running agents long-term should set `BASH_MAX_TIMEOUT_MS=600000` in their Claude Code settings to allow the full 9-minute listening window.
+| `BASH_MAX_TIMEOUT_MS` | Listener timeout | Behavior |
+|----------------------|-----------------|----------|
+| `600000` (10 min) | 590s (~9.8 min) | Optimal — long listening window, fewer restarts |
+| `120000` (2 min, default) | 110s | Functional — cycles every ~2 min, liveness check handles restarts |
+| Not set | 110s | Safe default — works without any configuration |
+
+**Recommendation:** Users running agents long-term should set `BASH_MAX_TIMEOUT_MS=600000` in their Claude Code settings for longer listener cycles. The notification system works at any timeout — shorter timeouts just mean more frequent listener restarts (the liveness check and heartbeat cycle handle this automatically).
 
 **Implementation:** `cmd_listen()`
 
 ```bash
 cmd_listen() {
-    local timeout=540    # 9 minutes (1 min under BASH_MAX_TIMEOUT_MS=600000 hard cap)
+    local timeout=110    # safe default (2-min Claude Code max - 10s buffer)
+    if [[ -n "${BASH_MAX_TIMEOUT_MS:-}" ]]; then
+        local max_s=$((BASH_MAX_TIMEOUT_MS / 1000))
+        timeout=$((max_s - 10))
+        [[ $timeout -lt 10 ]] && timeout=10 || true
+    fi
 
-    # ... parse --timeout arg ...
+    # ... parse --timeout arg (overrides auto-detect if provided) ...
 
     # require_git_repo() validates ROOT_REPO_PATH is set (init_paths() already resolved
     # worktree paths to main repo root via get_root_repo() at script startup)
@@ -567,7 +578,7 @@ If the listener times out with no messages, just re-spawn it.
 
 ### 4. PostToolUse/UserPromptSubmit Hooks — Listener Liveness Check
 
-**Hook installation prerequisite:** The PostToolUse/UserPromptSubmit hook must be installed via `ib hooks install` for liveness checking to work. Without the hook installed, no liveness check fires and no warnings are injected into Claude's context. The fallback in this case is the ~9-minute timeout heartbeat cycle from the listener itself (it exits with a reminder message, prompting Claude to re-spawn it), plus the instructions in `get_ittybitty_instructions()` telling Claude to always re-spawn the listener after processing notifications. The hook-based liveness check is the preferred mechanism — faster and more reliable — but the system degrades gracefully without it.
+**Hook installation prerequisite:** The PostToolUse/UserPromptSubmit hook must be installed via `ib hooks install` for liveness checking to work. Without the hook installed, no liveness check fires and no warnings are injected into Claude's context. The fallback in this case is the timeout heartbeat cycle from the listener itself (it exits with a reminder message, prompting Claude to re-spawn it), plus the instructions in `get_ittybitty_instructions()` telling Claude to always re-spawn the listener after processing notifications. The hook-based liveness check is the preferred mechanism — faster and more reliable — but the system degrades gracefully without it.
 
 **This is the primary mechanism to keep the listener alive.** On every tool call, the existing status injection hook also checks listener liveness. If the listener is dead and agents are running, inject a reminder.
 
@@ -651,7 +662,7 @@ Messages accumulate in queue file. Next listener finds them on first poll iterat
 `trap EXIT` removes PID file on normal exit and signal delivery (but only if the file still contains our PID — guards against a second listener that overwrote it). `is_listener_alive()` validates with `kill -0` AND verifies the process name contains `ib listen` (via `ps -p PID -o args=`). This guards against both stale PIDs and PID reuse by unrelated processes.
 
 ### Claude session ends
-Listener polls until timeout (~9 min), then exits cleanly. PID file is stale but harmless — next session's `is_listener_alive()` detects it as dead and the liveness hook prompts Claude to restart.
+Listener polls until timeout, then exits cleanly. PID file is stale but harmless — next session's `is_listener_alive()` detects it as dead and the liveness hook prompts Claude to restart.
 
 ### Claude ignores liveness warning
 The liveness check injects a warning on **every** tool call. Claude cannot ignore it indefinitely — the persistent reminder appears in every tool result until the listener is restarted. This is the most robust liveness mechanism available.
