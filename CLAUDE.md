@@ -441,6 +441,16 @@ The `ib` script exposes internal functions as `test-*` subcommands for testing:
 
 **Note**: Use `ib` (not `./ib`) in worktrees to run the current PATH version.
 
+## Code Review Principles
+
+- **Simple**: Prefer the simplest solution that works. Complexity is a liability.
+- **Clear and consistent**: New code should look like it belongs next to existing code. Follow existing patterns.
+- **No duplication**: Search before writing a helper — it probably already exists. `grep` before you write.
+- **Slow is smooth**: Be methodical. Read the surrounding code before writing. A careful first pass beats three rewrites.
+- **`set -e` safe**: Any `[[ ... ]] && ...` must have `|| true` unless inside an `if` block.
+- **Bash 3.2 only**: No associative arrays, no `${var,,}`, no `mapfile`, no `&>>`. See compatibility table above.
+- **Safe and boring**: Prefer explicit over clever. When in doubt, write the obvious thing.
+
 ## Agent Merge Review Checklist
 
 Before merging agent work, check:

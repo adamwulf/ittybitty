@@ -19,4 +19,3 @@ I HAVE COMPLETED THE GOAL
   agent/test-agent
   Session: 63% (2h 8m) Weekly: 76% (2d 7h)
   ⏵⏵ accept edits on (shift+tab to cycle)
-

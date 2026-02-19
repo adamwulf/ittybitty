@@ -1,5 +1,4 @@
 {
-  "model": "opus",
   "permissions": {
     "manager": {
       "allow": [
@@ -26,5 +25,6 @@
       ],
       "deny": []
     }
-  }
+  },
+  "model": "opus"
 }
