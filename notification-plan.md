@@ -232,10 +232,12 @@ cmd_listen() {
     # Only remove PID file if it still contains our PID (guards against overwrite by second listener).
     trap '
         if [[ -n "$_DRAIN_FILE" ]] && [[ -f "$_DRAIN_FILE" ]]; then
-            cat "$_DRAIN_FILE"
+            cat "$_DRAIN_FILE" 2>/dev/null || true
             rm -f "$_DRAIN_FILE"
         fi
-        if [[ -f "$pid_path" ]] && [[ "$(<"$pid_path")" == "$$" ]]; then
+        local _trap_pid
+        _trap_pid=$(<"$pid_path" 2>/dev/null) || true
+        if [[ "$_trap_pid" == "$$" ]]; then
             rm -f "$pid_path"
         fi
     ' EXIT
@@ -673,7 +675,7 @@ Messages accumulate in queue file. Next listener finds them on first poll iterat
 ### Drain vs. write race
 `mv` is atomic on same filesystem. Any `echo >>` that started before the `mv` completes to the old inode (data is included in drain). After `mv`, new `echo >>` creates a fresh queue file (picked up by next listener). **No data loss, no lock needed.**
 
-**Subtlety:** If a writer opens the file descriptor before `mv` but writes after, the data goes to the old inode (now the drain file). The listener's `cat` will include this data because the write completes before or during the `cat`. This relies on standard POSIX behavior where writes to an open fd are visible to all holders of the same inode.
+**Subtlety:** If a writer opens the file descriptor before `mv` but writes after, the data goes to the old inode (now the drain file). The listener's `cat` will include this data in practice because our JSON lines are short (well under PIPE_BUF / filesystem block size) and complete near-instantly. For very large writes, a preempted writer could theoretically have a partial write visible to `cat`, but this is effectively impossible for our ~200-byte notification lines.
 
 ### Stale PID file
 `trap EXIT` removes PID file on normal exit and signal delivery (but only if the file still contains our PID — guards against a second listener that overwrote it). `is_listener_alive()` validates with `kill -0` AND verifies the process name contains `ib listen` (via `ps -p PID -o args=`). This guards against both stale PIDs and PID reuse by unrelated processes.
