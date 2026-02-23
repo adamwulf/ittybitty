@@ -12656,30 +12656,63 @@ cmd_hooks_intercept_task() {
             ;;
     esac
 
-    # Build the ib new-agent command suggestion for the denial message
+    # Extract task details from tool_input
+    local prompt description model
+    prompt=$(json_get - "tool_input.prompt" "" <<< "$json_input")
+    description=$(json_get - "tool_input.description" "" <<< "$json_input")
+    model=$(json_get - "tool_input.model" "" <<< "$json_input")
+
+    # Validate model - only allow known values to prevent injection
+    case "$model" in
+        sonnet|opus|haiku|"") ;;
+        *) model="" ;;
+    esac
+
+    # Build the agent task prompt
+    local agent_prompt="$prompt"
+    if [[ -z "$agent_prompt" ]]; then
+        agent_prompt="$description"
+    fi
+
+    if [[ -z "$agent_prompt" ]]; then
+        # No prompt or description - allow native Task as fallback
+        exit 0
+    fi
+
+    # Write prompt to temp file so the Bash subagent can pass it via stdin
+    # (avoids all quoting/escaping issues with arbitrary prompt content)
+    local tmpfile
+    tmpfile=$(mktemp /tmp/ib-intercept-XXXXXXXX) || {
+        # mktemp failed - allow native Task as fallback
+        exit 0
+    }
+    printf '%s' "$agent_prompt" > "$tmpfile"
+
+    # Build the ib new-agent command for the Bash subagent to run
     local cmd="ib new-agent"
     if [[ -n "$calling_agent_id" ]]; then
         cmd="$cmd --worker --manager $calling_agent_id"
     fi
+    if [[ -n "$model" ]]; then
+        cmd="$cmd --model $model"
+    fi
 
-    # Extract model from tool_input for the suggestion
-    local model
-    model=$(json_get - "tool_input.model" "" <<< "$json_input")
-    # Validate model - only allow known values to prevent injection
-    case "$model" in
-        sonnet|opus|haiku) cmd="$cmd --model $model" ;;
-    esac
+    # Build the Bash subagent's prompt with --prompt-file to avoid shell redirects
+    # that trigger permission prompts. The command is a plain ib call matching Bash(ib:*)
+    local shim_prompt
+    printf -v shim_prompt 'Run this exact command:\n\n%s --prompt-file %s\n\nReturn the full output. The spawned agent can be monitored with ib look, ib send, ib diff, ib merge, and ib list.' "$cmd" "$tmpfile"
 
-    # Build denial reason with the suggested command
-    local reason="Task interception is enabled. Do NOT use the Task tool to spawn sub-agents. Instead, use: ${cmd} \"your task prompt here\". Then monitor with: ib look, ib send, ib diff, ib merge, and ib list."
-    local escaped_reason
-    escaped_reason=$(json_escape_string "$reason")
+    # JSON-escape the shim prompt and description for safe embedding
+    local escaped_prompt
+    escaped_prompt=$(json_escape_string "$shim_prompt")
+    local escaped_desc
+    escaped_desc=$(json_escape_string "${description:-Spawn ib agent}")
 
-    # Deny the Task call and tell Claude to use ib new-agent instead.
-    # Note: updatedInput does not work for the Task tool (subagent_type is
-    # resolved before updatedInput is applied), so we must deny and instruct.
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
-        "$escaped_reason"
+    # Return updatedInput to rewrite the Task as a lightweight Bash subagent
+    # that spawns the ib agent. This allows the Task to proceed (no deny),
+    # which avoids sibling failure cascade when multiple Tasks spawn in parallel.
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"%s","max_turns":3,"model":"haiku"}}}\n' \
+        "$escaped_prompt" "$escaped_desc"
     exit 0
 }
 
