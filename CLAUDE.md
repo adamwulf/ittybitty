@@ -583,7 +583,7 @@ Hooks enforce permissions at runtime. See the **"Agent Hooks"** section for deta
 
 | Category | Always Allowed |
 |----------|---------------|
-| **ib commands** | `Bash(ib:*)`, `Bash(./ib:*)` |
+| **ib commands** | `Bash(ib:*)`, `Bash(./ib:*)`, `Bash(./tests/*:*)` |
 | **Git operations** | `Bash(git status:*)`, `Bash(git add:*)`, `Bash(git commit:*)`, `Bash(git diff:*)`, `Bash(git show:*)`, `Bash(git log:*)`, `Bash(git ls-files:*)`, `Bash(git grep:*)`, `Bash(git rm:*)`, `Bash(git merge:*)`, `Bash(git rebase:*)` |
 | **Basic shell** | `Bash(pwd:*)`, `Bash(ls:*)`, `Bash(head:*)`, `Bash(tail:*)`, `Bash(cat:*)`, `Bash(grep:*)` |
 | **File tools** | `Read`, `Write`, `Edit`, `MultiEdit`, `Glob`, `Grep`, `LS` |

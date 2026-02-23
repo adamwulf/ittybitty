@@ -865,7 +865,7 @@ build_settings_json() {
     local add_intercept="${6:-false}"
 
     # Mandatory permissions that are always added
-    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git reset:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
+    local ib_perms='["Bash(ib:*)", "Bash(./ib:*)", "Bash(./tests/*:*)", "Bash(git status:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)", "Bash(git ls-files:*)", "Bash(git grep:*)", "Bash(git rm:*)", "Bash(git merge:*)", "Bash(git rebase:*)", "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git reset:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(cat:*)", "Bash(grep:*)", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "TodoWrite", "Task", "TaskOutput", "KillShell", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion"]'
     local blocked_tools='["EnterPlanMode", "ExitPlanMode"]'
     local hook_cmd="ib hook-permission-denied $agent_id"
 
@@ -23217,8 +23217,10 @@ esac
 # Initialize paths to use root repo (handles running from worktrees)
 # parse-state and test-* are test utilities that operate on fixture files
 # in arbitrary directories. They don't need a git repo or AGENTS_DIR.
+# config commands also skip because config tests run from temp directories
+# without a git repo.
 case "${1:-}" in
-    parse-state|test-*)
+    parse-state|test-*|config)
         if git rev-parse --git-dir >/dev/null 2>&1; then
             init_paths
         fi
