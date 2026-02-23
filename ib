@@ -12657,9 +12657,9 @@ cmd_hooks_intercept_task() {
     esac
 
     # Build the ib new-agent command suggestion for the denial message
-    local cmd="ib new-agent --worker"
+    local cmd="ib new-agent"
     if [[ -n "$calling_agent_id" ]]; then
-        cmd="$cmd --manager $calling_agent_id"
+        cmd="$cmd --worker --manager $calling_agent_id"
     fi
 
     # Extract model from tool_input for the suggestion
