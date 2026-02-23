@@ -23217,8 +23217,10 @@ esac
 # Initialize paths to use root repo (handles running from worktrees)
 # parse-state and test-* are test utilities that operate on fixture files
 # in arbitrary directories. They don't need a git repo or AGENTS_DIR.
+# config commands also skip because config tests run from temp directories
+# without a git repo.
 case "${1:-}" in
-    parse-state|test-*)
+    parse-state|test-*|config)
         if git rev-parse --git-dir >/dev/null 2>&1; then
             init_paths
         fi
