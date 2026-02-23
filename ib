@@ -12679,40 +12679,67 @@ cmd_hooks_intercept_task() {
         exit 0
     fi
 
-    # Write prompt to temp file so the Bash subagent can pass it via stdin
-    # (avoids all quoting/escaping issues with arbitrary prompt content)
+    # Write prompt to temp file to avoid quoting issues with arbitrary content
     local tmpfile
-    tmpfile=$(mktemp /tmp/ib-intercept-XXXXXXXX) || {
-        # mktemp failed - allow native Task as fallback
+    tmpfile=$(mktemp /tmp/ib-intercept-XXXXXXXX) || tmpfile=""
+
+    if [[ -z "$tmpfile" ]]; then
+        # mktemp failed - deny with instructions to spawn manually
+        local escaped_prompt_fallback
+        escaped_prompt_fallback=$(json_escape_string "$agent_prompt")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Task intercepted but temp file creation failed. Run manually: ib new-agent \"%s\""}}\n' \
+            "$escaped_prompt_fallback"
         exit 0
-    }
+    fi
     printf '%s' "$agent_prompt" > "$tmpfile"
 
-    # Build the ib new-agent command for the Bash subagent to run
-    local cmd="ib new-agent"
+    # Build the ib new-agent command
+    local cmd_args=""
     if [[ -n "$calling_agent_id" ]]; then
-        cmd="$cmd --worker --manager $calling_agent_id"
+        cmd_args="--worker --manager $calling_agent_id"
     fi
     if [[ -n "$model" ]]; then
-        cmd="$cmd --model $model"
+        cmd_args="$cmd_args --model $model"
     fi
 
-    # Build the Bash subagent's prompt with --prompt-file to avoid shell redirects
-    # that trigger permission prompts. The command is a plain ib call matching Bash(ib:*)
-    local shim_prompt
-    printf -v shim_prompt 'Run this exact command:\n\n%s --prompt-file %s\n\nReturn the full output. The spawned agent can be monitored with ib look, ib send, ib diff, ib merge, and ib list.' "$cmd" "$tmpfile"
+    # Run ib new-agent directly from the hook - spawns the agent immediately
+    local spawn_output
+    local spawn_exit=0
+    # shellcheck disable=SC2086
+    spawn_output=$(ib new-agent $cmd_args --prompt-file "$tmpfile" 2>&1) || spawn_exit=$?
 
-    # JSON-escape the shim prompt and description for safe embedding
-    local escaped_prompt
-    escaped_prompt=$(json_escape_string "$shim_prompt")
-    local escaped_desc
-    escaped_desc=$(json_escape_string "${description:-Spawn ib agent}")
+    # Clean up temp file
+    rm -f "$tmpfile" 2>/dev/null || true
 
-    # Return updatedInput to rewrite the Task as a lightweight Bash subagent
-    # that spawns the ib agent. This allows the Task to proceed (no deny),
-    # which avoids sibling failure cascade when multiple Tasks spawn in parallel.
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"%s","max_turns":3,"model":"haiku"}}}\n' \
-        "$escaped_prompt" "$escaped_desc"
+    if [[ $spawn_exit -ne 0 ]]; then
+        # ib new-agent failed - deny with instructions to spawn manually
+        local escaped_err
+        escaped_err=$(json_escape_string "Task intercepted but ib new-agent failed (exit $spawn_exit): $spawn_output. Run manually: ib new-agent \"<your prompt>\"")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+            "$escaped_err"
+        exit 0
+    fi
+
+    # Extract the agent ID from output (last line is the agent ID)
+    local spawned_id=""
+    if [[ "$spawn_output" =~ (agent-[a-f0-9]+) ]]; then
+        spawned_id="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ -z "$spawned_id" ]]; then
+        # Could not parse agent ID - deny with raw output
+        local escaped_out
+        escaped_out=$(json_escape_string "Task intercepted and agent spawned, but could not parse agent ID. Output: $spawn_output")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+            "$escaped_out"
+        exit 0
+    fi
+
+    # Success - deny native Task and tell Claude the agent was already spawned
+    local escaped_reason
+    escaped_reason=$(json_escape_string "Agent spawned as $spawned_id. Monitor with: ib look $spawned_id, ib send $spawned_id \"msg\", ib diff $spawned_id, ib merge $spawned_id")
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+        "$escaped_reason"
     exit 0
 }
 
