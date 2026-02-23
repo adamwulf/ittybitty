@@ -55,6 +55,22 @@ session_name() {
 # =============================================================================
 
 # =============================================================================
+# SAFETY ASSERTIONS
+# =============================================================================
+
+# Assert that a value is non-empty. Exits with a clear error if empty.
+# Usage: assert_nonempty "ROOT_REPO_PATH" "$ROOT_REPO_PATH"
+#        assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
+assert_nonempty() {
+    local var_name="$1"
+    local var_value="$2"
+    if [[ -z "$var_value" ]]; then
+        echo "Error: $var_name is empty — aborting to prevent operating on wrong path" >&2
+        exit 1
+    fi
+}
+
+# =============================================================================
 # DEPENDENCY CHECK
 # Check that required tools are installed before running any command
 # =============================================================================
@@ -2527,6 +2543,8 @@ cmd_test_compare_versions() {
 # Creates .ittybitty/archive/YYYYMMDD-HHMMSS-<agent-id>/ with output.log, agent.log, meta.json, settings.local.json, debug-logs/
 archive_agent_output() {
     local ID="$1"
+    assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
+    assert_nonempty "ARCHIVE_DIR" "$ARCHIVE_DIR"
     local AGENT_DIR="$AGENTS_DIR/$ID"
 
     # Capture final output if session is still running
@@ -2889,6 +2907,7 @@ teardown_agent() {
     local ID="$1"
     local QUIET="${2:-}"
     local LOG_MSG="${3:-Agent killed}"
+    assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local TMUX_SESSION=$(session_name "$ID")
 
@@ -3654,6 +3673,11 @@ init_paths() {
     # Format: ittybitty-<repo-id>-<agent-id>
     REPO_ID=$(get_repo_id "$ROOT_REPO_PATH")
     SESSION_PREFIX="ittybitty-${REPO_ID}-"
+
+    # Safety: verify all critical paths were set
+    assert_nonempty "ROOT_REPO_PATH" "$ROOT_REPO_PATH"
+    assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
+    assert_nonempty "ARCHIVE_DIR" "$ARCHIVE_DIR"
 }
 
 # Require git repo - exits with clear error message if not in a git repository
@@ -6740,6 +6764,8 @@ EOF
     fi
 
     # Set up directories in root repo
+    assert_nonempty "ROOT_REPO_PATH" "$ROOT_REPO_PATH"
+    assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
     local AGENT_DIR="$AGENTS_DIR/$ID"
     mkdir -p "$AGENT_DIR"
 
@@ -8751,6 +8777,7 @@ EOF
     # Resolve partial ID
     ID=$(resolve_agent_id "$ID") || exit 1
 
+    assert_nonempty "AGENTS_DIR" "$AGENTS_DIR"
     local AGENT_DIR="$AGENTS_DIR/$ID"
     local BRANCH_NAME="agent/$ID"
     local WORKTREE_PATH="$AGENT_DIR/repo"
@@ -13993,6 +14020,7 @@ EOF
     local questions_file="$ROOT_REPO_PATH/.ittybitty/user-questions.json"
 
     # Ensure .ittybitty directory exists
+    assert_nonempty "ROOT_REPO_PATH" "$ROOT_REPO_PATH"
     mkdir -p "$ROOT_REPO_PATH/.ittybitty"
 
     # Initialize or load existing questions file
