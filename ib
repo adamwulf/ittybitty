@@ -12679,15 +12679,36 @@ cmd_hooks_intercept_task() {
         exit 0
     fi
 
+    # --- Interception strategy: allow + updatedInput (stub Task) ---
+    #
+    # When Claude spawns multiple Tasks in parallel, denying any one of them causes
+    # ALL sibling Tasks to fail with "Sibling tool call errored". This cascade makes
+    # parallel Task interception unusable with permissionDecision:deny.
+    #
+    # Instead, we:
+    # 1. Spawn the real ib agent via 'ib new-agent' (does the actual work)
+    # 2. Return permissionDecision:allow with updatedInput that transforms the
+    #    native Task into a cheap Bash stub (subagent_type:Bash)
+    # 3. The stub simply echoes the spawned agent ID back to the caller
+    #
+    # Why subagent_type:Bash? It's the cheapest native subagent - just runs a
+    # command and returns. It won't trigger further interception (Bash is in the
+    # skip list). The caller sees a successful Task result containing the ib agent
+    # ID and monitoring commands, so it knows how to track the real work.
+    #
+    # Result: when Claude spawns 2+ parallel Tasks, ALL succeed. Each spawns its
+    # own ib agent and returns a stub result with that agent's ID. No errors, no
+    # sibling cascade.
+
     # Write prompt to temp file to avoid quoting issues with arbitrary content
     local tmpfile
     tmpfile=$(mktemp /tmp/ib-intercept-XXXXXXXX) || tmpfile=""
 
     if [[ -z "$tmpfile" ]]; then
-        # mktemp failed - deny with instructions to spawn manually
+        # mktemp failed - allow as stub with error info
         local escaped_prompt_fallback
-        escaped_prompt_fallback=$(json_escape_string "$agent_prompt")
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Task intercepted but temp file creation failed. Run manually: ib new-agent \"%s\""}}\n' \
+        escaped_prompt_fallback=$(json_escape_string "echo 'Task intercepted but temp file creation failed. Run manually: ib new-agent \"<your prompt>\"'")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"Task intercepted by ittybitty (temp file failed)"}}}\n' \
             "$escaped_prompt_fallback"
         exit 0
     fi
@@ -12712,10 +12733,10 @@ cmd_hooks_intercept_task() {
     rm -f "$tmpfile" 2>/dev/null || true
 
     if [[ $spawn_exit -ne 0 ]]; then
-        # ib new-agent failed - deny with instructions to spawn manually
+        # ib new-agent failed - allow as stub with error info
         local escaped_err
-        escaped_err=$(json_escape_string "Task intercepted but ib new-agent failed (exit $spawn_exit): $spawn_output. Run manually: ib new-agent \"<your prompt>\"")
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+        escaped_err=$(json_escape_string "echo 'Task intercepted but ib new-agent failed (exit $spawn_exit). Run manually: ib new-agent \"<your prompt>\"'")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"Task intercepted by ittybitty (spawn failed)"}}}\n' \
             "$escaped_err"
         exit 0
     fi
@@ -12727,19 +12748,20 @@ cmd_hooks_intercept_task() {
     fi
 
     if [[ -z "$spawned_id" ]]; then
-        # Could not parse agent ID - deny with raw output
+        # Could not parse agent ID - allow as stub with raw output
         local escaped_out
-        escaped_out=$(json_escape_string "Task intercepted and agent spawned, but could not parse agent ID. Output: $spawn_output")
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+        escaped_out=$(json_escape_string "echo 'Task intercepted and agent spawned, but could not parse agent ID. Output: $spawn_output'")
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"Task intercepted by ittybitty (no agent ID)"}}}\n' \
             "$escaped_out"
         exit 0
     fi
 
-    # Success - deny native Task and tell Claude the agent was already spawned
-    local escaped_reason
-    escaped_reason=$(json_escape_string "Agent spawned as $spawned_id. Monitor with: ib look $spawned_id, ib send $spawned_id \"msg\", ib diff $spawned_id, ib merge $spawned_id")
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
-        "$escaped_reason"
+    # Success - the ib agent is already spawned and running. Return allow with a
+    # stub Task so the calling Claude sees a successful result with the agent ID.
+    local escaped_stub
+    escaped_stub=$(json_escape_string "echo 'Task intercepted: ib agent $spawned_id has been spawned to handle this task. Monitor with: ib look $spawned_id'")
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"Bash","prompt":"%s","description":"Task intercepted by ittybitty"}}}\n' \
+        "$escaped_stub"
     exit 0
 }
 
