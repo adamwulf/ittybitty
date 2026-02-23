@@ -3598,9 +3598,15 @@ get_root_repo() {
     if [[ "$common_dir" == ".git" || "$common_dir" == "$(git rev-parse --git-dir)" ]]; then
         git rev-parse --show-toplevel
     else
-        # common_dir is absolute path like /path/to/repo/.git
+        # common_dir points to the shared .git directory
         # Go up one level to get the repo root
-        dirname "$common_dir"
+        local root_path
+        root_path=$(dirname "$common_dir")
+        # Resolve to absolute path (common_dir may be relative like '../.git')
+        if [[ "$root_path" != /* ]]; then
+            root_path=$(cd "$root_path" && pwd)
+        fi
+        echo "$root_path"
     fi
 }
 
@@ -3632,24 +3638,22 @@ get_repo_id() {
 }
 
 # Initialize global paths to use root repo
-# Called once when script runs (if in a git repo)
+# Called once when script runs. Exits with error if not in a git repo.
 # Also sets SESSION_PREFIX to include repo ID for tmux session isolation
 init_paths() {
-    if git rev-parse --git-dir >/dev/null 2>&1; then
-        ROOT_REPO_PATH=$(get_root_repo)
-        AGENTS_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/agents"
-        ARCHIVE_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/archive"
-
-        # Set repo-specific session prefix to avoid tmux collisions across repos
-        # Format: ittybitty-<repo-id>-<agent-id>
-        REPO_ID=$(get_repo_id "$ROOT_REPO_PATH")
-        SESSION_PREFIX="ittybitty-${REPO_ID}-"
-    else
-        # Not in a git repo - use relative paths as fallback
-        AGENTS_DIR="$ITTYBITTY_DIR/agents"
-        ARCHIVE_DIR="$ITTYBITTY_DIR/archive"
-        # Without a git repo, we can't reliably scope sessions, so use default prefix
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Error: ib must be run from within a git repository" >&2
+        exit 1
     fi
+
+    ROOT_REPO_PATH=$(get_root_repo)
+    AGENTS_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/agents"
+    ARCHIVE_DIR="$ROOT_REPO_PATH/$ITTYBITTY_DIR/archive"
+
+    # Set repo-specific session prefix to avoid tmux collisions across repos
+    # Format: ittybitty-<repo-id>-<agent-id>
+    REPO_ID=$(get_repo_id "$ROOT_REPO_PATH")
+    SESSION_PREFIX="ittybitty-${REPO_ID}-"
 }
 
 # Require git repo - exits with clear error message if not in a git repository
@@ -23211,7 +23215,18 @@ case "${1:-}" in
 esac
 
 # Initialize paths to use root repo (handles running from worktrees)
-init_paths
+# parse-state and test-* are test utilities that operate on fixture files
+# in arbitrary directories. They don't need a git repo or AGENTS_DIR.
+case "${1:-}" in
+    parse-state|test-*)
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+            init_paths
+        fi
+        ;;
+    *)
+        init_paths
+        ;;
+esac
 
 # Enforce command access restrictions based on execution context
 # Pass command and subcommand (for hooks install/uninstall detection)
