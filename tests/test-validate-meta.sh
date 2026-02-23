@@ -6,6 +6,14 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+IB="$REPO_ROOT/ib"
+
+if [[ ! -x "$IB" ]]; then
+    echo -e "\033[0;31mError: ib script not found or not executable at $IB\033[0m"
+    exit 1
+fi
+
 FIXTURES_DIR="$SCRIPT_DIR/fixtures/validate-meta"
 
 echo "Running test-validate-meta tests..."
@@ -23,7 +31,7 @@ for fixture in "$FIXTURES_DIR"/*.json; do
     expected="${filename%%-*}"
 
     # Run the test
-    result=$(ib test-validate-meta "$fixture" | head -1)
+    result=$("$IB" test-validate-meta "$fixture" | head -1)
 
     if [[ "$result" == "$expected" ]]; then
         echo -e "\033[0;32mPASS\033[0m [$expected] $filename"
