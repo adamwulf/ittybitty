@@ -159,9 +159,13 @@ Configuration is loaded from two files with the following precedence:
 ```bash
 ib config list                    # Show all config with sources
 ib config get maxAgents           # Get a value
-ib config set maxAgents 20        # Set project config
-ib config --global set key val    # Set user config
+ib config set maxAgents 20        # Set scalar value (project config)
+ib config --global set key val    # Set scalar value (user config)
+ib config add permissions.manager.allow 'Bash(npm:*)'    # Add to array
+ib config remove permissions.worker.deny 'WebSearch'     # Remove from array
 ```
+
+**Note**: `ib config set` only works with scalar values (strings, numbers, booleans). For array values like permissions, use `ib config add` and `ib config remove`.
 
 ## Custom Prompts
 

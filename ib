@@ -22741,7 +22741,7 @@ EOF
 cmd_config() {
     # Parse --global/-g flag first
     local use_global=false
-    local config_file=".ittybitty.json"
+    local config_file="${ROOT_REPO_PATH:+$ROOT_REPO_PATH/}.ittybitty.json"
     local config_label="project"
     local args=()
 
@@ -22797,7 +22797,7 @@ cmd_config() {
 
             local value=""
             local user_file="$HOME/.ittybitty.json"
-            local project_file=".ittybitty.json"
+            local project_file="${ROOT_REPO_PATH:+$ROOT_REPO_PATH/}.ittybitty.json"
 
             if [[ "$use_global" == "true" ]]; then
                 # Only read from user config
@@ -22850,6 +22850,22 @@ cmd_config() {
                 echo "{}" > "$config_file"
             fi
 
+            # Reject array keys - users must use add/remove for arrays
+            case "$KEY" in
+                permissions.*.allow|permissions.*.deny)
+                    echo "Error: Use 'ib config add' and 'ib config remove' to modify array values" >&2
+                    echo "  ib config add $KEY <value>" >&2
+                    echo "  ib config remove $KEY <value>" >&2
+                    exit 1
+                    ;;
+            esac
+
+            # Reject array-looking values
+            if [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
+                echo "Error: Use 'ib config add' and 'ib config remove' to modify array values" >&2
+                exit 1
+            fi
+
             # Validate type for known configuration keys
             case "$KEY" in
                 maxAgents|fps)
@@ -22870,15 +22886,9 @@ cmd_config() {
                         exit 1
                     fi
                     ;;
-                permissions.*.allow|permissions.*.deny)
-                    if ! [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
-                        echo "Error: '$KEY' must be a JSON array, got '$VALUE'" >&2
-                        exit 1
-                    fi
-                    ;;
             esac
 
-            # Determine if value is a literal (number, boolean, array, object) or string
+            # Determine if value is a literal (number, boolean, object) or string
             # Literals use : prefix for json_set, strings are passed directly
             local json_value
             if [[ "$VALUE" =~ ^[0-9]+$ ]]; then
@@ -22886,9 +22896,6 @@ cmd_config() {
                 json_value=":$VALUE"
             elif [[ "$VALUE" == "true" || "$VALUE" == "false" ]]; then
                 # Boolean - literal
-                json_value=":$VALUE"
-            elif [[ "$VALUE" == "["* && "$VALUE" == *"]" ]]; then
-                # Array - literal (assume it's valid JSON)
                 json_value=":$VALUE"
             elif [[ "$VALUE" == "{"* && "$VALUE" == *"}" ]]; then
                 # Object - literal (assume it's valid JSON)
@@ -23031,7 +23038,7 @@ cmd_config() {
             # ib config list [--global]
             # List all configuration values with their sources
             local user_file="$HOME/.ittybitty.json"
-            local project_file=".ittybitty.json"
+            local project_file="${ROOT_REPO_PATH:+$ROOT_REPO_PATH/}.ittybitty.json"
             local has_user=false
             local has_project=false
 
@@ -23145,7 +23152,7 @@ Usage: ib config [--global] <subcommand> [options]
 Subcommands:
   list                 List all configuration values with sources
   get <key>            Get a configuration value
-  set <key> <value>    Set a configuration value
+  set <key> <value>    Set a scalar configuration value (not arrays)
   add <key> <value>    Add a value to an array config key (prevents duplicates)
   remove <key> <value> Remove a value from an array config key
 
@@ -23169,18 +23176,17 @@ Examples:
   ib config get model                         Get model (project > user > default)
   ib config set maxAgents 20
   ib config set fps 15
-  ib config set permissions.worker.allow '["Read", "Write"]'
   ib config add permissions.manager.allow 'Bash(npm:*)'
   ib config remove permissions.worker.deny 'WebSearch'
 
 Key Paths:
   Use dot notation to access nested keys (e.g., permissions.manager.allow)
 
-Value Types:
+Value Types (for 'set'):
   - Numbers: Integers are stored as numbers (e.g., 10)
   - Booleans: true/false are stored as booleans
   - Strings: Other values are stored as quoted strings
-  - Arrays/Objects: JSON arrays/objects (must be valid JSON)
+  - Arrays: Use 'add' and 'remove' instead of 'set' for array values
 
 Array Operations (add/remove):
   Only work with array keys: permissions.{manager,worker}.{allow,deny}
