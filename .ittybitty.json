@@ -2,17 +2,12 @@
   "permissions": {
     "manager": {
       "allow": [
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
+        "Bash(./tests/test-all.sh:*)",
         "Bash(jq:*)",
         "Bash(wc:*)",
+        "Bash(sleep:*)",
         "Bash(chmod +x tests/:*)",
-        "Bash(chmod +x ./tests/:*)",
-        "Bash(./tests/*.sh:*)",
-        "Bash(sleep:*)"
+        "Bash(chmod +x ./tests/:*)"
       ],
       "deny": []
     },
