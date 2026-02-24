@@ -274,6 +274,15 @@ ib config --global list                     # Show user config only
 | `permissions.worker.allow` | [] | Additional tools to allow for worker agents |
 | `permissions.worker.deny` | [] | Tools to deny for worker agents |
 
+### MCP Servers
+
+Agent worktrees inherit MCP servers from two sources automatically:
+
+- **User-scoped MCPs** (`claude mcp add --scope user ...`) — stored in `~/.claude.json`, available in all projects and all worktrees
+- **Project-scoped MCPs** (`claude mcp add --scope project ...`) — stored in `.mcp.json` committed to the repo, available in all worktrees since they share the same git history
+
+**Local-scoped MCPs** (`claude mcp add --scope local ...`) are scoped to a specific directory path and will _not_ be available in agent worktrees. If you need an MCP in agents, add it at user or project scope instead.
+
 ### Spawn Options
 
 ```bash
