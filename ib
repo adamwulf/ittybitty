@@ -4976,6 +4976,19 @@ parse_state() {
         return
     fi
 
+    # Check for race condition: Stop hook fired before terminal rendered Claude's response.
+    # When Claude finishes responding, the Stop hook fires immediately. At that exact moment,
+    # the terminal may not have rendered Claude's response text yet — the tmux capture shows
+    # the user prompt and the "running stop hook" spinner, but no Claude output (⏺).
+    # Returning 'creating' here suppresses the nudge for this transient state. The next
+    # Stop hook (fired once the response is rendered and Claude becomes truly idle) will
+    # detect the correct state (e.g., 'waiting' or 'complete') and act accordingly.
+    if [[ "$last_lines" == *"running stop hook"* ]] && [[ "$last_lines" != *"⏺"* ]]; then
+        _PARSE_STATE_REASON="hook fired before terminal rendered response (race condition)"
+        _PARSE_STATE_RESULT="creating"
+        return
+    fi
+
     # No explicit state indicators found
     _PARSE_STATE_REASON="no patterns matched"
     _PARSE_STATE_RESULT="unknown"
@@ -9161,6 +9174,11 @@ EOF
 cmd_hooks_agent_status() {
     local ID="$1"
 
+    # Read Stop hook JSON from stdin first (stdin can only be consumed once).
+    # Claude Code sends a JSON object with last_assistant_message, stop_hook_active, etc.
+    local stop_hook_json
+    stop_hook_json=$(cat)
+
     if [[ -z "$ID" ]]; then
         echo "Error: agent ID required" >&2
         exit 1
@@ -9174,10 +9192,26 @@ cmd_hooks_agent_status() {
     fi
     ID="$RESOLVED_ID"
 
-    # Call get_state and read result from global.
+    # Extract last_assistant_message from Stop hook JSON.
+    # This is the raw text of Claude's current response turn (no ⏺ UI markers).
+    local last_msg
+    last_msg=$(json_get - "last_assistant_message" "" <<< "$stop_hook_json")
+
+    # Determine state: check last_assistant_message first (more reliable than tmux
+    # scraping — no stale scrollback, no UI chrome to strip), then fall back to
+    # tmux-based detection for states not detectable from message text alone
+    # (running, rate_limited, compacting, creating).
+    local state
+    state=$(detect_state_from_message "$last_msg")
+
+    # Always run get_state for the tmux debug capture regardless of message result.
     get_state "$ID"
-    local state="$_GET_STATE_RESULT"
-    log_agent "$ID" "[hook] Stop hook triggered, state=$state" --quiet
+    if [[ -n "$state" ]]; then
+        log_agent "$ID" "[hook] Stop hook triggered, state=$state (from message, tmux=$_GET_STATE_RESULT)" --quiet
+    else
+        state="$_GET_STATE_RESULT"
+        log_agent "$ID" "[hook] Stop hook triggered, state=$state (from tmux)" --quiet
+    fi
 
     local TMUX_SESSION=$(session_name "$ID")
 
@@ -9195,6 +9229,10 @@ cmd_hooks_agent_status() {
         # Add parse_state result and reason (already computed by get_state)
         printf '\n--- parse-state -v output ---\n%s (matched: %s)\n' "$_PARSE_STATE_RESULT" "$_PARSE_STATE_REASON" >> "$debug_file"
     fi
+    # Append last_assistant_message to debug file so we can verify its format
+    # (e.g., does it contain ⏺ bullet markers or just raw text?)
+    printf '\n--- last_assistant_message ---\n%s\n' "$last_msg" >> "$debug_file"
+    log_agent "$ID" "[hook] last_assistant_message length: ${#last_msg} chars" --quiet
 
     # Get agent's manager (if any) for worker notifications
     local AGENT_DIR="$AGENTS_DIR/$ID"
@@ -9577,6 +9615,43 @@ cmd_hooks_agent_path() {
 }
 
 # =============================================================================
+# HELPER: detect_state_from_message
+# =============================================================================
+
+# Detect agent state from last_assistant_message text.
+# More reliable than tmux scraping: no UI chrome, no stale scrollback.
+# The Stop hook JSON field last_assistant_message contains only Claude's
+# current response turn as plain text (no ⏺ markers, no user prompts).
+#
+# Returns via stdout: "waiting", "complete", or "" (fall through to tmux).
+# Pure bash - no external commands.
+#
+# Detection rules:
+#   - Last non-empty line is "WAITING"              → waiting
+#   - Last non-empty line is "I HAVE COMPLETED THE GOAL" → complete
+#   - Everything else (including empty message)     → "" (use tmux)
+detect_state_from_message() {
+    local msg="$1"
+
+    if [[ -z "$msg" ]]; then
+        return 0
+    fi
+
+    # Find the last non-empty line of the message
+    local last_line=""
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && last_line="$line"
+    done <<< "$msg"
+
+    if [[ "$last_line" == "WAITING" ]]; then
+        echo "waiting"
+    elif [[ "$last_line" == "I HAVE COMPLETED THE GOAL" ]]; then
+        echo "complete"
+    fi
+    # Empty output means "no definitive signal, fall through to tmux"
+}
+
+# =============================================================================
 # COMMAND: parse-state
 # =============================================================================
 
@@ -9658,6 +9733,41 @@ EOF
     else
         echo "$state"
     fi
+}
+
+# =============================================================================
+# COMMAND: test-detect-state-message
+# =============================================================================
+
+# Test detect_state_from_message() with a fixture file.
+# Input: file containing last_assistant_message text (plain, no ⏺ markers)
+# Output: "waiting", "complete", or "" (empty = fall through to tmux)
+#
+# Fixture naming convention: {expected-output}-{description}.txt
+#   waiting-*  → expects "waiting"
+#   complete-* → expects "complete"
+#   unknown-*  → expects "" (empty string)
+#
+# Usage: ib test-detect-state-message FILE
+# Examples:
+#   ib test-detect-state-message tests/fixtures/detect-state-message/waiting-basic.txt
+#   ib test-detect-state-message tests/fixtures/detect-state-message/unknown-empty.txt
+cmd_test_detect_state_message() {
+    local fixture_file="$1"
+
+    if [[ -z "$fixture_file" ]]; then
+        echo "Usage: ib test-detect-state-message FILE" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$fixture_file" ]]; then
+        echo "Error: file not found: $fixture_file" >&2
+        exit 1
+    fi
+
+    local content
+    content=$(<"$fixture_file")
+    detect_state_from_message "$content"
 }
 
 # =============================================================================
@@ -23400,6 +23510,10 @@ case "${1:-help}" in
     parse-state)
         shift
         cmd_parse_state "$@"
+        ;;
+    test-detect-state-message)
+        shift
+        cmd_test_detect_state_message "$@"
         ;;
     test-tool-match)
         shift

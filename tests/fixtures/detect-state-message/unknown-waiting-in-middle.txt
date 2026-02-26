@@ -1,0 +1,3 @@
+I'll signal WAITING when I need input from you.
+
+Here is the completed work summary.

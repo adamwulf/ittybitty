@@ -1,0 +1,3 @@
+The refactoring is done. All tests pass and the code has been committed.
+
+I HAVE COMPLETED THE GOAL

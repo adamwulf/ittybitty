@@ -1,0 +1,27 @@
+╭─ Claude Code ────────────────────────────────────────────╮
+│                                                          │
+│                    Welcome back Adam!                    │
+│                                                          │
+│                                                          │
+│                                                          │
+│                          ▐▛███▜▌                         │
+│                         ▝▜█████▛▘                        │
+│                           ▘▘ ▝▝                          │
+│                                                          │
+│                         Opus 4.6                         │
+│                        Claude Max                        │
+│ ~/…/bash/ittybitty/.ittybitty/agents/agent-9b86b8b8/repo │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯
+
+❯ wait
+
+✳ Sautéing… (running stop hook)
+
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  repo | Opus 4.6
+  agent/agent-9b86b8b8
+  sess: 12% (1h 5m) week: 43% (0h)
+  ⏵⏵ accept edits on (shift+tab to cycle)
