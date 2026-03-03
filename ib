@@ -3326,10 +3326,16 @@ fetch_claude_usage() {
     _USAGE_SESSION_RESET=""
     _USAGE_WEEKLY_RESET=""
 
-    # Get OAuth access token from macOS Keychain
-    # The credentials are stored as JSON under "Claude Code-credentials"
+    # Get OAuth access token from credentials file or macOS Keychain
+    # Prefer the credentials file since keychain JSON is truncated at 2012 bytes
     local creds token
-    creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+    local creds_file="$HOME/.claude/.credentials.json"
+    if [[ -f "$creds_file" ]]; then
+        creds=$(<"$creds_file")
+    else
+        # Fall back to macOS Keychain
+        creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+    fi
     if [[ -z "$creds" ]]; then
         return 1
     fi
