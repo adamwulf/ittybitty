@@ -3320,38 +3320,79 @@ format_reset_time() {
 
 # Returns 0 on success, 1 on failure
 # Sets: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT, _USAGE_SESSION_RESET, _USAGE_WEEKLY_RESET
+# Caches API responses in ~/.claude/usage-cache.json for 10 seconds (shared with usage.sh)
 fetch_claude_usage() {
     _USAGE_SESSION_PCT=""
     _USAGE_WEEKLY_PCT=""
     _USAGE_SESSION_RESET=""
     _USAGE_WEEKLY_RESET=""
 
-    # Get OAuth access token from credentials file or macOS Keychain
-    # Prefer the credentials file since keychain JSON is truncated at 2012 bytes
-    local creds token
-    local creds_file="$HOME/.claude/.credentials.json"
-    if [[ -f "$creds_file" ]]; then
-        creds=$(<"$creds_file")
-    else
-        # Fall back to macOS Keychain
-        creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
-    fi
-    if [[ -z "$creds" ]]; then
-        return 1
+    local cache_file="$HOME/.claude/usage-cache.json"
+    local cache_ttl=10
+    local response=""
+
+    # Check if cache is fresh
+    if [[ -f "$cache_file" ]]; then
+        local cached_ts current_ts age
+        cached_ts=$(json_get "$cache_file" "timestamp" "0")
+        current_ts=$(date "+%s")
+        age=$((current_ts - cached_ts))
+        if [[ "$age" -lt "$cache_ttl" ]]; then
+            response=$(json_get "$cache_file" "response")
+        fi
     fi
 
-    # Parse JSON to get the access token
-    token=$(json_get - "claudeAiOauth.accessToken" <<< "$creds")
-    if [[ -z "$token" ]]; then
-        return 1
+    # Cache is stale or missing — fetch fresh data
+    if [[ -z "$response" ]]; then
+        # Get OAuth access token from credentials file or macOS Keychain
+        # Prefer the credentials file since keychain JSON is truncated at 2012 bytes
+        local creds token
+        local creds_file="$HOME/.claude/.credentials.json"
+        if [[ -f "$creds_file" ]]; then
+            creds=$(<"$creds_file")
+        else
+            # Fall back to macOS Keychain
+            creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
+        fi
+        if [[ -z "$creds" ]]; then
+            return 1
+        fi
+
+        # Parse JSON to get the access token
+        token=$(json_get - "claudeAiOauth.accessToken" <<< "$creds")
+        if [[ -z "$token" ]]; then
+            return 1
+        fi
+
+        # Call usage API
+        local api_response
+        api_response=$(curl -s --max-time 5 \
+            -H "Authorization: Bearer $token" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        if [[ -z "$api_response" ]]; then
+            return 1
+        fi
+
+        # Update cache atomically (same format as usage.sh)
+        local current_ts tmp_file
+        current_ts=$(date "+%s")
+        tmp_file=$(mktemp "${cache_file}.XXXXXX")
+        local error_check
+        error_check=$(json_get - "error" <<< "$api_response")
+        if [[ -n "$error_check" ]]; then
+            # Error response: bump timestamp for backoff but keep old cached response
+            local old_response
+            old_response=$(json_get "$cache_file" "response")
+            printf '{"timestamp":%s,"response":%s}\n' "$current_ts" "${old_response:-null}" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$cache_file" || rm -f "$tmp_file"
+            response="$old_response"
+        else
+            # Success: update cache with fresh response
+            printf '{"timestamp":%s,"response":%s}\n' "$current_ts" "$api_response" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$cache_file" || rm -f "$tmp_file"
+            response="$api_response"
+        fi
     fi
 
-    # Call usage API
-    local response
-    response=$(curl -s --max-time 5 \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
     if [[ -z "$response" ]]; then
         return 1
     fi
@@ -15013,7 +15054,7 @@ EOF
     local USAGE_SESSION_RESET="" # Time until session reset (e.g., "44m")
     local USAGE_WEEKLY_RESET=""  # Time until weekly reset (e.g., "3d 8h")
     local USAGE_LAST_FETCH=0     # Timestamp of last attempted fetch
-    local USAGE_FETCH_INTERVAL=30  # Seconds between API calls
+    local USAGE_FETCH_INTERVAL=30  # Seconds between fetch attempts
     local USAGE_FETCH_FAILED=0   # 1 if last fetch failed (show "unavailable")
 
     # Check if main repo safety hooks are installed
