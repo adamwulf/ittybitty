@@ -14642,8 +14642,8 @@ cmd_watchdog() {
                 fi
 
                 # Check usage API to see if we can resume
-                # Recovery threshold: 80% (wait until usage drops below this)
-                local recovery_threshold=80
+                # Recovery threshold: 10% (wait until usage drops below this)
+                local recovery_threshold=10
                 if fetch_claude_usage; then
                     local session_pct="${_USAGE_SESSION_PCT:-100}"
                     echo "[watchdog] Current usage: session=${session_pct}% (recovery at <${recovery_threshold}%)"
@@ -14656,7 +14656,7 @@ cmd_watchdog() {
                         if [[ "$QUIET" == "true" ]]; then
                             echo "$(date +"%Y-%m-%d %H:%M:%S"): [watchdog] QUIET MODE: Would send nudge to agent"
                         else
-                            ib send "$AGENT_ID" "[watchdog]: Usage has refreshed. Please continue your task."
+                            ib send "$AGENT_ID" "[watchdog]: Usage has refreshed (${session_pct}%). Please continue your task."
                         fi
                     else
                         # Log reset time if available
