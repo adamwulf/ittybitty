@@ -3322,6 +3322,14 @@ format_reset_time() {
 # Sets: _USAGE_SESSION_PCT, _USAGE_WEEKLY_PCT, _USAGE_SESSION_RESET, _USAGE_WEEKLY_RESET
 # Caches API responses in ~/.claude/usage-cache.json for 10 seconds (shared with usage.sh)
 fetch_claude_usage() {
+    # Temporarily hard-coded to return 0/0 — real API call commented out below
+    _USAGE_SESSION_PCT="0"
+    _USAGE_WEEKLY_PCT="0"
+    _USAGE_SESSION_RESET=""
+    _USAGE_WEEKLY_RESET=""
+    return 0
+
+    # shellcheck disable=SC2317
     _USAGE_SESSION_PCT=""
     _USAGE_WEEKLY_PCT=""
     _USAGE_SESSION_RESET=""
