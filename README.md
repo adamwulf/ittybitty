@@ -35,7 +35,7 @@ flowchart LR
     A -->|command line| E
 ```
 
-You don't need to change your workflow to use `ittybitty`. You can think of its agents as _just_ another Claude Code terminal that can work independently, stays within allowed tool permissions, and can spawn message other agents. You can view, merge, or kill any agent at any time.
+You don't need to change your workflow to use `ittybitty`. You can think of its agents as _just_ another Claude Code terminal that can work independently, stays within allowed tool permissions, and can spawn and message other agents. You can view, merge, or kill any agent at any time.
 
 ## Installation
 
@@ -60,7 +60,7 @@ ib
 
 ### Project Setup
 
-All setup steps are optional (but recommended). You can test `ib ` just by downloading and running it.
+All setup steps are optional (but recommended). You can test `ib` just by downloading and running it.
 
 Run `ib watch` in your project directory and press `h` to open the setup dialog:
 
@@ -71,16 +71,17 @@ ib watch
 # Press 'h' to open setup dialog
 ```
 
-The setup dialog lets you configure:
+The setup dialog has 3 tabs: **Setup** (toggles), **Project Settings**, and **User Settings**. The Setup tab lets you configure:
 
 | Option | Purpose |
 |--------|---------|
-| **Safety hooks** | Prevents `cd` into agent worktrees + injects agent status into your conversations. Keeps Claude informed and prevents confusion. |
-| **ib instructions** | Adds `<ittybitty>` block to CLAUDE.md so Claude knows how to use `ib` |
+| **Safety hooks** | Enforces path isolation (agents can only access files in their own worktree), injects agent status after Bash/Task tools, and delivers ittybitty instructions to Claude at conversation start via SessionStart hook. |
+| **Task interception** | Redirects Claude's native Task tool to spawn ib agents instead of native subagents. |
 | **.gitignore** | Adds `.ittybitty/` to your .gitignore |
 | **Config file** | Creates `.ittybitty.json` for `ib config` settings |
+| **Ext diff tool** | Configure an external diff tool for reviewing agent changes |
 
-Toggle options with Space or Enter. All options should be enabled for full functionality.
+Toggle options with Space or Enter. Enable Safety hooks and .gitignore for full functionality.
 
 ## Your First Agent
 
@@ -89,6 +90,9 @@ Spawning a new agent is easy. By default, all new agents are managers, which mea
 ```bash
 # Basic usage
 ib new-agent "Refactor the authentication module to use JWT tokens"
+
+# 'new' is a shorthand alias for 'new-agent'
+ib new "Refactor the authentication module to use JWT tokens"
 
 # With a custom name
 ib new-agent --name auth-refactor "Refactor authentication to use JWT"
@@ -105,14 +109,16 @@ Next, monitor your agent with the **Interactive dashboard (recommended):**
 ib watch
 ```
 
-The watch UI show?s all agents, their states, and recent activity. Keyboard shortcuts are listed in the UIs footer.
+The watch UI shows all agents, their states, and recent activity. Keyboard shortcuts are listed in the UI's footer.
 
 You can also monitor with the command line. This makes it easy to integrate `ib` into other tools.
 
 ```bash
-ib list                     # Show all agents and their states
+ib list                     # Show all agents and their states (alias: ib ls)
 ib look <id>                # View agent's recent output
 ib status <id>              # Show agent's git commits and changes
+ib info <id>                # Display agent metadata
+ib tree                     # Show agent hierarchy as a tree
 ```
 
 As you monitor agents, each agent will move between these states:
@@ -134,12 +140,22 @@ You can interact with agents by sending messages, and viewing their git status, 
 # Send input to an agent (answers questions, provides guidance)
 ib send <id> "Focus on the login flow first"
 
+# Send a message with explicit sender (auto-detected in agent worktrees)
+ib send --from <sender-id> <id> "message"
+
 # View what the agent has done
 ib diff <id>                # Full diff of changes
 ib status <id>              # Commits and file changes
 
 # View the agent's running claude session
 ib look <id>
+
+# Pause/resume agents
+ib pause <id>               # Pause a running agent without killing it
+ib resume <id>              # Resume a paused or stopped agent
+
+# Reassign an agent to a different parent manager
+ib reassign <id> <new-parent>
 ```
 
 Once you're happy (or sad!) with an agent's work, you can merge or kill the agent. `ib merge` will merge the agent's work into your currently active branch. The merge will preemptively fail if there is a merge conflict. This keeps your git status clean, and you can tell an agent to fix any merge conflicts and try again when it's finished.
@@ -185,7 +201,7 @@ If for some reason your agents get out of control, you can run `ib nuke` to imme
 
 ## Using with Claude Code
 
-Once you've run the setup dialog (`ib watch` → `h`), Claude will know how to spawn agents during your conversation:
+Once you've enabled **Safety hooks** in the setup dialog (`ib watch` → `h`), Claude automatically receives ittybitty instructions at the start of every conversation via the SessionStart hook. No manual CLAUDE.md editing is needed.
 
 **You:** "Refactor the API layer. This is a big task, so spawn some agents to help."
 
@@ -226,7 +242,7 @@ ib hooks install-intercept
 ib hooks uninstall-intercept
 ```
 
-Some Task types are always handled natively (Bash, statusline-setup, claude-code-guide, meta-agent). You can also toggle this in the `ib watch` setup dialog (`h` key).
+Some Task types are always handled natively (Bash, statusline-setup, claude-code-guide, meta-agent, ib-merge). You can also toggle this in the `ib watch` setup dialog (`h` key).
 
 ## Configuration
 
@@ -289,12 +305,16 @@ Agent worktrees inherit MCP servers from two sources automatically:
 ib new-agent [options] "prompt"
 
 Options:
-  --name <name>      Custom agent name (default: auto-generated)
-  --worker           Worker agent that cannot spawn sub-agents
-  --model <model>    Model to use (opus, sonnet, haiku)
-  --no-worktree      Work in repo root instead of isolated worktree
-  --yolo             Full autonomy, skip all permission prompts
-  --print            One-shot mode: run and exit
+  --name <name>        Custom agent name (default: auto-generated)
+  --worker             Worker agent that cannot spawn sub-agents
+  --model <model>      Model to use (opus, sonnet, haiku)
+  --manager <id>       Set parent manager for hierarchy tracking
+  --no-worktree        Work in repo root instead of isolated worktree
+  --yolo               Full autonomy, skip all permission prompts
+  --print              One-shot mode: run and exit
+  --allow-tools LIST   Only allow these tools (comma-separated)
+  --deny-tools LIST    Deny these tools (comma-separated)
+  --prompt-file FILE   Read prompt from a file instead of command line
 ```
 
 ## Extensibility
