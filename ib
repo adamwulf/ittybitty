@@ -14650,8 +14650,8 @@ cmd_watchdog() {
                 fi
 
                 # Check usage API to see if we can resume
-                # Recovery threshold: 10% (wait until usage drops below this)
-                local recovery_threshold=10
+                # Recovery threshold: 5% (wait until usage drops below this)
+                local recovery_threshold=5
                 if fetch_claude_usage; then
                     local session_pct="${_USAGE_SESSION_PCT:-100}"
                     echo "[watchdog] Current usage: session=${session_pct}% (recovery at <${recovery_threshold}%)"
