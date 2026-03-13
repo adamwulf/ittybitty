@@ -35,7 +35,7 @@ flowchart LR
     A -->|command line| E
 ```
 
-You don't need to change your workflow to use `ittybitty`. You can think of its agents as _just_ another Claude Code terminal that can work independently, stays within allowed tool permissions, and can spawn message other agents. You can view, merge, or kill any agent at any time.
+You don't need to change your workflow to use `ittybitty`. You can think of its agents as _just_ another Claude Code terminal that can work independently, stays within allowed tool permissions, and can spawn and message other agents. You can view, merge, or kill any agent at any time.
 
 ## Installation
 
@@ -60,7 +60,7 @@ ib
 
 ### Project Setup
 
-All setup steps are optional (but recommended). You can test `ib ` just by downloading and running it.
+All setup steps are optional (but recommended). You can test `ib` just by downloading and running it.
 
 Run `ib watch` in your project directory and press `h` to open the setup dialog:
 
@@ -75,13 +75,13 @@ The setup dialog has 3 tabs: **Setup** (toggles), **Project Settings**, and **Us
 
 | Option | Purpose |
 |--------|---------|
-| **Safety hooks** | Installs path isolation (blocks `cd` into agent worktrees), status injection (injects agent status after Bash/Task tools), and a SessionStart hook that delivers ittybitty instructions to Claude at conversation start. |
+| **Safety hooks** | Enforces path isolation (agents can only access files in their own worktree), injects agent status after Bash/Task tools, and delivers ittybitty instructions to Claude at conversation start via SessionStart hook. |
 | **Task interception** | Redirects Claude's native Task tool to spawn ib agents instead of native subagents. |
 | **.gitignore** | Adds `.ittybitty/` to your .gitignore |
 | **Config file** | Creates `.ittybitty.json` for `ib config` settings |
 | **Ext diff tool** | Configure an external diff tool for reviewing agent changes |
 
-Toggle options with Space or Enter. All options should be enabled for full functionality.
+Toggle options with Space or Enter. Enable Safety hooks and .gitignore for full functionality.
 
 ## Your First Agent
 
@@ -109,7 +109,7 @@ Next, monitor your agent with the **Interactive dashboard (recommended):**
 ib watch
 ```
 
-The watch UI shows all agents, their states, and recent activity. Keyboard shortcuts are listed in the UIs footer.
+The watch UI shows all agents, their states, and recent activity. Keyboard shortcuts are listed in the UI's footer.
 
 You can also monitor with the command line. This makes it easy to integrate `ib` into other tools.
 
@@ -242,7 +242,7 @@ ib hooks install-intercept
 ib hooks uninstall-intercept
 ```
 
-Some Task types are always handled natively (Bash, statusline-setup, claude-code-guide, meta-agent). You can also toggle this in the `ib watch` setup dialog (`h` key).
+Some Task types are always handled natively (Bash, statusline-setup, claude-code-guide, meta-agent, ib-merge). You can also toggle this in the `ib watch` setup dialog (`h` key).
 
 ## Configuration
 
@@ -312,8 +312,8 @@ Options:
   --no-worktree        Work in repo root instead of isolated worktree
   --yolo               Full autonomy, skip all permission prompts
   --print              One-shot mode: run and exit
-  --allow-tools LIST   Additional tools to allow (comma-separated)
-  --deny-tools LIST    Tools to deny (comma-separated)
+  --allow-tools LIST   Only allow these tools (comma-separated)
+  --deny-tools LIST    Deny these tools (comma-separated)
   --prompt-file FILE   Read prompt from a file instead of command line
 ```
 

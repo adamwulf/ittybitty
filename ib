@@ -6642,6 +6642,7 @@ Options:
   --yolo                Skip all permission prompts (full autonomy)
   --worker              Create a worker agent (no sub-agent spawning)
   --model MODEL         Claude model to use (e.g., opus, sonnet, haiku)
+  --prompt-file FILE    Read prompt from a file instead of command line
   -h, --help            Show this help
 
 Permission modes:
